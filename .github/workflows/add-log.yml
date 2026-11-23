@@ -1,0 +1,66 @@
+name: Neuen WarcraftLogs-Report analysieren
+
+on:
+  workflow_dispatch:
+    inputs:
+      report_url:
+        description: "WarcraftLogs-URL oder 16-stelliger Report-Code"
+        required: true
+        type: string
+      label:
+        description: "Optionaler Anzeigename (z. B. Mittwoch Raid)"
+        required: false
+        default: ""
+        type: string
+      encounter_id:
+        description: "Encounter-ID (Standard: 3492 = Ula'tek)"
+        required: false
+        default: "3492"
+        type: string
+      difficulty:
+        description: "Difficulty (Standard: 5 = Mythic)"
+        required: false
+        default: "5"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  import-log:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Analyze WarcraftLogs Report
+        env:
+          WCL_CLIENT_ID: ${{ secrets.WCL_CLIENT_ID }}
+          WCL_CLIENT_SECRET: ${{ secrets.WCL_CLIENT_SECRET }}
+          INPUT_REPORT: ${{ inputs.report_url }}
+          INPUT_LABEL: ${{ inputs.label }}
+          INPUT_BOSS: ${{ inputs.encounter_id }}
+          INPUT_DIFF: ${{ inputs.difficulty }}
+        run: |
+          args=("$INPUT_REPORT" "--boss" "$INPUT_BOSS" "--difficulty" "$INPUT_DIFF")
+          if [ -n "$INPUT_LABEL" ]; then
+            args+=("--label" "$INPUT_LABEL")
+          fi
+          python scripts/add_log.py "${args[@]}"
+
+      - name: Commit & Push updated reports.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/data/reports.json
+          if git diff --cached --quiet; then
+            echo "Keine Änderungen an reports.json."
+            exit 0
+          fi
+          git commit -m "data: import WCL report (${{ inputs.label || 'auto' }})"
+          git push
