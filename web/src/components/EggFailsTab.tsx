@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Clock, Egg, Flame, Skull, Users } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Clock, Egg, Flame, Skull, Users } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateEggFails, formatDamage } from '../lib/stats'
 import {
@@ -7,9 +7,7 @@ import {
   ClassDot,
   EmptyState,
   KpiCard,
-  MaxDeathsFilter,
   Pill,
-  SubFilterPills,
   WclActionLinks,
 } from './ui'
 
@@ -18,21 +16,17 @@ export function EggFailsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
-  onMaxDeathsChange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
-  maxDeaths: number | null
-  onMaxDeathsChange: (v: number | null) => void
+  maxDeaths: number
 }) {
-  const [subFilter, setSubFilter] = useState<'all' | 'caustic_waves' | 'noxious_splash'>('all')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  const allStats = useMemo(() => aggregateEggFails(reports, maxDeaths, 'all'), [reports, maxDeaths])
   const stats = useMemo(
-    () => aggregateEggFails(reports, maxDeaths, subFilter),
-    [reports, maxDeaths, subFilter],
+    () => aggregateEggFails(reports, maxDeaths),
+    [reports, maxDeaths],
   )
 
   const q = searchQuery.trim().toLowerCase()
@@ -55,33 +49,19 @@ export function EggFailsTab({
 
   return (
     <div className="space-y-4">
-      {/* Tab Filter Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#27272a] bg-[#09090b] px-4 py-3">
-        <MaxDeathsFilter value={maxDeaths} onChange={onMaxDeathsChange} />
-        <SubFilterPills
-          value={subFilter}
-          onChange={setSubFilter}
-          options={[
-            { value: 'all', label: 'Alle Egg Fails', count: allStats.total },
-            { value: 'caustic_waves', label: 'Caustic Waves', count: allStats.causticTotal },
-            { value: 'noxious_splash', label: 'Noxious Splash', count: allStats.splashTotal },
-          ]}
-        />
-      </div>
-
       {/* KPI Row */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
-          label="Egg Fails gesamt"
+          label="Egg Fails (Caustic Waves)"
           value={stats.total}
-          subtext={`${stats.causticTotal} Caustic Waves · ${stats.splashTotal} Bumps`}
+          subtext={`Noxious Shell durch Welle geplatzt (≤ ${maxDeaths} Tode)`}
           icon={<Egg className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.total > 0 ? 'warning' : 'success'}
         />
         <KpiCard
           label="Betroffene Spieler"
           value={stats.affectedPlayers}
-          subtext={maxDeaths === null ? 'Gesamte Statistik (alle Tode)' : `Gefiltert: bis max. ${maxDeaths} Tode`}
+          subtext={`Filter aktiv: max. ${maxDeaths} ${maxDeaths === 1 ? 'Tod' : 'Tode'}`}
           icon={<Users className="h-4 w-4" strokeWidth={1.75} />}
         />
         <KpiCard
@@ -102,30 +82,29 @@ export function EggFailsTab({
       {/* Main Bento Grid */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2 overflow-hidden">
-          <div className="flex items-center justify-between border-b border-[#27272a] px-4 py-3">
+          <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
             <div>
-              <h2 className="text-[14px] font-semibold text-[#fafafa]">Spieler-Auswertung — Egg Fails</h2>
-              <p className="text-[12px] text-[#71717a]">
-                Klicke auf einen Spieler, um alle Trys, Zeiten sowie Events- und Replay-Links anzuzeigen.
+              <h2 className="text-[14px] font-semibold text-white">Spieler-Auswertung — Egg Fails</h2>
+              <p className="text-[12px] text-[#8b96a9]">
+                Nur echte Treffer von Caustic Waves auf aktive Noxious Shell. Klicke auf einen Spieler für alle Trys & Links.
               </p>
             </div>
-            <Pill>{filteredPlayers.length} Spieler</Pill>
+            <Pill variant="info">{filteredPlayers.length} Spieler</Pill>
           </div>
 
           {filteredPlayers.length === 0 ? (
             <EmptyState
               title="Keine Egg Fails im aktuellen Filter"
-              description="Für die gewählte Kombination aus Raidabend, Sub-Filter und Max-Tode-Limit liegen keine Treffer vor."
+              description={`Bis maximal ${maxDeaths} Tode wurde kein Spieler mit aktiver Noxious Shell von Caustic Waves getroffen.`}
             />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-[#27272a] text-[11px] font-medium uppercase tracking-wider text-[#a1a1aa]">
+                  <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
                     <th className="py-2.5 pl-4 pr-2">Spieler</th>
-                    <th className="py-2.5 px-2 text-right">Gesamt</th>
-                    <th className="py-2.5 px-2 text-right">Caustic Waves</th>
-                    <th className="py-2.5 px-2 text-right">Bumps (Splash)</th>
+                    <th className="py-2.5 px-2 text-right">Egg Fails</th>
+                    <th className="py-2.5 px-2 text-right">Ø Schaden</th>
                     <th className="py-2.5 pl-2 pr-4 text-right">Tödlich</th>
                   </tr>
                 </thead>
@@ -133,7 +112,7 @@ export function EggFailsTab({
                   {filteredPlayers.map((row) => {
                     const isOpen = !!expanded[row.player]
                     return (
-                      <FragmentRow
+                      <EggPlayerRowView
                         key={row.player}
                         row={row}
                         isOpen={isOpen}
@@ -148,12 +127,12 @@ export function EggFailsTab({
           )}
         </Card>
 
-        {/* Right Side Panel: Phase Distribution */}
+        {/* Right Side Panel: Phase Distribution & Clean Splashes */}
         <Card className="p-4 space-y-4 self-start">
           <div>
-            <h3 className="text-[14px] font-semibold text-[#fafafa]">Zeitfenster-Verteilung</h3>
-            <p className="text-[12px] text-[#71717a]">
-              Wann im Kampf platzen die meisten Noxious-Shell-Eier?
+            <h3 className="text-[14px] font-semibold text-white">Zeitfenster-Verteilung</h3>
+            <p className="text-[12px] text-[#8b96a9]">
+              Wann im Kampf werden Eierträger von Caustic Waves getroffen?
             </p>
           </div>
 
@@ -161,14 +140,14 @@ export function EggFailsTab({
             {stats.phases.map((ph) => (
               <div key={ph.label} className="space-y-1.5">
                 <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#a1a1aa]">{ph.label}</span>
-                  <span className="font-mono-num text-[#fafafa] font-medium">
+                  <span className="text-[#c5cdd9]">{ph.label}</span>
+                  <span className="font-mono-num text-white font-medium">
                     {ph.count}× ({ph.pct}%)
                   </span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[#18181b]">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
                   <div
-                    className="h-full rounded-full bg-[#fbbf24] transition-[width] duration-300"
+                    className="h-full rounded-full bg-gradient-to-r from-[#34f5c5] to-[#38bdf8] transition-[width] duration-300"
                     style={{ width: `${ph.pct}%` }}
                   />
                 </div>
@@ -176,13 +155,27 @@ export function EggFailsTab({
             ))}
           </div>
 
-          <div className="border-t border-[#27272a] pt-3 text-[12px] text-[#71717a] space-y-1.5">
-            <div className="flex items-center gap-1.5 text-[#a1a1aa] font-medium">
+          {/* Positive Clean Splash Note */}
+          <div className="rounded-[10px] border border-[rgba(52,245,197,0.28)] bg-[rgba(52,245,197,0.08)] p-3 text-[12px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-[#34f5c5]">
+                <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+                Saubere Bumps (Splash)
+              </span>
+              <span className="font-mono-num font-bold text-white">{stats.cleanSplashCount}×</span>
+            </div>
+            <p className="mt-1 text-[11.5px] text-[#c5cdd9] leading-relaxed">
+              Noxious-Splash-Bumps sind korrekt gespielt und werden nicht als Egg Fail gezählt.
+            </p>
+          </div>
+
+          <div className="border-t border-[rgba(255,255,255,0.08)] pt-3 text-[12px] text-[#8b96a9] space-y-1.5">
+            <div className="flex items-center gap-1.5 text-[#c5cdd9] font-medium">
               <Flame className="h-3.5 w-3.5 text-[#fbbf24]" strokeWidth={1.75} aria-hidden="true" />
               <span>Erkennungslogik</span>
             </div>
             <p className="leading-relaxed">
-              Zählt nur echte Ei-Brüche (`removedebuff Noxious Shell` 0–50 ms vor `Caustic Waves` bzw. `Noxious Splash`). Saubere `Spectral Coils`-Clears werden exakt herausgefiltert.
+              Zählt ausschließlich <code className="font-mono-num text-white">removedebuff Noxious Shell</code> 0–50 ms vor <code className="font-mono-num text-white">Caustic Waves</code>. Saubere <code className="font-mono-num text-white">Spectral Coils</code>-Clears & Bumps sind ausgenommen.
             </p>
           </div>
         </Card>
@@ -191,7 +184,7 @@ export function EggFailsTab({
   )
 }
 
-function FragmentRow({
+function EggPlayerRowView({
   row,
   isOpen,
   isMultiReport,
@@ -204,60 +197,54 @@ function FragmentRow({
 }) {
   return (
     <>
-      <tr className="border-b border-[#18181b] hover:bg-[#18181b]/70 transition-colors">
+      <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(52,245,197,0.055)] transition-colors">
         <td className="py-2.5 pl-4 pr-2">
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={isOpen}
-            className="flex items-center gap-2 text-left text-[13px] font-medium text-[#fafafa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 rounded"
+            className="flex items-center gap-2 text-left text-[13px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
           >
             {isOpen ? (
-              <ChevronDown className="h-3.5 w-3.5 text-[#a1a1aa]" />
+              <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
             ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-[#71717a]" />
+              <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
             )}
             <ClassDot className={row.className} />
             <span>{row.player}</span>
-            <span className="text-[11px] text-[#71717a]">{row.className}</span>
+            <span className="text-[11px] text-[#8b96a9]">{row.className}</span>
           </button>
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-[#fafafa]">
+        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-[#fbbf24]">
           {row.count}×
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] text-[#fbbf24]">
-          {row.causticCount}×
-        </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] text-[#a1a1aa]">
-          {row.splashCount}×
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9]">
+          {formatDamage(row.avgDamage)}
         </td>
         <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[13px]">
           {row.lethalCount > 0 ? (
             <span className="text-[#f87171] font-semibold">{row.lethalCount}×</span>
           ) : (
-            <span className="text-[#71717a]">0</span>
+            <span className="text-[#8b96a9]">0</span>
           )}
         </td>
       </tr>
       {isOpen && (
-        <tr className="border-b border-[#27272a] bg-[#121215]">
-          <td colSpan={5} className="px-4 py-3">
+        <tr className="border-b border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.7)]">
+          <td colSpan={4} className="px-4 py-3">
             <div className="space-y-1.5">
               {row.items.map((item) => (
                 <div
                   key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-[#27272a] bg-[#09090b] px-3 py-2 text-[12px]"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                    <span className="font-mono-num font-semibold text-[#fafafa]">
+                    <span className="font-mono-num font-semibold text-white">
                       Try {item.pull_num}
                     </span>
-                    <span className="font-mono-num text-[#a1a1aa]">{item.rel_time}</span>
-                    <Pill variant={item.kind === 'caustic_waves' ? 'warning' : 'neutral'}>
-                      {item.kind === 'caustic_waves' ? 'Caustic Waves' : 'Noxious Splash'}
-                    </Pill>
-                    <span className="font-mono-num text-[#71717a]">
+                    <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
+                    <span className="font-mono-num text-[#c5cdd9]">
                       {formatDamage(item.damage)} Dmg
                     </span>
                     {item.deaths_before > 0 && (

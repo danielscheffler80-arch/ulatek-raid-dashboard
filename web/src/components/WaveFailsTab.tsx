@@ -7,7 +7,6 @@ import {
   ClassDot,
   EmptyState,
   KpiCard,
-  MaxDeathsFilter,
   Pill,
   WclActionLinks,
 } from './ui'
@@ -17,13 +16,11 @@ export function WaveFailsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
-  onMaxDeathsChange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
-  maxDeaths: number | null
-  onMaxDeathsChange: (v: number | null) => void
+  maxDeaths: number
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
@@ -53,18 +50,11 @@ export function WaveFailsTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#27272a] bg-[#09090b] px-4 py-3">
-        <MaxDeathsFilter value={maxDeaths} onChange={onMaxDeathsChange} />
-        <div className="text-[12px] text-[#71717a]">
-          Alle direkten Treffer von <span className="text-[#a1a1aa] font-medium">Caustic Waves (1292403)</span> ohne 1s-DoT-Ticks
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           label="Wave-Treffer gesamt"
           value={stats.total}
-          subtext={maxDeaths === null ? 'Alle direkten Treffer' : `Bis max. ${maxDeaths} Tode`}
+          subtext={`Alle direkten Treffer (≤ ${maxDeaths} Tode)`}
           icon={<Waves className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.total > 0 ? 'warning' : 'success'}
         />
@@ -92,14 +82,14 @@ export function WaveFailsTab({
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2 overflow-hidden">
-          <div className="flex items-center justify-between border-b border-[#27272a] px-4 py-3">
+          <div className="flex items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
             <div>
-              <h2 className="text-[14px] font-semibold text-[#fafafa]">Spieler-Rangliste — Wave Fails</h2>
-              <p className="text-[12px] text-[#71717a]">
-                Jeder einzelne direkte Wellentreffer im gesamten Raid, aufklappbar mit Direktlinks.
+              <h2 className="text-[14px] font-semibold text-white">Spieler-Rangliste — Wave Fails</h2>
+              <p className="text-[12px] text-[#8b96a9]">
+                Alle direkten Treffer von Caustic Waves (1292403) ohne 1s-DoT-Ticks, aufklappbar mit Direktlinks.
               </p>
             </div>
-            <Pill>
+            <Pill variant="info">
               <Users className="h-3 w-3" aria-hidden="true" />
               {filteredPlayers.length} Spieler
             </Pill>
@@ -108,13 +98,13 @@ export function WaveFailsTab({
           {filteredPlayers.length === 0 ? (
             <EmptyState
               title="Keine Wave-Treffer gefunden"
-              description="Im aktuellen Filter wurde kein Spieler direkt von Caustic Waves getroffen."
+              description={`Bis maximal ${maxDeaths} Tode wurde kein Spieler direkt von Caustic Waves getroffen.`}
             />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-[#27272a] text-[11px] font-medium uppercase tracking-wider text-[#a1a1aa]">
+                  <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
                     <th className="py-2.5 pl-4 pr-2">Spieler</th>
                     <th className="py-2.5 px-2 text-right">Treffer</th>
                     <th className="py-2.5 px-2 text-right">Mit Ei</th>
@@ -143,21 +133,21 @@ export function WaveFailsTab({
 
         <Card className="p-4 space-y-4 self-start">
           <div>
-            <h3 className="text-[14px] font-semibold text-[#fafafa]">Wave-Treffer nach Phase</h3>
-            <p className="text-[12px] text-[#71717a]">Verteilung aller direkten Caustic-Waves-Treffer</p>
+            <h3 className="text-[14px] font-semibold text-white">Wave-Treffer nach Phase</h3>
+            <p className="text-[12px] text-[#8b96a9]">Verteilung aller direkten Caustic-Waves-Treffer</p>
           </div>
           <div className="space-y-3">
             {stats.phases.map((ph) => (
               <div key={ph.label} className="space-y-1.5">
                 <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#a1a1aa]">{ph.label}</span>
-                  <span className="font-mono-num text-[#fafafa] font-medium">
+                  <span className="text-[#c5cdd9]">{ph.label}</span>
+                  <span className="font-mono-num text-white font-medium">
                     {ph.count}× ({ph.pct}%)
                   </span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[#18181b]">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
                   <div
-                    className="h-full rounded-full bg-[#34d399] transition-[width] duration-300"
+                    className="h-full rounded-full bg-gradient-to-r from-[#34f5c5] to-[#38bdf8] transition-[width] duration-300"
                     style={{ width: `${ph.pct}%` }}
                   />
                 </div>
@@ -183,61 +173,61 @@ function WavePlayerRowView({
 }) {
   return (
     <>
-      <tr className="border-b border-[#18181b] hover:bg-[#18181b]/70 transition-colors">
+      <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(52,245,197,0.055)] transition-colors">
         <td className="py-2.5 pl-4 pr-2">
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={isOpen}
-            className="flex items-center gap-2 text-left text-[13px] font-medium text-[#fafafa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 rounded"
+            className="flex items-center gap-2 text-left text-[13px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
           >
             {isOpen ? (
-              <ChevronDown className="h-3.5 w-3.5 text-[#a1a1aa]" />
+              <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
             ) : (
-              <ChevronRight className="h-3.5 w-3.5 text-[#71717a]" />
+              <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
             )}
             <ClassDot className={row.className} />
             <span>{row.player}</span>
-            <span className="text-[11px] text-[#71717a]">{row.className}</span>
+            <span className="text-[11px] text-[#8b96a9]">{row.className}</span>
           </button>
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-[#fafafa]">
+        <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-white">
           {row.count}×
         </td>
         <td className="py-2.5 px-2 text-right font-mono-num text-[13px]">
           {row.withShellCount > 0 ? (
             <span className="text-[#fbbf24] font-semibold">{row.withShellCount}×</span>
           ) : (
-            <span className="text-[#71717a]">0</span>
+            <span className="text-[#8b96a9]">0</span>
           )}
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#a1a1aa]">
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9]">
           {formatDamage(row.avgDamage)}
         </td>
         <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[13px]">
           {row.lethalCount > 0 ? (
             <span className="text-[#f87171] font-semibold">{row.lethalCount}×</span>
           ) : (
-            <span className="text-[#71717a]">0</span>
+            <span className="text-[#8b96a9]">0</span>
           )}
         </td>
       </tr>
       {isOpen && (
-        <tr className="border-b border-[#27272a] bg-[#121215]">
+        <tr className="border-b border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.7)]">
           <td colSpan={5} className="px-4 py-3">
             <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
               {row.items.map((item) => (
                 <div
                   key={item.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-[6px] border border-[#27272a] bg-[#09090b] px-3 py-2 text-[12px]"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                    <span className="font-mono-num font-semibold text-[#fafafa]">
+                    <span className="font-mono-num font-semibold text-white">
                       Try {item.pull_num}
                     </span>
-                    <span className="font-mono-num text-[#a1a1aa]">{item.rel_time}</span>
-                    <span className="font-mono-num text-[#71717a]">
+                    <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
+                    <span className="font-mono-num text-[#c5cdd9]">
                       {formatDamage(item.damage)} Dmg
                     </span>
                     {item.had_noxious_shell && <Pill variant="warning">Mit Noxious Shell</Pill>}

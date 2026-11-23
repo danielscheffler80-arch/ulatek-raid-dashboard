@@ -1,5 +1,5 @@
 import React from 'react'
-import { ExternalLink, Play, Skull } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, Play, Skull } from 'lucide-react'
 import { WOW_CLASS_COLORS } from '../lib/stats'
 
 export function Card({
@@ -9,13 +9,7 @@ export function Card({
   children: React.ReactNode
   className?: string
 }) {
-  return (
-    <div
-      className={`rounded-[10px] border border-[#27272a] bg-[#09090b] ${className}`}
-    >
-      {children}
-    </div>
-  )
+  return <div className={`obsidian-card ${className}`}>{children}</div>
 }
 
 export function KpiCard({
@@ -37,21 +31,23 @@ export function KpiCard({
       : tone === 'warning'
         ? 'text-[#fbbf24]'
         : tone === 'success'
-          ? 'text-[#34d399]'
-          : 'text-[#fafafa]'
+          ? 'text-[#34f5c5]'
+          : 'text-white'
 
   return (
     <Card className="p-[18px] flex flex-col justify-between gap-2">
-      <div className="flex items-center justify-between gap-2 text-[13px] text-[#a1a1aa]">
+      <div className="flex items-center justify-between gap-2 text-[12.5px] text-[#c5cdd9]">
         <span className="truncate font-medium">{label}</span>
-        <span className="text-[#71717a] shrink-0" aria-hidden="true">
+        <span className="text-[#8b96a9] shrink-0" aria-hidden="true">
           {icon}
         </span>
       </div>
-      <div className={`font-mono-num text-[26px] font-bold leading-tight tracking-tight ${valueTone}`}>
+      <div
+        className={`font-mono-num text-[27px] font-bold leading-tight tracking-[-0.02em] ${valueTone}`}
+      >
         {value}
       </div>
-      <div className="text-[12px] text-[#71717a] truncate">{subtext}</div>
+      <div className="text-[12px] text-[#8b96a9] truncate">{subtext}</div>
     </Card>
   )
 }
@@ -61,20 +57,22 @@ export function Pill({
   variant = 'neutral',
 }: {
   children: React.ReactNode
-  variant?: 'neutral' | 'success' | 'warning' | 'destructive'
+  variant?: 'neutral' | 'success' | 'warning' | 'destructive' | 'info'
 }) {
   const styles =
     variant === 'success'
-      ? 'text-[#34d399] bg-[rgba(16,185,129,0.12)] border-[rgba(16,185,129,0.3)]'
-      : variant === 'warning'
-        ? 'text-[#fbbf24] bg-[rgba(245,158,11,0.12)] border-[rgba(245,158,11,0.3)]'
-        : variant === 'destructive'
-          ? 'text-[#f87171] bg-[rgba(239,68,68,0.12)] border-[rgba(239,68,68,0.3)]'
-          : 'text-[#a1a1aa] bg-[#18181b] border-[#27272a]'
+      ? 'text-[#34f5c5] bg-[rgba(52,245,197,0.12)] border-[rgba(52,245,197,0.34)]'
+      : variant === 'info'
+        ? 'text-[#38bdf8] bg-[rgba(56,189,248,0.12)] border-[rgba(56,189,248,0.34)]'
+        : variant === 'warning'
+          ? 'text-[#fbbf24] bg-[rgba(251,191,36,0.12)] border-[rgba(251,191,36,0.34)]'
+          : variant === 'destructive'
+            ? 'text-[#f87171] bg-[rgba(239,68,68,0.13)] border-[rgba(239,68,68,0.34)]'
+            : 'text-[#c5cdd9] bg-[rgba(16,20,27,0.85)] border-[rgba(255,255,255,0.11)]'
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-[6px] border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${styles}`}
+      className={`inline-flex items-center gap-1 rounded-[7px] border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${styles}`}
     >
       {children}
     </span>
@@ -82,10 +80,10 @@ export function Pill({
 }
 
 export function ClassDot({ className }: { className: string }) {
-  const color = WOW_CLASS_COLORS[className] ?? '#a1a1aa'
+  const color = WOW_CLASS_COLORS[className] ?? '#c5cdd9'
   return (
     <span
-      className="inline-block h-2.5 w-2.5 rounded-full shrink-0 ring-1 ring-white/15"
+      className="inline-block h-2.5 w-2.5 rounded-full shrink-0 ring-1 ring-white/20"
       style={{ backgroundColor: color }}
       title={className || 'Unbekannt'}
       aria-hidden="true"
@@ -106,86 +104,81 @@ export function WclActionLinks({
         href={eventsUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 rounded-[6px] border border-[#27272a] bg-[#121215] px-2 py-1 text-[11px] font-medium text-[#fafafa] hover:bg-[#18181b] hover:border-zinc-600 active:scale-[0.96] transition-[background-color,border-color,transform] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+        className="obsidian-btn inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
       >
-        <ExternalLink className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" />
+        <ExternalLink className="h-3 w-3 text-[#38bdf8]" strokeWidth={1.75} aria-hidden="true" />
         Events
       </a>
       <a
         href={replayUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 rounded-[6px] border border-[#27272a] bg-[#18181b] px-2 py-1 text-[11px] font-medium text-[#fafafa] hover:bg-zinc-800 hover:border-zinc-600 active:scale-[0.96] transition-[background-color,border-color,transform] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+        className="obsidian-btn inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
       >
-        <Play className="h-3 w-3 fill-current" strokeWidth={1.75} aria-hidden="true" />
+        <Play className="h-3 w-3 fill-current text-[#34f5c5]" strokeWidth={1.75} aria-hidden="true" />
         Replay
       </a>
     </div>
   )
 }
 
-const PRESET_DEATH_LIMITS: Array<number | null> = [null, 0, 1, 2, 3, 5]
-
-export function MaxDeathsFilter({
+/**
+ * Kompakter Max-Tode-Stepper (Standard: 4 Tode):
+ * Zeigt direkt die eingestellte Zahl und unmittelbar daneben Up/Down (mehr / weniger).
+ */
+export function MaxDeathsStepper({
   value,
   onChange,
 }: {
-  value: number | null
-  onChange: (next: number | null) => void
+  value: number
+  onChange: (next: number) => void
 }) {
-  const isCustom = value !== null && !PRESET_DEATH_LIMITS.includes(value)
+  const clamp = (n: number) => Math.max(0, Math.min(25, n))
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#a1a1aa]">
-        <Skull className="h-3.5 w-3.5 text-[#71717a]" strokeWidth={1.75} aria-hidden="true" />
-        <span>Bis max. Tode:</span>
-      </div>
-      <div
-        className="inline-flex items-center rounded-[8px] border border-[#27272a] bg-[#18181b] p-[3px]"
-        role="group"
-        aria-label="Filter bis maximale Anzahl Tode"
-      >
-        {PRESET_DEATH_LIMITS.map((preset) => {
-          const active = value === preset
-          return (
-            <button
-              key={preset === null ? 'all' : String(preset)}
-              type="button"
-              onClick={() => onChange(preset)}
-              className={`rounded-[5px] px-2.5 py-1 text-[12px] font-mono-num transition-[background-color,color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
-                active
-                  ? 'bg-[#09090b] text-[#fafafa] font-semibold'
-                  : 'text-[#a1a1aa] hover:text-[#fafafa]'
-              }`}
-            >
-              {preset === null ? 'Alle' : preset}
-            </button>
-          )
-        })}
-      </div>
-      <label className="inline-flex items-center gap-1.5 text-[12px] text-[#71717a]">
-        <span className="sr-only">Eigene maximale Tode</span>
+    <div
+      className="inline-flex items-center gap-2 rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[rgba(10,14,22,0.88)] pl-2.5 pr-1.5 py-1 focus-within:border-[rgba(52,245,197,0.5)] focus-within:ring-2 focus-within:ring-[rgba(52,245,197,0.22)] transition-[border-color,box-shadow]"
+      title="Filtert alle Listen bis maximal so viele Tode im Try"
+    >
+      <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#c5cdd9] select-none whitespace-nowrap">
+        <Skull className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.8} aria-hidden="true" />
+        <span>Max. Tode</span>
+      </span>
+
+      <div className="inline-flex items-center rounded-[7px] border border-[rgba(255,255,255,0.12)] bg-[#050911] pl-1.5 pr-0.5 py-0.5">
         <input
           type="number"
           min={0}
           max={25}
-          placeholder="Zahl…"
-          value={isCustom ? value : ''}
+          value={value}
+          aria-label="Maximale Tode im Try"
           onChange={(e) => {
-            const raw = e.target.value.trim()
-            if (raw === '') {
-              onChange(null)
-              return
-            }
-            const parsed = Number.parseInt(raw, 10)
-            if (!Number.isNaN(parsed) && parsed >= 0) {
-              onChange(parsed)
+            const parsed = Number.parseInt(e.target.value, 10)
+            if (!Number.isNaN(parsed)) {
+              onChange(clamp(parsed))
             }
           }}
-          className="w-[70px] rounded-[6px] border border-[#27272a] bg-[#121215] px-2 py-1 text-[12px] font-mono-num text-[#fafafa] placeholder:text-[#71717a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
+          className="w-8 bg-transparent text-center font-mono-num text-[13px] font-semibold text-white focus:outline-none"
         />
-      </label>
+        <div className="flex flex-col border-l border-[rgba(255,255,255,0.09)] pl-0.5">
+          <button
+            type="button"
+            onClick={() => onChange(clamp(value + 1))}
+            aria-label="Maximale Tode erhöhen"
+            className="flex h-[13px] w-[18px] items-center justify-center rounded-t-[4px] text-[#c5cdd9] hover:bg-[rgba(52,245,197,0.18)] hover:text-[#34f5c5] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#34f5c5]"
+          >
+            <ChevronUp className="h-3 w-3" strokeWidth={2.4} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(clamp(value - 1))}
+            aria-label="Maximale Tode verringern"
+            className="flex h-[13px] w-[18px] items-center justify-center rounded-b-[4px] text-[#c5cdd9] hover:bg-[rgba(52,245,197,0.18)] hover:text-[#34f5c5] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#34f5c5]"
+          >
+            <ChevronDown className="h-3 w-3" strokeWidth={2.4} />
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -200,7 +193,7 @@ export function SubFilterPills<T extends string>({
   onChange: (next: T) => void
 }) {
   return (
-    <div className="inline-flex items-center rounded-[8px] border border-[#27272a] bg-[#18181b] p-[3px]">
+    <div className="obsidian-tabs inline-flex items-center">
       {options.map((opt) => {
         const active = value === opt.value
         return (
@@ -208,15 +201,13 @@ export function SubFilterPills<T extends string>({
             key={opt.value}
             type="button"
             onClick={() => onChange(opt.value)}
-            className={`inline-flex items-center gap-1.5 rounded-[5px] px-2.5 py-1 text-[12px] transition-[background-color,color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
-              active
-                ? 'bg-[#09090b] text-[#fafafa] font-semibold'
-                : 'text-[#a1a1aa] hover:text-[#fafafa]'
+            className={`obsidian-tab inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 ${
+              active ? 'active' : ''
             }`}
           >
             <span>{opt.label}</span>
             {opt.count !== undefined && (
-              <span className="font-mono-num text-[11px] text-[#71717a]">{opt.count}</span>
+              <span className="font-mono-num text-[11px] text-[#8b96a9]">{opt.count}</span>
             )}
           </button>
         )
@@ -228,8 +219,8 @@ export function SubFilterPills<T extends string>({
 export function EmptyState({ title, description }: { title: string; description: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-      <p className="text-[14px] font-medium text-[#fafafa]">{title}</p>
-      <p className="mt-1 text-[13px] text-[#71717a] max-w-md">{description}</p>
+      <p className="text-[14px] font-semibold text-white">{title}</p>
+      <p className="mt-1 text-[13px] text-[#8b96a9] max-w-md">{description}</p>
     </div>
   )
 }

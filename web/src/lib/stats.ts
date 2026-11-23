@@ -50,27 +50,38 @@ export interface EggPlayerRow {
   player: string
   className: string
   count: number
-  causticCount: number
-  splashCount: number
   lethalCount: number
+  avgDamage: number
   items: WithReport<EggFail>[]
 }
 
 export function aggregateEggFails(
   reports: ReportData[],
   maxDeaths: number | null,
-  subFilter: 'all' | 'caustic_waves' | 'noxious_splash' = 'all',
 ) {
-  const raw: WithReport<EggFail>[] = []
+  const rawFails: WithReport<EggFail>[] = []
+  const rawSplashes: WithReport<EggFail>[] = []
+
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
     for (const item of rep.egg_fails) {
-      if (subFilter !== 'all' && item.kind !== subFilter) continue
-      raw.push({ ...item, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+      const enriched: WithReport<EggFail> = {
+        ...item,
+        reportCode: rep.code,
+        reportLabel: label,
+        reportDate: rep.date_iso,
+      }
+      if (item.kind === 'caustic_waves') {
+        rawFails.push(enriched)
+      } else if (item.kind === 'noxious_splash') {
+        rawSplashes.push(enriched)
+      }
     }
   }
-  const filtered = filterByMaxDeaths(raw, maxDeaths)
-  const byPlayer = new Map<string, EggPlayerRow>()
+
+  const filtered = filterByMaxDeaths(rawFails, maxDeaths)
+  const filteredSplashes = filterByMaxDeaths(rawSplashes, maxDeaths)
+  const byPlayer = new Map<string, EggPlayerRow & { totalDamage: number }>()
 
   for (const item of filtered) {
     let row = byPlayer.get(item.player)
@@ -79,31 +90,33 @@ export function aggregateEggFails(
         player: item.player,
         className: item.class,
         count: 0,
-        causticCount: 0,
-        splashCount: 0,
         lethalCount: 0,
+        avgDamage: 0,
+        totalDamage: 0,
         items: [],
       }
       byPlayer.set(item.player, row)
     }
     row.count++
-    if (item.kind === 'caustic_waves') row.causticCount++
-    if (item.kind === 'noxious_splash') row.splashCount++
     if (item.lethal) row.lethalCount++
+    row.totalDamage += item.damage
     row.items.push(item)
   }
 
-  const players = Array.from(byPlayer.values()).sort(
-    (a, b) => b.count - a.count || a.player.localeCompare(b.player),
-  )
+  const players: EggPlayerRow[] = Array.from(byPlayer.values())
+    .map(({ totalDamage, ...rest }) => ({
+      ...rest,
+      avgDamage: rest.count > 0 ? Math.round(totalDamage / rest.count) : 0,
+    }))
+    .sort((a, b) => b.count - a.count || a.player.localeCompare(b.player))
+
   for (const p of players) {
     p.items.sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp)
   }
 
   return {
     total: filtered.length,
-    causticTotal: filtered.filter((x) => x.kind === 'caustic_waves').length,
-    splashTotal: filtered.filter((x) => x.kind === 'noxious_splash').length,
+    cleanSplashCount: filteredSplashes.length,
     lethalTotal: filtered.filter((x) => x.lethal).length,
     affectedPlayers: players.length,
     phases: computePhaseBuckets(filtered),

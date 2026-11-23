@@ -9,7 +9,7 @@ import { WaveFailsTab } from './components/WaveFailsTab'
 import { TankFailsTab } from './components/TankFailsTab'
 import { DefensivesTab } from './components/DefensivesTab'
 import { PullsTab } from './components/PullsTab'
-import { Pill } from './components/ui'
+import { MaxDeathsStepper, Pill } from './components/ui'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'egg', label: 'Egg Fails' },
@@ -24,12 +24,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [selectedCode, setSelectedCode] = useState<string>('all')
   const [activeTab, setActiveTab] = useState<TabKey>('egg')
-  const [maxDeathsByTab, setMaxDeathsByTab] = useState<Record<TabKey, number | null>>({
-    egg: null,
-    wave: null,
-    tank: null,
-    defensives: null,
-    pulls: null,
+  // Standardmäßig nach 4 Toden filtern (je Tab individuell anpassbar über den kompakten Stepper oben)
+  const [maxDeathsByTab, setMaxDeathsByTab] = useState<Record<TabKey, number>>({
+    egg: 4,
+    wave: 4,
+    tank: 4,
+    defensives: 4,
+    pulls: 4,
   })
   const [searchQuery, setSearchQuery] = useState('')
   const [importOpen, setImportOpen] = useState(false)
@@ -53,7 +54,6 @@ export default function App() {
       })
   }, [])
 
-  // Keyboard shortcut Cmd/Ctrl + K for player/try search
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -85,11 +85,14 @@ export default function App() {
         : '—'
 
   const currentMaxDeaths = maxDeathsByTab[activeTab]
-  const setCurrentMaxDeaths = (val: number | null) =>
+  const setCurrentMaxDeaths = (val: number) =>
     setMaxDeathsByTab((prev) => ({ ...prev, [activeTab]: val }))
 
   return (
-    <div className="flex min-h-screen bg-[#09090b] text-[#fafafa]">
+    <div className="relative flex min-h-screen bg-[#050911] text-white">
+      {/* Reborn App Ambient Glow */}
+      <div className="obsidian-ambient" aria-hidden="true" />
+
       <Sidebar
         reports={reports}
         selectedCode={selectedCode}
@@ -102,32 +105,32 @@ export default function App() {
         onCloseMobile={() => setMobileNavOpen(false)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top Header Bar (56px) */}
-        <header className="sticky top-0 z-30 flex min-h-[56px] flex-wrap items-center justify-between gap-3 border-b border-[#27272a] bg-[#09090b]/95 px-4 py-2 backdrop-blur-sm">
+      <div className="relative z-10 flex min-w-0 flex-1 flex-col">
+        {/* Obsidian Mint Top Header Bar */}
+        <header className="obsidian-topbar flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-2">
           {/* Left: Breadcrumb + Pull Badge */}
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => setMobileNavOpen(true)}
               aria-label="Navigation öffnen"
-              className="rounded-[6px] border border-[#27272a] bg-[#18181b] p-1.5 text-[#fafafa] lg:hidden"
+              className="obsidian-btn p-1.5 lg:hidden"
             >
               <Menu className="h-4 w-4" />
             </button>
             <div className="flex items-center gap-1.5 text-[13px] min-w-0">
-              <span className="text-[#71717a] shrink-0">Ula&apos;tek Mythic</span>
-              <span className="text-[#71717a]" aria-hidden="true">/</span>
-              <span className="truncate font-semibold text-[#fafafa] max-w-[200px] sm:max-w-[280px]">
+              <span className="text-[#8b96a9] shrink-0">Ula&apos;tek Mythic</span>
+              <span className="text-[#8b96a9]" aria-hidden="true">/</span>
+              <span className="truncate font-semibold text-white max-w-[180px] sm:max-w-[240px]">
                 {breadcrumbLabel}
               </span>
             </div>
             <Pill variant="success">{totalPulls} Trys</Pill>
           </div>
 
-          {/* Center: Segmented Tabs */}
+          {/* Center: Obsidian Segmented Tabs */}
           <nav
-            className="flex items-center overflow-x-auto rounded-[8px] border border-[#27272a] bg-[#18181b] p-[3px]"
+            className="obsidian-tabs flex items-center overflow-x-auto"
             aria-label="Analyse-Tabs"
           >
             {TABS.map((t) => {
@@ -137,10 +140,8 @@ export default function App() {
                   key={t.key}
                   type="button"
                   onClick={() => setActiveTab(t.key)}
-                  className={`whitespace-nowrap rounded-[5px] px-3 py-1 text-[12px] transition-[background-color,color,transform] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 ${
-                    active
-                      ? 'bg-[#09090b] text-[#fafafa] font-semibold'
-                      : 'text-[#a1a1aa] hover:text-[#fafafa]'
+                  className={`obsidian-tab whitespace-nowrap px-3 py-1 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 ${
+                    active ? 'active' : ''
                   }`}
                 >
                   {t.label}
@@ -149,25 +150,32 @@ export default function App() {
             })}
           </nav>
 
-          {/* Right: Primary CTA */}
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-[6px] bg-[#fafafa] px-3 py-1.5 text-[12px] font-semibold text-[#09090b] hover:bg-zinc-200 active:scale-[0.96] transition-[background-color,transform] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400"
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden="true" />
-            <span>Neuen Log hinzufügen</span>
-          </button>
+          {/* Right: Compact Max-Deaths Stepper (Default: 4) + Mint CTA */}
+          <div className="flex items-center gap-2.5">
+            <MaxDeathsStepper
+              value={currentMaxDeaths}
+              onChange={setCurrentMaxDeaths}
+            />
+            <button
+              type="button"
+              onClick={() => setImportOpen(true)}
+              className="obsidian-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+              <span className="hidden sm:inline">Neuen Log hinzufügen</span>
+              <span className="sm:hidden">Log</span>
+            </button>
+          </div>
         </header>
 
         {/* Main Workstage */}
         <main className="flex-1 p-4 sm:p-6">
           {error ? (
-            <div className="rounded-[10px] border border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.12)] p-4 text-[13px] text-[#f87171]">
+            <div className="rounded-[12px] border border-[rgba(239,68,68,0.34)] bg-[rgba(239,68,68,0.12)] p-4 text-[13px] text-[#f87171]">
               {error}
             </div>
           ) : !store ? (
-            <div className="flex items-center justify-center py-20 text-[13px] text-[#71717a]">
+            <div className="flex items-center justify-center py-20 text-[13px] text-[#8b96a9]">
               Lade Raid-Daten…
             </div>
           ) : (
@@ -178,7 +186,6 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
-                  onMaxDeathsChange={setCurrentMaxDeaths}
                 />
               )}
               {activeTab === 'wave' && (
@@ -187,7 +194,6 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
-                  onMaxDeathsChange={setCurrentMaxDeaths}
                 />
               )}
               {activeTab === 'tank' && (
@@ -196,7 +202,6 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
-                  onMaxDeathsChange={setCurrentMaxDeaths}
                 />
               )}
               {activeTab === 'defensives' && (
@@ -205,7 +210,6 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
-                  onMaxDeathsChange={setCurrentMaxDeaths}
                 />
               )}
               {activeTab === 'pulls' && (
@@ -214,7 +218,6 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
-                  onMaxDeathsChange={setCurrentMaxDeaths}
                 />
               )}
             </>

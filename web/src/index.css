@@ -1,15 +1,46 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   XAVA OBSIDIAN MINT — Reborn App Design System
+   Deep Obsidian Glass (#050911) + Neon-Mint (#34f5c5) + Ice (#38bdf8) + Gold (#fbbf24)
+   ============================================================================ */
 :root {
   color-scheme: dark;
-  --background: #09090b;
-  --surface-muted: #18181b;
-  --surface-subtle: #121215;
-  --border: #27272a;
-  --border-subtle: #18181b;
-  --foreground: #fafafa;
-  --muted-foreground: #a1a1aa;
-  --subtle-foreground: #71717a;
+  --background: #050911;
+  --surface-muted: #10141b;
+  --surface-subtle: rgba(16, 20, 27, 0.72);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --foreground: #ffffff;
+  --muted-foreground: #c5cdd9;
+  --subtle-foreground: #8b96a9;
+
+  /* Xava Obsidian Mint Accents */
+  --accent-primary: #34f5c5;
+  --accent-primary-rgb: 52, 245, 197;
+  --accent-primary-soft: rgba(52, 245, 197, 0.11);
+  --accent-primary-med: rgba(52, 245, 197, 0.24);
+  --accent-primary-border: rgba(52, 245, 197, 0.44);
+  --accent-primary-glow: rgba(52, 245, 197, 0.18);
+  --accent-primary-ring: rgba(52, 245, 197, 0.42);
+  --accent-primary-card-tint: rgba(52, 245, 197, 0.075);
+
+  --accent-secondary: #38bdf8;
+  --accent-secondary-rgb: 56, 189, 248;
+  --accent-secondary-soft: rgba(56, 189, 248, 0.11);
+  --accent-secondary-border: rgba(56, 189, 248, 0.40);
+  --accent-secondary-card-tint: rgba(56, 189, 248, 0.068);
+
+  --accent-highlight: #fbbf24;
+  --accent-highlight-rgb: 251, 191, 36;
+  --accent-highlight-soft: rgba(251, 191, 36, 0.11);
+  --accent-highlight-border: rgba(251, 191, 36, 0.40);
+  --accent-highlight-card-tint: rgba(251, 191, 36, 0.068);
+
+  --scrollbar-track: #060910;
+  --scrollbar-thumb: rgba(113, 126, 148, 0.42);
+  --scrollbar-thumb-hover: rgba(52, 245, 197, 0.68);
+  --scrollbar-thumb-active: rgba(52, 245, 197, 0.92);
 }
 
 @layer base {
@@ -29,27 +60,238 @@
 
   * {
     border-color: var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   }
 
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+  *::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
   }
-  ::-webkit-scrollbar-track {
-    background: #09090b;
+  *::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+    border-radius: 999px;
   }
-  ::-webkit-scrollbar-thumb {
-    background: #27272a;
-    border-radius: 4px;
+  *::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+    border: 1.5px solid var(--scrollbar-track);
+    transition: background-color 140ms ease;
   }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #3f3f46;
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background: var(--scrollbar-thumb-active);
+  }
+
+  /* Hide ugly native number spinners so our Obsidian stepper owns the arrows */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
   }
 }
 
 .font-mono-num {
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
   font-variant-numeric: tabular-nums;
+}
+
+/* Obsidian Mint Ambient Background Layer */
+.obsidian-ambient {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.obsidian-ambient::before {
+  content: '';
+  position: absolute;
+  top: -150px;
+  right: -130px;
+  width: 700px;
+  height: 540px;
+  background: radial-gradient(
+    circle at 60% 40%,
+    rgba(var(--accent-primary-rgb), 0.15) 0%,
+    rgba(var(--accent-secondary-rgb), 0.075) 42%,
+    rgba(5, 9, 17, 0) 74%
+  );
+  filter: blur(26px);
+}
+
+.obsidian-ambient::after {
+  content: '';
+  position: absolute;
+  bottom: -180px;
+  left: 160px;
+  width: 640px;
+  height: 440px;
+  background: radial-gradient(
+    circle at 40% 60%,
+    rgba(var(--accent-secondary-rgb), 0.10) 0%,
+    rgba(var(--accent-primary-rgb), 0.05) 45%,
+    rgba(5, 9, 17, 0) 75%
+  );
+  filter: blur(34px);
+}
+
+/* Glass Sidebar & Topbar */
+.obsidian-sidebar {
+  background: rgba(5, 9, 17, 0.86);
+  backdrop-filter: blur(14px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.obsidian-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: rgba(5, 9, 17, 0.84);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.obsidian-topbar::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(var(--accent-primary-rgb), 0.55) 0%,
+    rgba(var(--accent-secondary-rgb), 0.35) 50%,
+    rgba(var(--accent-highlight-rgb), 0.25) 100%
+  );
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+/* Obsidian Glass Cards */
+.obsidian-card {
+  background: rgba(16, 20, 27, 0.68);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-color 150ms ease;
+}
+
+.obsidian-card:hover {
+  border-color: rgba(var(--accent-primary-rgb), 0.28);
+}
+
+/* Signature 4-KPI Grid Top-Accents from Reborn App */
+.kpi-grid > .obsidian-card:nth-child(4n + 1),
+.kpi-grid > .obsidian-card:nth-child(4n + 4) {
+  border-top: 2px solid var(--accent-primary-border);
+  background: linear-gradient(180deg, var(--accent-primary-card-tint) 0%, rgba(16, 20, 27, 0.74) 44%);
+}
+
+.kpi-grid > .obsidian-card:nth-child(4n + 2) {
+  border-top: 2px solid var(--accent-secondary-border);
+  background: linear-gradient(180deg, var(--accent-secondary-card-tint) 0%, rgba(16, 20, 27, 0.74) 44%);
+}
+
+.kpi-grid > .obsidian-card:nth-child(4n + 3) {
+  border-top: 2px solid var(--accent-highlight-border);
+  background: linear-gradient(180deg, var(--accent-highlight-card-tint) 0%, rgba(16, 20, 27, 0.74) 44%);
+}
+
+/* Segmented Tabs (Obsidian Mint) */
+.obsidian-tabs {
+  background: rgba(16, 20, 27, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 11px;
+  padding: 3px;
+}
+
+.obsidian-tab {
+  position: relative;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  color: #b4becd;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+.obsidian-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.obsidian-tab.active {
+  background: rgba(var(--accent-primary-rgb), 0.14);
+  border-color: rgba(var(--accent-primary-rgb), 0.45);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 0 18px -6px var(--accent-primary-glow);
+}
+
+.obsidian-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -2px;
+  height: 2px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+  box-shadow: 0 0 10px rgba(var(--accent-primary-rgb), 0.65);
+}
+
+/* Primary Neon-Mint CTA Button */
+.obsidian-btn-primary {
+  background: var(--accent-primary);
+  color: #050911;
+  border: 1px solid var(--accent-primary);
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: 0 0 22px rgba(var(--accent-primary-rgb), 0.28);
+  transition: filter 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+}
+
+.obsidian-btn-primary:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 0 28px rgba(var(--accent-primary-rgb), 0.44);
+}
+
+.obsidian-btn-primary:active {
+  transform: scale(0.96);
+}
+
+/* Secondary Glass Button */
+.obsidian-btn {
+  border-radius: 8px;
+  background: rgba(16, 20, 27, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  color: #ffffff;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+.obsidian-btn:hover {
+  background: rgba(24, 31, 44, 0.92);
+  border-color: var(--accent-primary-border);
+}
+
+.obsidian-btn:active {
+  transform: scale(0.96);
+}
+
+/* Modal Surface */
+.obsidian-modal {
+  background: rgba(12, 16, 24, 0.96);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
 }
 
 @media (prefers-reduced-motion: reduce) {

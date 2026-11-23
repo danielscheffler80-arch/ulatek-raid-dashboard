@@ -104,16 +104,16 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(filterByMaxDeaths(mockReport.egg_fails, 2)).toHaveLength(2)
   })
 
-  it('aggregates egg fails by player and sub-filter', () => {
-    const allRes = aggregateEggFails([mockReport], null, 'all')
-    expect(allRes.total).toBe(3)
-    expect(allRes.players[0].count).toBe(3)
-    expect(allRes.players[0].causticCount).toBe(2)
-    expect(allRes.players[0].splashCount).toBe(1)
+  it('aggregates egg fails counting only Caustic Waves on Noxious Shell (Bumps/Splash are valid plays, not fails)', () => {
+    const allRes = aggregateEggFails([mockReport], null)
+    expect(allRes.total).toBe(2)
+    expect(allRes.cleanSplashCount).toBe(1)
+    expect(allRes.players[0].count).toBe(2)
+    expect(allRes.players[0].lethalCount).toBe(1)
 
-    const c2Res = aggregateEggFails([mockReport], 2, 'caustic_waves')
-    expect(c2Res.total).toBe(1)
-    expect(c2Res.players[0].lethalCount).toBe(0)
+    const max2Res = aggregateEggFails([mockReport], 2)
+    expect(max2Res.total).toBe(1)
+    expect(max2Res.players[0].lethalCount).toBe(0)
   })
 
   it('aggregates wave fails and tank fails with maxDeaths', () => {
