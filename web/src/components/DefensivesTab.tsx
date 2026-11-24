@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, FlaskConical, Gem, Shield, Skull } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, FlaskConical, Shield, ShieldCheck } from 'lucide-react'
 import type { ReportData } from '../types'
-import { aggregateDefensives } from '../lib/stats'
-import type { PullRange } from '../lib/stats'
+import { aggregateDefensives, WOW_CLASS_COLORS } from '../lib/stats'
+import type { DefensivePlayerRow, PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -26,7 +26,7 @@ export function DefensivesTab({
   maxDeaths: number
   pullRange: PullRange
 }) {
-  const [eventFilter, setEventFilter] = useState<'ready_only' | 'unprotected_only' | 'all'>('ready_only')
+  const [eventFilter, setEventFilter] = useState<'missed_ready' | 'used' | 'all'>('missed_ready')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const stats = useMemo(
@@ -36,9 +36,14 @@ export function DefensivesTab({
 
   const q = searchQuery.trim().toLowerCase()
   const filteredPlayers = useMemo(() => {
-    if (!q) return stats.players
-    return stats.players.filter(
-      (p) => p.player.toLowerCase().includes(q) || p.className.toLowerCase().includes(q),
+    // Nur Spieler anzeigen, die im Filter wirklich unter 35 % HP gedroppt oder gestorben sind!
+    const active = stats.players.filter((p) => p.criticalEvents > 0)
+    if (!q) return active
+    return active.filter(
+      (p) =>
+        p.player.toLowerCase().includes(q) ||
+        p.className.toLowerCase().includes(q) ||
+        p.items.some((it) => `try ${it.pull_num}`.includes(q) || String(it.pull_num) === q),
     )
   }, [stats.players, q])
 
@@ -49,32 +54,32 @@ export function DefensivesTab({
     <div className="space-y-4">
       <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiCard
-          label="Def-CD bei Damage-Spitzen"
-          value={`${stats.spikeDefRatePct}%`}
-          subtext={`${stats.totalSpikesWithDef} / ${stats.totalSpikes} Drops < 35% HP geschützt`}
+          label="Drops < 35 % & Tode"
+          value={stats.totalCritical}
+          subtext={`${stats.totalSpikes} unvermeidbare Drops < 35 % · ${stats.totalDeaths} Tode (≤ ${maxDeaths} Tode)`}
           icon={<Shield className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.spikeDefRatePct >= 50 ? 'success' : 'warning'}
+          tone={stats.totalCritical > 0 ? 'warning' : 'success'}
         />
         <KpiCard
-          label="Healing-Potion-Quote"
-          value={`${stats.overallPotRatePct}%`}
-          subtext="Silvermoon Health Potion pro Pull"
+          label="Def / Pot / Gesu genutzt"
+          value={`${stats.usedAnyRatePct}%`}
+          subtext={`${stats.totalUsedAny} / ${stats.totalCritical} (${stats.totalUsedDef} Def · ${stats.totalPotUsedAtDrop} Pot · ${stats.totalHsUsedAtDrop} Gesu)`}
+          icon={<ShieldCheck className="h-4 w-4" strokeWidth={1.75} />}
+          tone={stats.usedAnyRatePct >= 60 ? 'success' : 'warning'}
+        />
+        <KpiCard
+          label="Nicht genutzt trotz rdy!"
+          value={stats.totalMissedWhileReady}
+          subtext={`${stats.totalMissedSpikeWhileReady}× bei < 35 % Drop · ${stats.totalMissedDeathWhileReady}× beim Tod`}
+          icon={<AlertTriangle className="h-4 w-4" strokeWidth={1.75} />}
+          tone={stats.totalMissedWhileReady > 0 ? 'destructive' : 'success'}
+        />
+        <KpiCard
+          label="Pot & Gesu bei < 35 %"
+          value={`${stats.totalPotUsedAtDrop} / ${stats.totalHsUsedAtDrop}`}
+          subtext={`Genutzt · rdy verpasst: ${stats.totalMissedPotReady}× Pot · ${stats.totalMissedHsReady}× Gesu`}
           icon={<FlaskConical className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.overallPotRatePct >= 40 ? 'success' : 'warning'}
-        />
-        <KpiCard
-          label="Healthstone-Quote"
-          value={`${stats.overallHsRatePct}%`}
-          subtext="Healthstone / Demonic HS pro Pull"
-          icon={<Gem className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.overallHsRatePct >= 40 ? 'success' : 'warning'}
-        />
-        <KpiCard
-          label="Tode trotz rdy Def/Pot/HS"
-          value={stats.totalDeathsAnyReady}
-          subtext={`Von ${stats.totalDeaths} Toden · ${stats.totalDeathsNoPotNoHs} ohne Pot & HS (≤ ${maxDeaths} Tode)`}
-          icon={<Skull className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.totalDeathsAnyReady > 0 ? 'destructive' : 'success'}
+          tone={stats.totalPotUsedAtDrop + stats.totalHsUsedAtDrop > 0 ? 'success' : 'warning'}
         />
       </div>
 
@@ -82,27 +87,28 @@ export function DefensivesTab({
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
           <div>
             <h2 className="text-[14px] font-semibold text-white">
-              Def-CD, Healing Potion & Healthstone pro Spieler (inkl. Cooldown-Ready-Check)
+              Def-CD, Healing Potion &amp; Gesu — nur bei Drops &lt; 35 % HP &amp; Toden
             </h2>
             <p className="text-[12px] text-[#8b96a9]">
-              Prüft ausschließlich bei <strong className="text-white">unvermeidbaren</strong> Raid-Damage-Spitzen (&lt; 35 % HP: Mephitic Thrash, Spectral Coils, Putrid Membrane, Necrotic Vapors, Rage of the Shackled, Blight Vein) &amp; Toden schadensart-genau, ob ein wirksamer Def-CD, Healing Potion (5 min CD) oder Healthstone bereit (rdy) war — vermeidbare Treffer wie Caustic Waves werden hier bewusst ausgeblendet.
+              Wertet ausschließlich <strong className="text-white">unvermeidbare</strong> Drops &lt; 35 % HP (Mephitic Thrash, Spectral Coils, Putrid Membrane, Necrotic Vapors, Rage of the Shackled, Blight Vein) &amp; Tode aus:
+              hat der Spieler einen wirksamen <strong className="text-[#34f5c5]">Def-CD, Healing Potion oder Gesu</strong> genutzt — oder <strong className="text-[#f87171]">nichts genutzt, obwohl eins davon rdy war</strong>? (Normale Trys ohne &lt; 35 %-Drop werden nicht gezählt.)
             </p>
           </div>
           <SubFilterPills
             value={eventFilter}
             onChange={setEventFilter}
             options={[
-              { value: 'ready_only', label: 'Nur wenn Def/Pot/HS rdy!' },
-              { value: 'unprotected_only', label: 'Alle ohne Def / Pot / HS' },
-              { value: 'all', label: 'Alle Low-HP & Tode' },
+              { value: 'missed_ready', label: 'Nicht genutzt trotz rdy!', count: stats.totalMissedWhileReady },
+              { value: 'used', label: 'Genutzt (Def / Pot / Gesu)', count: stats.totalUsedAny },
+              { value: 'all', label: 'Alle < 35 % & Tode', count: stats.totalCritical },
             ]}
           />
         </div>
 
         {filteredPlayers.length === 0 ? (
           <EmptyState
-            title="Keine Spielerdaten vorhanden"
-            description="Für diesen Filter liegen keine Defensiv- oder Verbrauchsdaten vor."
+            title="Keine Drops < 35 % oder Tode im aktuellen Filter"
+            description="Im gewählten Try-Bereich und Todes-Filter ist kein Spieler unter 35 % HP (unvermeidbarer Schaden) gedroppt."
           />
         ) : (
           <div className="overflow-x-auto">
@@ -110,32 +116,28 @@ export function DefensivesTab({
               <thead>
                 <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
                   <th className="py-2.5 pl-4 pr-2">Spieler</th>
-                  <th className="py-2.5 px-2 text-right">Pulls</th>
-                  <th className="py-2.5 px-2 text-right">Heal Pot</th>
-                  <th className="py-2.5 px-2 text-right">Healthstone</th>
-                  <th className="py-2.5 px-2 text-right">Def bei &lt; 35%</th>
-                  <th className="py-2.5 px-2 text-right">Spikes (Def rdy)</th>
-                  <th className="py-2.5 pl-2 pr-4 text-right">Tode (CD/Pot/HS rdy)</th>
+                  <th className="py-2.5 px-2 text-right">&lt; 35 % / Tode</th>
+                  <th className="py-2.5 px-2 text-right">Genutzt (Def / Pot / Gesu)</th>
+                  <th className="py-2.5 px-2 text-right">Nicht genutzt (rdy!)</th>
+                  <th className="py-2.5 px-2 text-right">Heal Pot (&lt; 35 %)</th>
+                  <th className="py-2.5 pl-2 pr-4 text-right">Gesu (&lt; 35 %)</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredPlayers.map((row) => {
                   const isOpen = !!expanded[row.player]
-                  const visibleItems =
-                    eventFilter === 'ready_only'
-                      ? row.items.filter((it) => {
-                          const hasRdyDef = (it.ready_defs?.length ?? 0) > 0
-                          const anyRdy = it.any_ready ?? (hasRdyDef || !it.pot_used_in_pull || !it.hs_used_in_pull)
-                          if (it.kind === 'low_hp_spike') return !it.had_def_cd && hasRdyDef
-                          return !it.had_def_cd && anyRdy
-                        })
-                      : eventFilter === 'unprotected_only'
-                        ? row.items.filter(
-                            (it) =>
-                              (it.kind === 'low_hp_spike' && !it.had_def_cd) ||
-                              (it.kind === 'death' && (!it.had_def_cd || (!it.pot_used_in_pull && !it.hs_used_in_pull))),
-                          )
-                        : row.items
+                  const visibleItems = row.items.filter((it) => {
+                    const usedPot = Boolean(it.used_pot_here)
+                    const usedHs = Boolean(it.used_hs_here)
+                    const usedAny = it.used_any_here ?? (it.had_def_cd || usedPot || usedHs)
+                    const hasReadyDef = (it.ready_defs?.length ?? 0) > 0
+                    const potRdy = it.pot_ready ?? (!it.pot_used_in_pull && !usedPot)
+                    const hsRdy = it.hs_ready ?? (!it.hs_used_in_pull && !usedHs)
+                    const anyRdy = it.any_ready ?? (hasReadyDef || potRdy || hsRdy)
+                    if (eventFilter === 'missed_ready') return !usedAny && anyRdy
+                    if (eventFilter === 'used') return usedAny
+                    return true
+                  })
 
                   return (
                     <DefensivePlayerRowView
@@ -164,8 +166,8 @@ function DefensivePlayerRowView({
   isMultiReport,
   onToggle,
 }: {
-  row: ReturnType<typeof aggregateDefensives>['players'][number]
-  visibleItems: ReturnType<typeof aggregateDefensives>['players'][number]['items']
+  row: DefensivePlayerRow
+  visibleItems: DefensivePlayerRow['items']
   isOpen: boolean
   isMultiReport: boolean
   onToggle: () => void
@@ -173,12 +175,12 @@ function DefensivePlayerRowView({
   return (
     <>
       <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(52,245,197,0.055)] transition-colors">
-        <td className="py-2.5 pl-4 pr-2">
+        <td className="py-2.5 pl-4 pr-2 whitespace-nowrap">
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={isOpen}
-            className="flex items-center gap-2 text-left text-[13px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
+            className="flex items-center gap-2 text-left text-[13px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
           >
             {isOpen ? (
               <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
@@ -186,55 +188,82 @@ function DefensivePlayerRowView({
               <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
             )}
             <ClassDot className={row.className} />
-            <span>{row.player}</span>
+            <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>{row.player}</span>
           </button>
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9]">
-          {row.pullsPresent}
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12.5px] whitespace-nowrap">
+          <div className="font-semibold text-white">{row.criticalEvents}×</div>
+          <div className="text-[10.5px] text-[#8b96a9]">
+            {row.lowSpikes} Drops · {row.deaths} Tode
+          </div>
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px]">
-          <span className={row.potRatePct >= 40 ? 'text-[#34f5c5]' : row.potRatePct > 0 ? 'text-[#fbbf24]' : 'text-[#f87171]'}>
-            {row.potPulls}/{row.pullsPresent} ({row.potRatePct}%)
-          </span>
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12.5px] whitespace-nowrap">
+          <div
+            className={`font-semibold ${
+              row.usedAnyRatePct >= 65
+                ? 'text-[#34f5c5]'
+                : row.usedAnyRatePct >= 35
+                  ? 'text-[#fbbf24]'
+                  : 'text-[#f87171]'
+            }`}
+          >
+            {row.usedAnyCount}× ({row.usedAnyRatePct}%)
+          </div>
+          <div className="text-[10.5px] text-[#8b96a9]">
+            {row.usedDefCount} Def · {row.usedPotAtDropCount} Pot · {row.usedHsAtDropCount} Gesu
+          </div>
         </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px]">
-          <span className={row.hsRatePct >= 40 ? 'text-[#34f5c5]' : row.hsRatePct > 0 ? 'text-[#fbbf24]' : 'text-[#f87171]'}>
-            {row.hsPulls}/{row.pullsPresent} ({row.hsRatePct}%)
-          </span>
-        </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px]">
-          <span className={row.defSpikeRatePct >= 50 ? 'text-[#34f5c5]' : 'text-[#fbbf24]'}>
-            {row.lowSpikesWithDef}/{row.lowSpikes} ({row.defSpikeRatePct}%)
-          </span>
-        </td>
-        <td className="py-2.5 px-2 text-right font-mono-num text-[12px]">
-          {row.lowSpikesNoDefReady > 0 ? (
-            <span className="text-[#fbbf24] font-semibold">{row.lowSpikesNoDefReady}</span>
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12.5px] whitespace-nowrap">
+          {row.missedWhileReadyCount > 0 ? (
+            <>
+              <div className="font-semibold text-[#f87171]">{row.missedWhileReadyCount}×</div>
+              <div className="text-[10.5px] text-[#fca5a5]">
+                {row.missedSpikeWhileReadyCount} Drops · {row.missedDeathWhileReadyCount} Tode
+              </div>
+            </>
           ) : (
-            <span className="text-[#8b96a9]">0</span>
+            <span className="text-[#34f5c5] font-semibold">0</span>
           )}
         </td>
-        <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[13px]">
-          {row.deathsAnyReady > 0 ? (
-            <span className="text-[#f87171] font-semibold">{row.deathsAnyReady}</span>
-          ) : (
-            <span className="text-[#34f5c5]">0</span>
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12px] whitespace-nowrap">
+          <div className={row.usedPotAtDropCount > 0 ? 'text-[#34f5c5] font-semibold' : 'text-[#8b96a9]'}>
+            {row.usedPotAtDropCount}× genutzt
+          </div>
+          {row.missedPotReadyCount > 0 && (
+            <div className="text-[10.5px] text-[#fbbf24]">{row.missedPotReadyCount}× rdy verpasst</div>
+          )}
+        </td>
+        <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[12px] whitespace-nowrap">
+          <div className={row.usedHsAtDropCount > 0 ? 'text-[#34f5c5] font-semibold' : 'text-[#8b96a9]'}>
+            {row.usedHsAtDropCount}× genutzt
+          </div>
+          {row.missedHsReadyCount > 0 && (
+            <div className="text-[10.5px] text-[#fbbf24]">{row.missedHsReadyCount}× rdy verpasst</div>
           )}
         </td>
       </tr>
       {isOpen && (
         <tr className="border-b border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.7)]">
-          <td colSpan={7} className="px-4 py-3">
+          <td colSpan={6} className="px-4 py-3">
             {visibleItems.length === 0 ? (
               <div className="text-[12px] text-[#8b96a9]">
-                Keine kritischen Momente mit bereiten CDs/Pot/HS im gewählten Filter für {row.player}.
+                Keine Einträge im gewählten Detail-Filter.
               </div>
             ) : (
               <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
                 {visibleItems.map((item) => {
-                  const rdyDefs = item.ready_defs ?? []
-                  const potRdy = item.pot_ready ?? !item.pot_used_in_pull
-                  const hsRdy = item.hs_ready ?? !item.hs_used_in_pull
+                  const usedPot = Boolean(item.used_pot_here)
+                  const usedHs = Boolean(item.used_hs_here)
+                  const usedAny = item.used_any_here ?? (item.had_def_cd || usedPot || usedHs)
+                  const readyDefs = item.ready_defs ?? []
+                  const potRdy = item.pot_ready ?? (!item.pot_used_in_pull && !usedPot)
+                  const hsRdy = item.hs_ready ?? (!item.hs_used_in_pull && !usedHs)
+                  const readyParts: string[] = [
+                    ...readyDefs,
+                    ...(potRdy ? ['Heal Pot'] : []),
+                    ...(hsRdy ? ['Gesu'] : []),
+                  ]
+
                   return (
                     <div
                       key={item.id}
@@ -247,32 +276,26 @@ function DefensivePlayerRowView({
                         </span>
                         <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
                         {item.kind === 'death' ? (
-                          <Pill variant="destructive">Tod: {item.trigger_ability}</Pill>
+                          <Pill variant="destructive">Tod · {item.trigger_ability}</Pill>
                         ) : (
                           <Pill variant="warning">
-                            {item.hp_pct.toFixed(1)}% HP ({item.trigger_ability})
+                            {item.trigger_ability} · {item.hp_pct.toFixed(1)}% HP
                           </Pill>
                         )}
-                        {item.had_def_cd ? (
-                          <Pill variant="success">Aktiv: {item.active_defs.join(', ')}</Pill>
-                        ) : rdyDefs.length > 0 ? (
-                          <Pill variant="destructive">Rdy nicht gezogen: {rdyDefs.join(', ')}</Pill>
+                        {usedAny ? (
+                          <>
+                            {item.had_def_cd && (
+                              <Pill variant="success">Def: {item.active_defs.join(', ')}</Pill>
+                            )}
+                            {usedPot && <Pill variant="success">Heal Pot genutzt</Pill>}
+                            {usedHs && <Pill variant="success">Gesu genutzt</Pill>}
+                          </>
+                        ) : readyParts.length > 0 ? (
+                          <Pill variant="destructive">
+                            Nichts genutzt! Rdy: {readyParts.join(' · ')}
+                          </Pill>
                         ) : (
-                          <Pill variant="info">Eigene Defs auf CD</Pill>
-                        )}
-                        {item.pot_used_in_pull && !potRdy ? (
-                          <Pill variant="success">Pot ✓ (auf CD)</Pill>
-                        ) : potRdy ? (
-                          <Pill variant="warning">Pot rdy!</Pill>
-                        ) : (
-                          <Pill>Pot auf CD</Pill>
-                        )}
-                        {item.hs_used_in_pull && !hsRdy ? (
-                          <Pill variant="success">HS ✓ (auf CD)</Pill>
-                        ) : hsRdy ? (
-                          <Pill variant="warning">HS rdy!</Pill>
-                        ) : (
-                          <Pill>HS auf CD</Pill>
+                          <Pill>Alles auf CD</Pill>
                         )}
                         {item.deaths_before > 0 && (
                           <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>

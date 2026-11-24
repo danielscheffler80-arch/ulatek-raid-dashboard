@@ -731,6 +731,18 @@ export interface DefensivePlayerRow {
   potRatePct: number
   hsRatePct: number
   defCdCasts: number
+  criticalEvents: number
+  usedAnyCount: number
+  usedDefCount: number
+  usedPotAtDropCount: number
+  usedHsAtDropCount: number
+  usedAnyRatePct: number
+  missedWhileReadyCount: number
+  missedSpikeWhileReadyCount: number
+  missedDeathWhileReadyCount: number
+  missedPotReadyCount: number
+  missedHsReadyCount: number
+  allOnCdCount: number
   lowSpikes: number
   lowSpikesWithDef: number
   lowSpikesNoDef: number
@@ -763,6 +775,18 @@ export function aggregateDefensives(
         potRatePct: 0,
         hsRatePct: 0,
         defCdCasts: 0,
+        criticalEvents: 0,
+        usedAnyCount: 0,
+        usedDefCount: 0,
+        usedPotAtDropCount: 0,
+        usedHsAtDropCount: 0,
+        usedAnyRatePct: 0,
+        missedWhileReadyCount: 0,
+        missedSpikeWhileReadyCount: 0,
+        missedDeathWhileReadyCount: 0,
+        missedPotReadyCount: 0,
+        missedHsReadyCount: 0,
+        allOnCdCount: 0,
         lowSpikes: 0,
         lowSpikesWithDef: 0,
         lowSpikesNoDef: 0,
@@ -818,8 +842,31 @@ export function aggregateDefensives(
       allEvents.push(enriched)
       const row = ensure(ev.player, ev.class)
       row.items.push(enriched)
+
+      const usedPotHere = Boolean(ev.used_pot_here)
+      const usedHsHere = Boolean(ev.used_hs_here)
+      const usedAnyHere = ev.used_any_here ?? (ev.had_def_cd || usedPotHere || usedHsHere)
       const hasReadyDef = (ev.ready_defs?.length ?? 0) > 0
-      const hasAnyReady = ev.any_ready ?? (hasReadyDef || !ev.pot_used_in_pull || !ev.hs_used_in_pull)
+      const potRdy = ev.pot_ready ?? (!ev.pot_used_in_pull && !usedPotHere)
+      const hsRdy = ev.hs_ready ?? (!ev.hs_used_in_pull && !usedHsHere)
+      const hasAnyReady = ev.any_ready ?? (hasReadyDef || potRdy || hsRdy)
+
+      row.criticalEvents++
+      if (usedAnyHere) {
+        row.usedAnyCount++
+        if (ev.had_def_cd) row.usedDefCount++
+        if (usedPotHere) row.usedPotAtDropCount++
+        if (usedHsHere) row.usedHsAtDropCount++
+      } else if (hasAnyReady) {
+        row.missedWhileReadyCount++
+        if (ev.kind === 'low_hp_spike') row.missedSpikeWhileReadyCount++
+        else row.missedDeathWhileReadyCount++
+        if (potRdy) row.missedPotReadyCount++
+        if (hsRdy) row.missedHsReadyCount++
+      } else {
+        row.allOnCdCount++
+      }
+
       if (ev.kind === 'low_hp_spike') {
         row.lowSpikes++
         if (ev.had_def_cd) row.lowSpikesWithDef++
@@ -834,7 +881,7 @@ export function aggregateDefensives(
           if (hasReadyDef) row.deathsNoDefReady++
         }
         if (!ev.pot_used_in_pull && !ev.hs_used_in_pull) row.deathsNoPotNoHs++
-        if (!ev.had_def_cd && hasAnyReady) row.deathsAnyReady++
+        if (!usedAnyHere && hasAnyReady) row.deathsAnyReady++
       }
     }
   }
@@ -845,12 +892,13 @@ export function aggregateDefensives(
       potRatePct: p.pullsPresent > 0 ? Math.round((p.potPulls / p.pullsPresent) * 100) : 0,
       hsRatePct: p.pullsPresent > 0 ? Math.round((p.hsPulls / p.pullsPresent) * 100) : 0,
       defSpikeRatePct: p.lowSpikes > 0 ? Math.round((p.lowSpikesWithDef / p.lowSpikes) * 100) : 100,
+      usedAnyRatePct: p.criticalEvents > 0 ? Math.round((p.usedAnyCount / p.criticalEvents) * 100) : 100,
     }))
     .sort(
       (a, b) =>
-        b.deathsAnyReady - a.deathsAnyReady ||
-        b.deathsNoPotNoHs - a.deathsNoPotNoHs ||
-        b.lowSpikesNoDefReady - a.lowSpikesNoDefReady ||
+        b.missedWhileReadyCount - a.missedWhileReadyCount ||
+        b.missedDeathWhileReadyCount - a.missedDeathWhileReadyCount ||
+        b.criticalEvents - a.criticalEvents ||
         a.player.localeCompare(b.player),
     )
 
@@ -858,21 +906,38 @@ export function aggregateDefensives(
     p.items.sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp)
   }
 
+  const totalCritical = players.reduce((s, p) => s + p.criticalEvents, 0)
+  const totalUsedAny = players.reduce((s, p) => s + p.usedAnyCount, 0)
+  const totalUsedDef = players.reduce((s, p) => s + p.usedDefCount, 0)
+  const totalPotUsedAtDrop = players.reduce((s, p) => s + p.usedPotAtDropCount, 0)
+  const totalHsUsedAtDrop = players.reduce((s, p) => s + p.usedHsAtDropCount, 0)
+  const totalMissedWhileReady = players.reduce((s, p) => s + p.missedWhileReadyCount, 0)
+  const totalMissedSpikeWhileReady = players.reduce((s, p) => s + p.missedSpikeWhileReadyCount, 0)
+  const totalMissedDeathWhileReady = players.reduce((s, p) => s + p.missedDeathWhileReadyCount, 0)
+  const totalMissedPotReady = players.reduce((s, p) => s + p.missedPotReadyCount, 0)
+  const totalMissedHsReady = players.reduce((s, p) => s + p.missedHsReadyCount, 0)
+
   const totalSpikes = allEvents.filter((e) => e.kind === 'low_hp_spike').length
   const totalSpikesWithDef = allEvents.filter((e) => e.kind === 'low_hp_spike' && e.had_def_cd).length
   const totalDeaths = allEvents.filter((e) => e.kind === 'death').length
   const totalDeathsNoPotNoHs = allEvents.filter((e) => e.kind === 'death' && !e.pot_used_in_pull && !e.hs_used_in_pull).length
-  const totalDeathsAnyReady = allEvents.filter(
-    (e) =>
-      e.kind === 'death' &&
-      !e.had_def_cd &&
-      (e.any_ready ?? ((e.ready_defs?.length ?? 0) > 0 || !e.pot_used_in_pull || !e.hs_used_in_pull)),
-  ).length
+  const totalDeathsAnyReady = totalMissedDeathWhileReady
   const totalPullPlayerSlots = players.reduce((s, p) => s + p.pullsPresent, 0)
   const totalPotPulls = players.reduce((s, p) => s + p.potPulls, 0)
   const totalHsPulls = players.reduce((s, p) => s + p.hsPulls, 0)
 
   return {
+    totalCritical,
+    totalUsedAny,
+    usedAnyRatePct: totalCritical > 0 ? Math.round((totalUsedAny / totalCritical) * 100) : 0,
+    totalUsedDef,
+    totalPotUsedAtDrop,
+    totalHsUsedAtDrop,
+    totalMissedWhileReady,
+    totalMissedSpikeWhileReady,
+    totalMissedDeathWhileReady,
+    totalMissedPotReady,
+    totalMissedHsReady,
     totalSpikes,
     totalSpikesWithDef,
     spikeDefRatePct: totalSpikes > 0 ? Math.round((totalSpikesWithDef / totalSpikes) * 100) : 0,

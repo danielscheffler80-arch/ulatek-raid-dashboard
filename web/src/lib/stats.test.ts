@@ -204,6 +204,37 @@ describe('stats aggregation and maxDeaths filtering', () => {
     }
     const defFiltered = aggregateDefensives([withAvoidableSpike], null)
     expect(defFiltered.players.find((p) => p.player === 'Narande')!.lowSpikes).toBe(1)
+
+    // Healing Potion used right at <35% drop counts as usedAnyCount (not missedWhileReadyCount)
+    const withPotReaction: ReportData = {
+      ...mockReport,
+      defensive_events: [
+        {
+          id: 'd-pot', kind: 'low_hp_spike', player: 'Narande', class: 'Warlock', target_id: 3, pull_num: 1, fight_id: 10, is_kill: false,
+          rel_time: '00:50.000', rel_ms: 50000, timestamp: 51000, deaths_before: 0, trigger_ability: 'Mephitic Thrash', hp_pct: 22.0,
+          had_def_cd: false, active_defs: [], used_pot_here: true, used_hs_here: false, used_any_here: true,
+          ready_defs: ['Unending Resolve'], pot_ready: false, hs_ready: true, any_ready: true,
+          pot_used_in_pull: true, hs_used_in_pull: false,
+          events_url: 'https://wcl/dp', replay_url: 'https://wcl/rdp',
+        },
+        {
+          id: 'd-miss', kind: 'low_hp_spike', player: 'Narande', class: 'Warlock', target_id: 3, pull_num: 2, fight_id: 11, is_kill: false,
+          rel_time: '01:10.000', rel_ms: 70000, timestamp: 270000, deaths_before: 0, trigger_ability: 'Mephitic Thrash', hp_pct: 19.0,
+          had_def_cd: false, active_defs: [], used_pot_here: false, used_hs_here: false, used_any_here: false,
+          ready_defs: ['Unending Resolve'], pot_ready: true, hs_ready: true, any_ready: true,
+          pot_used_in_pull: false, hs_used_in_pull: false,
+          events_url: 'https://wcl/dm', replay_url: 'https://wcl/rdm',
+        },
+      ],
+    }
+    const defReact = aggregateDefensives([withPotReaction], null)
+    const nRow = defReact.players.find((p) => p.player === 'Narande')!
+    expect(nRow.criticalEvents).toBe(2)
+    expect(nRow.usedAnyCount).toBe(1)
+    expect(nRow.usedPotAtDropCount).toBe(1)
+    expect(nRow.missedWhileReadyCount).toBe(1)
+    expect(nRow.missedPotReadyCount).toBe(1)
+    expect(nRow.missedHsReadyCount).toBe(1)
   })
 
   it('computes phase buckets cleanly on empty and populated arrays', () => {

@@ -705,6 +705,26 @@ export function analyzeReportEventsTS(
     const potCounts = new Map<number, number>()
     const hsCounts = new Map<number, number>()
     const defCdCasts = new Map<number, number>()
+    const potCastTsByP = new Map<number, number[]>()
+    const hsCastTsByP = new Map<number, number[]>()
+    for (const ev of fevs) {
+      if (ev.type !== 'cast') continue
+      const esrc = ev.sourceID
+      const etid = ev.targetID
+      const actorId = esrc !== undefined && actors[esrc]?.type === 'Player' ? esrc : etid
+      if (actorId === undefined || actors[actorId]?.type !== 'Player') continue
+      const eaid = ev.abilityGameID
+      const eab = eaid !== undefined ? abilities[eaid] ?? '' : ''
+      if (isHealthPotion(eaid, eab)) {
+        const list = potCastTsByP.get(actorId) ?? []
+        list.push(ev.timestamp)
+        potCastTsByP.set(actorId, list)
+      } else if (isHealthstone(eaid, eab)) {
+        const list = hsCastTsByP.get(actorId) ?? []
+        list.push(ev.timestamp)
+        hsCastTsByP.set(actorId, list)
+      }
+    }
     const lastDefUsedTs = new Map<number, Map<string, number>>()
     const lastPotTs = new Map<number, number>()
     const lastHsTs = new Map<number, { ts: number; isDemonic: boolean }>()
@@ -1245,7 +1265,13 @@ export function analyzeReportEventsTS(
               const defsNow = Array.from(activeAllDefs.get(tid) ?? [])
                 .filter((d) => defensiveMitigates(d, dmgSchool))
                 .sort()
-              const { ready, potRdy, hsRdy, anyRdy } = computeReadiness(tid, ts, dmgSchool)
+              const { ready, potRdy, hsRdy } = computeReadiness(tid, ts, dmgSchool)
+              const usedPotHere = (potCastTsByP.get(tid) ?? []).some((pts) => pts >= ts - 1500 && pts <= ts + 3500)
+              const usedHsHere = (hsCastTsByP.get(tid) ?? []).some((hts) => hts >= ts - 1500 && hts <= ts + 3500)
+              const usedAnyHere = defsNow.length > 0 || usedPotHere || usedHsHere
+              const potRdyEff = potRdy && !usedPotHere
+              const hsRdyEff = hsRdy && !usedHsHere
+              const anyRdyEff = ready.length > 0 || potRdyEff || hsRdyEff
               defensiveEvents.push({
                 id: `${reportCode}-${fid}-${tid}-${ts}-sp`,
                 kind: 'low_hp_spike',
@@ -1263,10 +1289,13 @@ export function analyzeReportEventsTS(
                 hp_pct: hpPct,
                 had_def_cd: defsNow.length > 0,
                 active_defs: defsNow,
+                used_pot_here: usedPotHere,
+                used_hs_here: usedHsHere,
+                used_any_here: usedAnyHere,
                 ready_defs: ready,
-                pot_ready: potRdy,
-                hs_ready: hsRdy,
-                any_ready: anyRdy,
+                pot_ready: potRdyEff,
+                hs_ready: hsRdyEff,
+                any_ready: anyRdyEff,
                 pot_used_in_pull: (potCounts.get(tid) ?? 0) > 0,
                 hs_used_in_pull: (hsCounts.get(tid) ?? 0) > 0,
                 events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
@@ -1282,7 +1311,13 @@ export function analyzeReportEventsTS(
           const defsNow = Array.from(activeAllDefs.get(tid) ?? [])
             .filter((d) => defensiveMitigates(d, dmgSchool))
             .sort()
-          const { ready, potRdy, hsRdy, anyRdy } = computeReadiness(tid, ts, dmgSchool)
+          const { ready, potRdy, hsRdy } = computeReadiness(tid, ts, dmgSchool)
+          const usedPotHere = (potCastTsByP.get(tid) ?? []).some((pts) => pts >= ts - 3500 && pts <= ts)
+          const usedHsHere = (hsCastTsByP.get(tid) ?? []).some((hts) => hts >= ts - 3500 && hts <= ts)
+          const usedAnyHere = defsNow.length > 0 || usedPotHere || usedHsHere
+          const potRdyEff = potRdy && !usedPotHere
+          const hsRdyEff = hsRdy && !usedHsHere
+          const anyRdyEff = ready.length > 0 || potRdyEff || hsRdyEff
           defensiveEvents.push({
             id: `${reportCode}-${fid}-${tid}-${ts}-dt`,
             kind: 'death',
@@ -1300,10 +1335,13 @@ export function analyzeReportEventsTS(
             hp_pct: 0.0,
             had_def_cd: defsNow.length > 0,
             active_defs: defsNow,
+            used_pot_here: usedPotHere,
+            used_hs_here: usedHsHere,
+            used_any_here: usedAnyHere,
             ready_defs: ready,
-            pot_ready: potRdy,
-            hs_ready: hsRdy,
-            any_ready: anyRdy,
+            pot_ready: potRdyEff,
+            hs_ready: hsRdyEff,
+            any_ready: anyRdyEff,
             pot_used_in_pull: (potCounts.get(tid) ?? 0) > 0,
             hs_used_in_pull: (hsCounts.get(tid) ?? 0) > 0,
             events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),

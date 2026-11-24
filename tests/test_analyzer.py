@@ -886,4 +886,40 @@ def test_heart_phase_switch_delay_relative_to_first_caster():
     assert by_name["NoSwitchLock"]["was_dead_at_heart"] is False
 
 
+def test_defensive_pot_and_hs_reaction_at_low_hp_drop():
+    meta = {"title": "Pot HS Reaction Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "PotUser", "type": "Player", "subType": "Warlock"},
+        2: {"id": 2, "name": "Slacker", "type": "Player", "subType": "Warlock"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {
+        1296301: "Mephitic Thrash",
+        1234768: "Silvermoon Health Potion",
+        6262: "Healthstone",
+    }
+    fights = [
+        {"id": 50, "name": "Ula'tek", "startTime": 100000, "endTime": 200000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2]}
+    ]
+    events = [
+        # Both drop to 20% HP on unavoidable Mephitic Thrash at 120s
+        {"timestamp": 120000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1296301, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 50},
+        {"timestamp": 120000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1296301, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 50},
+        # PotUser reacts 800ms later with Healing Potion!
+        {"timestamp": 120800, "type": "cast", "sourceID": 1, "abilityGameID": 1234768, "fight": 50},
+    ]
+    rep = analyze_report_events(meta, fights, actors, abilities, {50: events}, "TESTPOTHS1234567")
+    by_p = {e["player"]: e for e in rep["defensive_events"] if e["kind"] == "low_hp_spike"}
+    assert by_p["PotUser"]["used_pot_here"] is True
+    assert by_p["PotUser"]["used_hs_here"] is False
+    assert by_p["PotUser"]["used_any_here"] is True
+    assert by_p["PotUser"]["pot_ready"] is False
+    assert by_p["Slacker"]["used_pot_here"] is False
+    assert by_p["Slacker"]["used_any_here"] is False
+    assert by_p["Slacker"]["pot_ready"] is True
+    assert by_p["Slacker"]["hs_ready"] is True
+    assert by_p["Slacker"]["any_ready"] is True
+
+
+
 

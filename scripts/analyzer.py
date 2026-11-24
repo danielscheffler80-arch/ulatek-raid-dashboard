@@ -628,6 +628,25 @@ def analyze_report_events(
         hs_counts: Counter[int] = Counter()
         def_cd_casts: Counter[int] = Counter()
 
+        # Pre-scan Healing Potion & Healthstone cast timestamps so <35% drops can detect immediate reactions (+3.5s)
+        pot_cast_ts_by_p: dict[int, list[int]] = defaultdict(list)
+        hs_cast_ts_by_p: dict[int, list[int]] = defaultdict(list)
+        for ev in fevs:
+            if ev.get("type") != "cast":
+                continue
+            esrc = ev.get("sourceID")
+            etid = ev.get("targetID")
+            actor_id = esrc if esrc in actors and actors[esrc].get("type") == "Player" else etid
+            if actor_id not in actors or actors[actor_id].get("type") != "Player":
+                continue
+            eaid = ev.get("abilityGameID")
+            eab = abilities.get(eaid, "")
+            ets = int(ev["timestamp"])
+            if is_health_potion(eaid, eab):
+                pot_cast_ts_by_p[actor_id].append(ets)
+            elif is_healthstone(eaid, eab):
+                hs_cast_ts_by_p[actor_id].append(ets)
+
         # Cooldown readiness state per player inside this fight
         last_def_used_ts: dict[int, dict[str, int]] = defaultdict(dict)
         last_pot_ts: dict[int, int] = {}
@@ -1193,7 +1212,13 @@ def analyze_report_events(
                             defs_now = sorted(
                                 d for d in active_all_defs[tid] if defensive_mitigates(d, dmg_school)
                             )
-                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
+                            r_defs, r_pot, r_hs, _r_any = compute_readiness(tid, ts, dmg_school)
+                            used_pot_here = any(ts - 1500 <= pts <= ts + 3500 for pts in pot_cast_ts_by_p[tid])
+                            used_hs_here = any(ts - 1500 <= hts <= ts + 3500 for hts in hs_cast_ts_by_p[tid])
+                            used_any_here = bool(defs_now) or used_pot_here or used_hs_here
+                            pot_rdy_eff = r_pot and not used_pot_here
+                            hs_rdy_eff = r_hs and not used_hs_here
+                            any_rdy_eff = bool(r_defs) or pot_rdy_eff or hs_rdy_eff
                             defensive_events.append(
                                 {
                                     "id": f"{report_code}-{fid}-{tid}-{ts}-sp",
@@ -1212,10 +1237,13 @@ def analyze_report_events(
                                     "hp_pct": hp_pct,
                                     "had_def_cd": bool(defs_now),
                                     "active_defs": defs_now,
+                                    "used_pot_here": used_pot_here,
+                                    "used_hs_here": used_hs_here,
+                                    "used_any_here": used_any_here,
                                     "ready_defs": r_defs,
-                                    "pot_ready": r_pot,
-                                    "hs_ready": r_hs,
-                                    "any_ready": r_any,
+                                    "pot_ready": pot_rdy_eff,
+                                    "hs_ready": hs_rdy_eff,
+                                    "any_ready": any_rdy_eff,
                                     "pot_used_in_pull": pot_counts[tid] > 0,
                                     "hs_used_in_pull": hs_counts[tid] > 0,
                                     "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
@@ -1230,7 +1258,13 @@ def analyze_report_events(
                     defs_now = sorted(
                         d for d in active_all_defs[tid] if defensive_mitigates(d, dmg_school)
                     )
-                    r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
+                    r_defs, r_pot, r_hs, _r_any = compute_readiness(tid, ts, dmg_school)
+                    used_pot_here = any(ts - 3500 <= pts <= ts for pts in pot_cast_ts_by_p[tid])
+                    used_hs_here = any(ts - 3500 <= hts <= ts for hts in hs_cast_ts_by_p[tid])
+                    used_any_here = bool(defs_now) or used_pot_here or used_hs_here
+                    pot_rdy_eff = r_pot and not used_pot_here
+                    hs_rdy_eff = r_hs and not used_hs_here
+                    any_rdy_eff = bool(r_defs) or pot_rdy_eff or hs_rdy_eff
                     defensive_events.append(
                         {
                             "id": f"{report_code}-{fid}-{tid}-{ts}-dt",
@@ -1249,10 +1283,13 @@ def analyze_report_events(
                             "hp_pct": 0.0,
                             "had_def_cd": bool(defs_now),
                             "active_defs": defs_now,
+                            "used_pot_here": used_pot_here,
+                            "used_hs_here": used_hs_here,
+                            "used_any_here": used_any_here,
                             "ready_defs": r_defs,
-                            "pot_ready": r_pot,
-                            "hs_ready": r_hs,
-                            "any_ready": r_any,
+                            "pot_ready": pot_rdy_eff,
+                            "hs_ready": hs_rdy_eff,
+                            "any_ready": any_rdy_eff,
                             "pot_used_in_pull": pot_counts[tid] > 0,
                             "hs_used_in_pull": hs_counts[tid] > 0,
                             "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),

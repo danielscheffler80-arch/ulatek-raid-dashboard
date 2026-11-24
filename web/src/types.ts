@@ -166,6 +166,9 @@ export interface DefensiveEvent {
   hp_pct: number
   had_def_cd: boolean
   active_defs: string[]
+  used_pot_here?: boolean
+  used_hs_here?: boolean
+  used_any_here?: boolean
   ready_defs?: string[]
   pot_ready?: boolean
   hs_ready?: boolean
