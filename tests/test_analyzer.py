@@ -1021,6 +1021,7 @@ def test_healer_emergency_reactions_instant_cast_and_raid_burst_filter():
     assert ev1["victim"] == "VictimA"
     assert ev1["trigger_ability"] == "Caustic Waves"
     assert ev1["target_died"] is False
+    assert ev1["time_to_death_ms"] is None
     assert ev1["fastest_reaction_ms"] == 650
     assert ev1["fastest_healer"] == "HolyVal"
     by_h1 = {r["healer"]: r for r in ev1["reactions"]}
@@ -1036,6 +1037,7 @@ def test_healer_emergency_reactions_instant_cast_and_raid_burst_filter():
     ev2 = emerg[1]
     assert ev2["victim"] == "VictimB"
     assert ev2["target_died"] is True
+    assert ev2["time_to_death_ms"] == 3000
     by_h2 = {r["healer"]: r for r in ev2["reactions"]}
     assert by_h2["HolyVal"]["status"] == "no_heal"
     assert by_h2["HolyVal"]["instant_was_ready"] is True

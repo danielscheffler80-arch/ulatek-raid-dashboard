@@ -230,6 +230,7 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
     expect(emerg).toHaveLength(1)
     expect(emerg[0].victim).toBe('VictimA')
     expect(emerg[0].fastest_reaction_ms).toBe(700)
+    expect(emerg[0].time_to_death_ms).toBe(5000)
 
     // Separate Boss Tank Soak event
     const soaks = res.healer_tank_soak_events as Array<Record<string, unknown>>

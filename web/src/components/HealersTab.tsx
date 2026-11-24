@@ -6,6 +6,9 @@ import {
   ChevronRight,
   Clock,
   HeartPulse,
+  Minus,
+  Plus,
+  RotateCcw,
   Shield,
   Zap,
 } from 'lucide-react'
@@ -62,10 +65,32 @@ export function HealersTab({
   const [tkFilter, setTkFilter] = useState<'unhealed' | 'healed' | 'all'>('unhealed')
   const [expandedEm, setExpandedEm] = useState<Record<string, boolean>>({})
   const [expandedTk, setExpandedTk] = useState<Record<string, boolean>>({})
+  // Anpassbare Überlebens-Toleranzzeit (Default: 0,5 s Instant-Tod-Grenze – 1,7 s Hardcast-Fenster)
+  const [minInstantAliveSec, setMinInstantAliveSec] = useState<number>(0.5)
+  const [minCastAliveSec, setMinCastAliveSec] = useState<number>(1.7)
+
+  const roundTenths = (v: number) => Math.round(v * 10) / 10
+  const handleMinAliveChange = (next: number) => {
+    const clamped = roundTenths(Math.max(0, Math.min(5, next)))
+    setMinInstantAliveSec(clamped)
+    if (clamped > minCastAliveSec) setMinCastAliveSec(clamped)
+  }
+  const handleMaxAliveChange = (next: number) => {
+    const clamped = roundTenths(Math.max(0.1, Math.min(5, next)))
+    setMinCastAliveSec(clamped)
+    if (clamped < minInstantAliveSec) setMinInstantAliveSec(clamped)
+  }
 
   const emergency = useMemo(
-    () => aggregateHealerEmergency(reports, maxDeaths, pullRange),
-    [reports, maxDeaths, pullRange],
+    () =>
+      aggregateHealerEmergency(
+        reports,
+        maxDeaths,
+        pullRange,
+        minInstantAliveSec,
+        minCastAliveSec,
+      ),
+    [reports, maxDeaths, pullRange, minInstantAliveSec, minCastAliveSec],
   )
   const tankSoaks = useMemo(
     () => aggregateHealerTankSoaks(reports, maxDeaths, pullRange),
@@ -144,9 +169,107 @@ export function HealersTab({
           </button>
         </div>
 
-        <div className="text-[11px] text-[#8b96a9]">
-          Reine Reaktionszeit bis Cast-Start (<span className="font-mono text-[#c5cdd9]">begincast</span> / <span className="font-mono text-[#c5cdd9]">cast</span>) — keine HPS-Wertung.
-        </div>
+        {viewMode === 'emergency' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Frei anpassbare Überlebens-Toleranzzeit (Min = Instant-Tod-Grenze, Max = Hardcast-Fenster) */}
+            <div className="flex flex-wrap items-center gap-2 rounded-[10px] border border-[rgba(52,245,197,0.28)] bg-[rgba(10,16,24,0.9)] px-3 py-1.5 text-[12px]">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.5px] text-[#34f5c5]">
+                Überlebens-Toleranz:
+              </span>
+
+              {/* Min Sek. (darunter = Instant-Tod ausgeblendet) */}
+              <div className="inline-flex items-center gap-1" title="Stirbt das Ziel schneller als Min, gilt es als Instant-Tod und wird ausgeblendet">
+                <span className="text-[11px] text-[#8b96a9]">Instant ≥</span>
+                <button
+                  type="button"
+                  onClick={() => handleMinAliveChange(minInstantAliveSec - 0.1)}
+                  aria-label="Mindest-Überlebenszeit verringern"
+                  className="obsidian-btn p-1 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                >
+                  <Minus className="h-3 w-3" />
+                </button>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={5}
+                  value={minInstantAliveSec}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isNaN(v)) handleMinAliveChange(v)
+                  }}
+                  aria-label="Mindest-Überlebenszeit (Instant-Tod-Grenze) in Sekunden"
+                  className="w-12 rounded-[6px] border border-[rgba(255,255,255,0.14)] bg-[#050911] px-1.5 py-0.5 text-center font-mono text-[12px] font-semibold tabular-nums text-white focus-visible:outline-none focus-visible:border-[#34f5c5]"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleMinAliveChange(minInstantAliveSec + 0.1)}
+                  aria-label="Mindest-Überlebenszeit erhöhen"
+                  className="obsidian-btn p-1 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+                <span className="font-mono text-[11px] text-[#8b96a9]">s</span>
+              </div>
+
+              <span className="text-[#8b96a9]">–</span>
+
+              {/* Max Sek. (Hardcast-Fenster) */}
+              <div className="inline-flex items-center gap-1" title="Stirbt das Ziel vor diesem Wert ohne Instant rdy, gilt es als zu kurz für einen Hardcast">
+                <span className="text-[11px] text-[#8b96a9]">Cast ≥</span>
+                <button
+                  type="button"
+                  onClick={() => handleMaxAliveChange(minCastAliveSec - 0.1)}
+                  aria-label="Hardcast-Überlebenszeit verringern"
+                  className="obsidian-btn p-1 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                >
+                  <Minus className="h-3 w-3" />
+                </button>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0.1}
+                  max={5}
+                  value={minCastAliveSec}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isNaN(v)) handleMaxAliveChange(v)
+                  }}
+                  aria-label="Mindest-Überlebenszeit für Hardcast in Sekunden"
+                  className="w-12 rounded-[6px] border border-[rgba(255,255,255,0.14)] bg-[#050911] px-1.5 py-0.5 text-center font-mono text-[12px] font-semibold tabular-nums text-white focus-visible:outline-none focus-visible:border-[#34f5c5]"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleMaxAliveChange(minCastAliveSec + 0.1)}
+                  aria-label="Hardcast-Überlebenszeit erhöhen"
+                  className="obsidian-btn p-1 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+                <span className="font-mono text-[11px] text-[#8b96a9]">s</span>
+              </div>
+
+              {(minInstantAliveSec !== 0.5 || minCastAliveSec !== 1.7) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMinInstantAliveSec(0.5)
+                    setMinCastAliveSec(1.7)
+                  }}
+                  title="Auf Standard 0,5 – 1,7 s zurücksetzen"
+                  className="obsidian-btn inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-[#c5cdd9] hover:text-white active:scale-[0.96]"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="text-[11px] text-[#8b96a9]">
+            Reine Reaktionszeit bis Cast-Start (<span className="font-mono text-[#c5cdd9]">begincast</span> / <span className="font-mono text-[#c5cdd9]">cast</span>) — keine HPS-Wertung.
+          </div>
+        )}
       </div>
 
       {viewMode === 'emergency' ? (
@@ -155,7 +278,7 @@ export function HealersTab({
             <KpiCard
               label="Einzelziel-Drops < 35 %"
               value={emergency.totalEvents}
-              subtext={`${emergency.targetDiedCount}× Ziel gestorben · max. 3 Spieler gleichzeitig low`}
+              subtext={`${emergency.targetDiedCount}× Ziel gestorben · ${emergency.filteredInstantDeathCount} Instant-Tode (< ${minInstantAliveSec.toFixed(1).replace('.', ',')} s) ausgeblendet`}
               icon={<HeartPulse className="h-4 w-4" strokeWidth={1.75} />}
               tone={emergency.targetDiedCount > 0 ? 'destructive' : 'default'}
             />
@@ -475,7 +598,7 @@ function EmergencyHealerRowView({
               </div>
             ) : (
               <div className="space-y-1.5">
-                {visibleItems.slice(0, 60).map(({ event: ev, reaction: rx }) => (
+                {visibleItems.slice(0, 60).map(({ event: ev, reaction: rx, tooShortForCast }) => (
                   <div
                     key={`${ev.reportCode}-${ev.id}-${rx.healer_id}`}
                     className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.07)] bg-[rgba(16,20,27,0.68)] px-3 py-2 text-[12px]"
@@ -491,7 +614,13 @@ function EmergencyHealerRowView({
                       <Pill variant="warning">
                         {ev.hp_pct.toFixed(1)}% · {ev.trigger_ability}
                       </Pill>
-                      {ev.target_died && <Pill variant="destructive">Ziel gestorben</Pill>}
+                      {ev.target_died && (
+                        <Pill variant="destructive">
+                          {ev.time_to_death_ms !== undefined && ev.time_to_death_ms !== null
+                            ? `Ziel starb nach ${formatReactionSec(ev.time_to_death_ms)}`
+                            : 'Ziel gestorben'}
+                        </Pill>
+                      )}
 
                       {rx.status === 'instant_used' && (
                         <Pill variant="success">
@@ -514,6 +643,10 @@ function EmergencyHealerRowView({
                         rx.covered_fast_by_other ? (
                           <Pill variant="neutral">
                             Schnell versorgt ({ev.fastest_healer} {formatReactionSec(ev.fastest_reaction_ms)})
+                          </Pill>
+                        ) : tooShortForCast ? (
+                          <Pill variant="neutral">
+                            Zu kurz für Cast (Instants auf CD)
                           </Pill>
                         ) : rx.instant_was_ready ? (
                           <Pill variant="destructive">

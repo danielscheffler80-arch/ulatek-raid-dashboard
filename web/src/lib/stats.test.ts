@@ -535,4 +535,63 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const yavTk = tk.healers.find((h) => h.healer === 'Yaviroarz')!
     expect(yavTk.unhealedSoaks).toBe(1)
   })
+
+  it('filters instant deaths below minInstantAliveSec and respects minCastAliveSec tolerance (0.5-1.7s)', () => {
+    const repTol: ReportData = {
+      ...mockReport,
+      healer_emergency_events: [
+        // Instant death after 300ms -> excluded when minInstantAliveSec = 0.5!
+        {
+          id: 'hem-inst-death', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '00:30.000', rel_ms: 30000, timestamp: 30000,
+          deaths_before: 0, victim: 'Narande', victim_class: 'Warlock', victim_id: 3,
+          trigger_ability: 'Caustic Waves', hp_pct: 12.0, concurrent_low_count: 1, target_died: true, time_to_death_ms: 300,
+          fastest_reaction_ms: null, fastest_healer: null, fastest_healer_class: null,
+          reactions: [
+            {
+              healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5,
+              status: 'no_heal', reaction_ms: null, spell: null, is_external: false,
+              instant_was_ready: true, ready_instants: ['Holy Word: Serenity'], covered_fast_by_other: false,
+            },
+          ],
+          events_url: 'https://wcl/hid', replay_url: 'https://wcl/rhid',
+        },
+        // Tight death after 1100ms (0.5s <= 1.1s < 1.7s): Valysa had instant rdy, Yaviroarz had NO instant rdy (too short for hardcast!)
+        {
+          id: 'hem-tight', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '00:50.000', rel_ms: 50000, timestamp: 50000,
+          deaths_before: 0, victim: 'Narande', victim_class: 'Warlock', victim_id: 3,
+          trigger_ability: 'Noxious Shell', hp_pct: 20.0, concurrent_low_count: 1, target_died: true, time_to_death_ms: 1100,
+          fastest_reaction_ms: null, fastest_healer: null, fastest_healer_class: null,
+          reactions: [
+            {
+              healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5,
+              status: 'no_heal', reaction_ms: null, spell: null, is_external: false,
+              instant_was_ready: true, ready_instants: ['Holy Word: Serenity'], covered_fast_by_other: false,
+            },
+            {
+              healer: 'Yaviroarz', healer_class: 'Druid', healer_spec: 'Restoration', healer_id: 157,
+              status: 'no_heal', reaction_ms: null, spell: null, is_external: false,
+              instant_was_ready: false, ready_instants: [], covered_fast_by_other: false,
+            },
+          ],
+          events_url: 'https://wcl/ht', replay_url: 'https://wcl/rht',
+        },
+      ],
+    }
+
+    const resDefault = aggregateHealerEmergency([repTol], 4, { from: 1, to: 2 }, 0.5, 1.7)
+    expect(resDefault.filteredInstantDeathCount).toBe(1)
+    expect(resDefault.totalEvents).toBe(1)
+    const valRow = resDefault.healers.find((h) => h.healer === 'Valysa')!
+    const yavRow = resDefault.healers.find((h) => h.healer === 'Yaviroarz')!
+    expect(valRow.missedInstantReadyUnassistedCount).toBe(1)
+    expect(valRow.missedWhileTargetDiedCount).toBe(1)
+    // Yaviroarz had no instant ready & 1.1s < 1.7s -> NOT blamed for death!
+    expect(yavRow.missedWhileTargetDiedCount).toBe(0)
+    expect(yavRow.tooShortForCastCount).toBe(1)
+
+    // Raising Min to 1.5s hides BOTH deaths as instant deaths!
+    const resStrict = aggregateHealerEmergency([repTol], 4, { from: 1, to: 2 }, 1.5, 1.7)
+    expect(resStrict.filteredInstantDeathCount).toBe(2)
+    expect(resStrict.totalEvents).toBe(0)
+  })
 })

@@ -2074,7 +2074,9 @@ def _build_healer_analysis(
                 continue
             last_emerg_ts_by_victim[tid] = ts
 
-            target_died = any(0 <= dts - ts <= 4500 for dts in deaths_by_player.get(tid, []))
+            next_deaths = [dts - ts for dts in deaths_by_player.get(tid, []) if dts >= ts]
+            time_to_death_ms = min(next_deaths) if next_deaths else None
+            target_died = time_to_death_ms is not None and time_to_death_ms <= 4500
             reactions: list[dict[str, Any]] = []
 
             for hid in sorted(fight_healers.keys(), key=lambda x: actors[x]["name"]):
@@ -2158,6 +2160,7 @@ def _build_healer_analysis(
                     "hp_pct": hp_pct,
                     "concurrent_low_count": len(concurrent_low),
                     "target_died": target_died,
+                    "time_to_death_ms": time_to_death_ms,
                     "fastest_reaction_ms": fastest_ms,
                     "fastest_healer": fastest_healer,
                     "fastest_healer_class": fastest_healer_class,

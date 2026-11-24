@@ -1352,6 +1352,7 @@ export function aggregatePhaseAnalysis(
 export interface HealerEmergencyItem {
   event: WithReport<HealerEmergencyEvent>
   reaction: HealerEmergencyReaction
+  tooShortForCast: boolean
 }
 
 export interface HealerEmergencyRow {
@@ -1365,6 +1366,7 @@ export interface HealerEmergencyRow {
   castUsedDespiteInstantReadyCount: number
   noHealCount: number
   coveredFastCount: number
+  tooShortForCastCount: number
   missedInstantReadyUnassistedCount: number
   missedWhileTargetDiedCount: number
   avgReactionMs: number | null
@@ -1404,7 +1406,12 @@ export function aggregateHealerEmergency(
   reports: ReportData[],
   maxDeaths: number | null,
   pullRange?: PullRange | null,
+  minInstantAliveSec = 0.5,
+  minCastAliveSec = 1.7,
 ) {
+  const safeMinAliveMs = Math.max(0, Math.round(minInstantAliveSec * 1000))
+  const safeMinCastMs = Math.max(safeMinAliveMs, Math.round(minCastAliveSec * 1000))
+
   const raw: WithReport<HealerEmergencyEvent>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
@@ -1412,7 +1419,19 @@ export function aggregateHealerEmergency(
       raw.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }
   }
-  const events = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange).sort(
+  const ranged = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange)
+
+  let filteredInstantDeathCount = 0
+  const events: WithReport<HealerEmergencyEvent>[] = []
+  for (const ev of ranged) {
+    const ttd = ev.time_to_death_ms
+    if (ttd !== undefined && ttd !== null && ttd < safeMinAliveMs) {
+      filteredInstantDeathCount++
+      continue
+    }
+    events.push(ev)
+  }
+  events.sort(
     (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp,
   )
 
@@ -1429,6 +1448,7 @@ export function aggregateHealerEmergency(
       castUsedDespiteInstantReadyCount: number
       noHealCount: number
       coveredFastCount: number
+      tooShortForCastCount: number
       missedInstantReadyUnassistedCount: number
       missedWhileTargetDiedCount: number
       reactionSamples: number[]
@@ -1445,6 +1465,9 @@ export function aggregateHealerEmergency(
   for (const ev of events) {
     if (ev.target_died) targetDiedCount++
     if (ev.fastest_reaction_ms !== null) fastestSamples.push(ev.fastest_reaction_ms)
+    const ttd = ev.time_to_death_ms
+    const diedBeforeCastWindow = ttd !== undefined && ttd !== null && ttd < safeMinCastMs
+
     for (const rx of ev.reactions) {
       let row = byHealer.get(rx.healer)
       if (!row) {
@@ -1459,6 +1482,7 @@ export function aggregateHealerEmergency(
           castUsedDespiteInstantReadyCount: 0,
           noHealCount: 0,
           coveredFastCount: 0,
+          tooShortForCastCount: 0,
           missedInstantReadyUnassistedCount: 0,
           missedWhileTargetDiedCount: 0,
           reactionSamples: [],
@@ -1472,6 +1496,7 @@ export function aggregateHealerEmergency(
         instantReadyOpps++
         if (rx.status === 'instant_used') instantUsedWhenReadyCount++
       }
+      let tooShortForCast = false
       if (rx.status === 'instant_used') {
         row.reactedCount++
         row.instantUsedCount++
@@ -1485,6 +1510,9 @@ export function aggregateHealerEmergency(
         row.noHealCount++
         if (rx.covered_fast_by_other) {
           row.coveredFastCount++
+        } else if (!rx.instant_was_ready && diedBeforeCastWindow) {
+          tooShortForCast = true
+          row.tooShortForCastCount++
         } else {
           if (rx.instant_was_ready) {
             row.missedInstantReadyUnassistedCount++
@@ -1493,7 +1521,7 @@ export function aggregateHealerEmergency(
           if (ev.target_died) row.missedWhileTargetDiedCount++
         }
       }
-      row.items.push({ event: ev, reaction: rx })
+      row.items.push({ event: ev, reaction: rx, tooShortForCast })
     }
   }
 
@@ -1509,6 +1537,7 @@ export function aggregateHealerEmergency(
       castUsedDespiteInstantReadyCount: h.castUsedDespiteInstantReadyCount,
       noHealCount: h.noHealCount,
       coveredFastCount: h.coveredFastCount,
+      tooShortForCastCount: h.tooShortForCastCount,
       missedInstantReadyUnassistedCount: h.missedInstantReadyUnassistedCount,
       missedWhileTargetDiedCount: h.missedWhileTargetDiedCount,
       avgReactionMs:
@@ -1532,6 +1561,7 @@ export function aggregateHealerEmergency(
 
   return {
     totalEvents: events.length,
+    filteredInstantDeathCount,
     targetDiedCount,
     avgFastestMs,
     medianFastestMs: calcMedian(fastestSamples),

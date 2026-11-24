@@ -50,6 +50,7 @@ export interface HealerEmergencyEvent {
   hp_pct: number
   concurrent_low_count: number
   target_died: boolean
+  time_to_death_ms?: number | null
   fastest_reaction_ms: number | null
   fastest_healer: string | null
   fastest_healer_class: string | null

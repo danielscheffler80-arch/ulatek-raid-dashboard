@@ -2147,7 +2147,11 @@ function buildHealerAnalysis(
       if (ts - (lastEmergTsByVictim.get(tid) ?? -999_999) < 4000) continue
       lastEmergTsByVictim.set(tid, ts)
 
-      const targetDied = (deathsByPlayer.get(tid) ?? []).some((dts) => dts >= ts && dts <= ts + 4500)
+      const nextDeaths = (deathsByPlayer.get(tid) ?? [])
+        .filter((dts) => dts >= ts)
+        .map((dts) => dts - ts)
+      const timeToDeathMs = nextDeaths.length > 0 ? Math.min(...nextDeaths) : null
+      const targetDied = timeToDeathMs !== null && timeToDeathMs <= 4500
       const reactions: Record<string, unknown>[] = []
 
       for (const hid of sortedHealerIds) {
@@ -2219,6 +2223,7 @@ function buildHealerAnalysis(
         hp_pct: hpPct,
         concurrent_low_count: concurrentLow.size,
         target_died: targetDied,
+        time_to_death_ms: timeToDeathMs,
         fastest_reaction_ms: fastestMs,
         fastest_healer: fastest ? (fastest.healer as string) : null,
         fastest_healer_class: fastest ? (fastest.healer_class as string) : null,
