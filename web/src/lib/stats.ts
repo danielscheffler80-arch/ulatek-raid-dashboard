@@ -2,6 +2,7 @@ import type {
   DefensiveEvent,
   EggCarrierEvent,
   EggFail,
+  GroupSoakEvent,
   HealerEmergencyEvent,
   HealerEmergencyReaction,
   HealerTankSoakEvent,
@@ -10,6 +11,7 @@ import type {
   P3PullSummary,
   PhaseEvent,
   ReportData,
+  SoakGroupDefinition,
   TankFail,
   WardenPullSummary,
   WaveFail,
@@ -1753,6 +1755,179 @@ export function aggregateHealerTankSoaks(
     tankDiedCount,
     events,
     healers,
+  }
+}
+
+export type GroupSoakPhaseFilter = 'shattering' | 'p1' | 'all'
+
+export interface GroupSoakPlayerIncident {
+  soak: WithReport<GroupSoakEvent>
+  kind: 'missed_alive' | 'wrong_group' | 'dead_expected'
+  doubleSoak: boolean
+}
+
+export interface GroupSoakPlayerRow {
+  player: string
+  className: string
+  groupLabel: string
+  groupClass: string
+  expectedCount: number
+  correctCount: number
+  missedAliveCount: number
+  wrongGroupCount: number
+  doubleSoakCount: number
+  deadCount: number
+  soakRatePct: number
+  incidents: GroupSoakPlayerIncident[]
+}
+
+export function aggregateGroupSoaks(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange: PullRange | null | undefined,
+  phaseFilter: GroupSoakPhaseFilter,
+) {
+  const allFiltered: WithReport<GroupSoakEvent>[] = []
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    const filtered = filterByPullRange(filterByMaxDeaths(rep.group_soaks ?? [], maxDeaths), pullRange)
+    for (const s of filtered) {
+      allFiltered.push({ ...s, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+  }
+
+  let shatteringCount = 0
+  let p1Count = 0
+  for (const s of allFiltered) {
+    if (s.phase === 'shattering') shatteringCount++
+    else if (s.phase === 'p1') p1Count++
+  }
+
+  const soaks = (phaseFilter === 'all' ? allFiltered : allFiltered.filter((s) => s.phase === phaseFilter)).sort(
+    (a, b) =>
+      b.reportDate.localeCompare(a.reportDate) ||
+      a.pull_num - b.pull_num ||
+      a.timestamp - b.timestamp,
+  )
+
+  // Resolve latest report's group roster for the active phase (shattering or p1)
+  const sortedReps = [...reports].sort((a, b) => b.start_time_epoch_ms - a.start_time_epoch_ms)
+  let groups: SoakGroupDefinition | null = null
+  const groupKey: 'shattering' | 'p1' = phaseFilter === 'p1' ? 'p1' : 'shattering'
+  for (const rep of sortedReps) {
+    const g = rep.soak_groups?.[groupKey]
+    if (g && (g.group_a_players.length > 0 || g.group_b_players.length > 0)) {
+      groups = g
+      break
+    }
+  }
+  if (!groups) {
+    for (const rep of sortedReps) {
+      const g = rep.soak_groups?.[groupKey]
+      if (g) {
+        groups = g
+        break
+      }
+    }
+  }
+
+  const playerGroupMap = new Map<string, { label: string; cls: string }>()
+  if (groups) {
+    for (const p of groups.group_a_players) {
+      playerGroupMap.set(p.player, { label: groups.group_a_label, cls: groups.group_a_class })
+    }
+    for (const p of groups.group_b_players) {
+      playerGroupMap.set(p.player, { label: groups.group_b_label, cls: groups.group_b_class })
+    }
+  }
+
+  const byPlayer = new Map<string, GroupSoakPlayerRow>()
+  const ensure = (player: string, className: string): GroupSoakPlayerRow => {
+    let row = byPlayer.get(player)
+    if (!row) {
+      const gInfo = playerGroupMap.get(player)
+      row = {
+        player,
+        className,
+        groupLabel: gInfo?.label ?? '—',
+        groupClass: gInfo?.cls ?? '',
+        expectedCount: 0,
+        correctCount: 0,
+        missedAliveCount: 0,
+        wrongGroupCount: 0,
+        doubleSoakCount: 0,
+        deadCount: 0,
+        soakRatePct: 100,
+        incidents: [],
+      }
+      byPlayer.set(player, row)
+    } else if (!row.className && className) {
+      row.className = className
+    }
+    return row
+  }
+
+  let cleanSoaks = 0
+  let missedAliveTotal = 0
+  let wrongGroupTotal = 0
+  let doubleSoakTotal = 0
+
+  for (const s of soaks) {
+    if (s.alternation_ok) cleanSoaks++
+    for (const p of s.soakers) {
+      const r = ensure(p.player, p.class)
+      r.correctCount++
+      r.expectedCount++
+    }
+    for (const p of s.missed_alive) {
+      const r = ensure(p.player, p.class)
+      r.missedAliveCount++
+      r.expectedCount++
+      r.incidents.push({ soak: s, kind: 'missed_alive', doubleSoak: false })
+      missedAliveTotal++
+    }
+    for (const p of s.wrong_group) {
+      const r = ensure(p.player, p.class)
+      r.wrongGroupCount++
+      if (p.double_soak) {
+        r.doubleSoakCount++
+        doubleSoakTotal++
+      }
+      r.incidents.push({ soak: s, kind: 'wrong_group', doubleSoak: Boolean(p.double_soak) })
+      wrongGroupTotal++
+    }
+    for (const p of s.dead_expected) {
+      const r = ensure(p.player, p.class)
+      r.deadCount++
+      r.incidents.push({ soak: s, kind: 'dead_expected', doubleSoak: false })
+    }
+  }
+
+  const players = Array.from(byPlayer.values())
+    .map((r) => ({
+      ...r,
+      soakRatePct: r.expectedCount > 0 ? Math.round((r.correctCount / r.expectedCount) * 100) : 100,
+    }))
+    .sort(
+      (a, b) =>
+        b.missedAliveCount + b.wrongGroupCount - (a.missedAliveCount + a.wrongGroupCount) ||
+        b.doubleSoakCount - a.doubleSoakCount ||
+        b.missedAliveCount - a.missedAliveCount ||
+        a.player.localeCompare(b.player),
+    )
+
+  return {
+    groups,
+    totalSoaks: soaks.length,
+    cleanSoaks,
+    cleanRatePct: soaks.length > 0 ? Math.round((cleanSoaks / soaks.length) * 100) : 100,
+    missedAliveTotal,
+    wrongGroupTotal,
+    doubleSoakTotal,
+    shatteringCount,
+    p1Count,
+    soaks,
+    players,
   }
 }
 

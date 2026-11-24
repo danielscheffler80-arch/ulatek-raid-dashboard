@@ -238,4 +238,73 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
     expect(soaks[0].tank).toBe('BossTank')
     expect(soaks[0].any_healed).toBe(true)
   })
+
+  it('tracks alternating Shattering (P2 groups) and P1 Soul Constrictor group soaks in TS analyzer', () => {
+    const actors = {
+      1: { id: 1, name: 'Betøng', type: 'Player', subType: 'Monk' },
+      2: { id: 2, name: 'Barrumir', type: 'Player', subType: 'DeathKnight' },
+      3: { id: 3, name: 'Alveria', type: 'Player', subType: 'Rogue' },
+      4: { id: 4, name: 'Valysa', type: 'Player', subType: 'Priest' },
+      5: { id: 5, name: 'Narande', type: 'Player', subType: 'Warlock' },
+      6: { id: 6, name: 'Kaida', type: 'Player', subType: 'Mage' },
+      7: { id: 7, name: 'DeadGuy', type: 'Player', subType: 'Hunter' },
+      152: { id: 152, name: "Ula'tek", type: 'NPC', subType: 'Boss' },
+      200: { id: 200, name: 'Doomscale Warden', type: 'NPC', subType: 'NPC' },
+    }
+    const abilities = { 1: 'Melee', 1300685: 'Soul Constrictor', 1298417: 'Stone Venom', 1308275: 'Putrid Membrane' }
+    const fights = [
+      {
+        id: 90,
+        name: "Ula'tek",
+        startTime: 100_000,
+        endTime: 400_000,
+        bossPercentage: 35,
+        kill: false,
+        friendlyPlayers: [1, 2, 3, 4, 5, 6, 7],
+        phaseTransitions: [
+          { id: 1, startTime: 100_000 },
+          { id: 2, startTime: 270_000 },
+          { id: 3, startTime: 330_000 },
+        ],
+      },
+    ]
+    const events = [
+      { timestamp: 110_000, type: 'damage', sourceID: 152, targetID: 1, abilityGameID: 1, amount: 200_000 },
+      { timestamp: 112_000, type: 'applydebuff', sourceID: 152, targetID: 2, abilityGameID: 1298417 },
+      { timestamp: 280_000, type: 'damage', sourceID: 1, targetID: 200, targetInstance: 1, abilityGameID: 1, amount: 500_000 },
+      { timestamp: 280_100, type: 'damage', sourceID: 3, targetID: 200, targetInstance: 1, abilityGameID: 1, amount: 900_000 },
+      { timestamp: 280_000, type: 'damage', sourceID: 2, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 500_000 },
+      { timestamp: 280_100, type: 'damage', sourceID: 5, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
+      { timestamp: 280_200, type: 'damage', sourceID: 6, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
+      { timestamp: 280_300, type: 'damage', sourceID: 7, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
+      { timestamp: 320_000, type: 'death', targetID: 7, killerID: 152, killingAbilityGameID: 1308275 },
+      // Shattering Soak #1: Gruppe Betøng
+      { timestamp: 340_000, type: 'applydebuff', targetID: 1, abilityGameID: 1300685 },
+      { timestamp: 340_050, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 340_100, type: 'applydebuff', targetID: 4, abilityGameID: 1300685 },
+      // Shattering Soak #2: Expected Gruppe Barrumir (Kaida missed alive, DeadGuy dead, Alveria wrong+double)
+      { timestamp: 345_000, type: 'applydebuff', targetID: 2, abilityGameID: 1300685 },
+      { timestamp: 345_050, type: 'applydebuff', targetID: 5, abilityGameID: 1300685 },
+      { timestamp: 345_100, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+    ]
+    const res = analyzeReportEventsTS(
+      { title: 'Group Soak TS', startTime: 1795450000000 },
+      fights,
+      actors,
+      abilities,
+      { 90: events },
+      'TESTSOAKTS123456',
+    )
+    const shat = (res.group_soaks as Array<Record<string, unknown>>).filter((s) => s.phase === 'shattering')
+    expect(shat).toHaveLength(2)
+    expect(shat[0].expected_group).toBe('Gruppe Betøng')
+    expect(shat[0].alternation_ok).toBe(true)
+    expect(shat[1].expected_group).toBe('Gruppe Barrumir')
+    expect((shat[1].missed_alive as Array<{ player: string }>).map((p) => p.player)).toEqual(['Kaida'])
+    expect((shat[1].dead_expected as Array<{ player: string }>).map((p) => p.player)).toEqual(['DeadGuy'])
+    expect((shat[1].wrong_group as Array<{ player: string; double_soak?: boolean }>)[0]).toMatchObject({
+      player: 'Alveria',
+      double_soak: true,
+    })
+  })
 })

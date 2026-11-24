@@ -1810,6 +1810,9 @@ def analyze_report_events(
     healers_out, healer_emergency_events, healer_tank_soak_events = _build_healer_analysis(
         sorted_fights, actors, abilities, events_by_fight, tank_id_set, extra_tables, report_code
     )
+    soak_groups_out, group_soaks_out = _build_group_soak_analysis(
+        sorted_fights, actors, events_by_fight, tank_ids, report_code
+    )
 
     return {
         "code": report_code,
@@ -1832,6 +1835,7 @@ def analyze_report_events(
         "healers": healers_out,
         "players": players_out,
         "egg_regular_carriers": egg_regular_carriers,
+        "soak_groups": soak_groups_out,
         "removal_summary": {
             "spectral_coils": removal_summary["spectral_coils"],
             "caustic_waves": removal_summary["caustic_waves"],
@@ -1848,12 +1852,353 @@ def analyze_report_events(
         "defensive_events": sorted(defensive_events, key=lambda x: (x["pull_num"], x["timestamp"])),
         "healer_emergency_events": healer_emergency_events,
         "healer_tank_soak_events": healer_tank_soak_events,
+        "group_soaks": group_soaks_out,
         "consumable_usage": consumable_usage,
         "heart_phases": sorted(heart_phases, key=lambda x: (x["pull_num"], x["window_num"])),
         "phase_events": sorted(phase_events, key=lambda x: (x["pull_num"], x["timestamp"])),
         "warden_summaries": sorted(warden_summaries, key=lambda x: x["pull_num"]),
         "p3_summaries": sorted(p3_summaries, key=lambda x: x["pull_num"]),
     }
+
+
+def _build_group_soak_analysis(
+    sorted_fights: list[dict[str, Any]],
+    actors: dict[int, dict[str, Any]],
+    events_by_fight: dict[int, list[dict[str, Any]]],
+    tank_ids: list[int],
+    report_code: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Track alternating 2-group Soul Constrictor soaks in Intermission: The Shattering (P2 groups) & Phase 1."""
+    tank_id_set = set(tank_ids)
+    sorted_tanks = sorted(tank_ids, key=lambda tid: actors[tid]["name"])
+    tk_a = sorted_tanks[0] if len(sorted_tanks) >= 1 else None
+    tk_b = sorted_tanks[1] if len(sorted_tanks) >= 2 else None
+
+    shat_label_a = f"Gruppe {actors[tk_a]['name']}" if tk_a is not None else "Gruppe 1"
+    shat_class_a = actors[tk_a].get("subType", "") if tk_a is not None else ""
+    shat_label_b = f"Gruppe {actors[tk_b]['name']}" if tk_b is not None else "Gruppe 2"
+    shat_class_b = actors[tk_b].get("subType", "") if tk_b is not None else ""
+
+    # Pass 1: per-fight soak clusters, deaths, boss-tank activity, and P2 Warden sides
+    fight_records: list[dict[str, Any]] = []
+    p2_side_votes: dict[int, Counter[str]] = defaultdict(Counter)
+    p1_parity_votes: dict[int, Counter[str]] = defaultdict(Counter)
+
+    for pull_idx, fight in enumerate(sorted_fights, start=1):
+        fid = int(fight["id"])
+        f_start = int(fight["startTime"])
+        f_end = int(fight["endTime"])
+        is_kill = bool(fight.get("kill", False))
+        fevs = sorted(events_by_fight.get(fid, []), key=lambda e: int(e["timestamp"]))
+
+        pts = fight.get("phaseTransitions") or []
+        p2_start = next((int(pt["startTime"]) for pt in pts if int(pt.get("id", 0)) == 2), None)
+        shat_start = next((int(pt["startTime"]) for pt in pts if int(pt.get("id", 0)) == 3), None)
+        p3_start = next((int(pt["startTime"]) for pt in pts if int(pt.get("id", 0)) == 4), None)
+
+        fight_players: set[int] = set()
+        for pid in fight.get("friendlyPlayers") or []:
+            if pid in actors and actors[pid].get("type") == "Player":
+                fight_players.add(int(pid))
+
+        player_deaths: list[tuple[int, int]] = []
+        deaths_by_player: dict[int, list[int]] = defaultdict(list)
+        seen_dk: set[tuple[int, int]] = set()
+        boss_tank_ts: dict[int, list[int]] = defaultdict(list)
+        warden_dmg_by_inst: dict[int, Counter[int]] = defaultdict(Counter)
+        sc_applies: list[tuple[int, int]] = []
+
+        for ev in fevs:
+            t = ev.get("type")
+            ts = int(ev["timestamp"])
+            src = ev.get("sourceID")
+            tid = ev.get("targetID")
+            aid = ev.get("abilityGameID")
+
+            if src in actors and actors[src].get("type") == "Player":
+                fight_players.add(int(src))
+            if tid in actors and actors[tid].get("type") == "Player":
+                fight_players.add(int(tid))
+
+            if t == "death" and tid in actors and actors[tid].get("type") == "Player":
+                if (tid, ts) not in seen_dk:
+                    seen_dk.add((tid, ts))
+                    player_deaths.append((ts, int(tid)))
+                    deaths_by_player[int(tid)].append(ts)
+
+            if tid in tank_id_set:
+                src_name = actors.get(src, {}).get("name", "") if src is not None else ""
+                if (t == "damage" and aid == SPELL_MELEE and src_name == "Ula'tek") or aid in (
+                    SPELL_STONE_VENOM_DEBUFF,
+                    SPELL_STONE_VENOM_DMG,
+                ):
+                    boss_tank_ts[int(tid)].append(ts)
+
+            if src in actors and actors[src].get("type") == "Player" and tid in actors and actors[tid].get("name") == "Doomscale Warden":
+                inst = int(ev.get("targetInstance") or 1)
+                if t == "damage":
+                    warden_dmg_by_inst[inst][int(src)] += max(1, int(ev.get("amount", 0) or 0))
+                elif t == "interrupt":
+                    warden_dmg_by_inst[inst][int(src)] += 1000
+
+            if aid == SPELL_SOUL_CONSTRICTOR and t in ("applydebuff", "applydebuffstack"):
+                if tid in actors and actors[tid].get("type") == "Player":
+                    sc_applies.append((ts, int(tid)))
+
+        # Map Warden instances in this fight to Group A (tk_a) vs Group B (tk_b)
+        fight_p2_group: dict[int, str] = {}
+        if warden_dmg_by_inst:
+            all_w_pids = {p for m in warden_dmg_by_inst.values() for p in m.keys()}
+            inst_players: dict[int, set[int]] = defaultdict(set)
+            for pid in all_w_pids:
+                best_inst = max(warden_dmg_by_inst.keys(), key=lambda i: warden_dmg_by_inst[i].get(pid, 0))
+                if warden_dmg_by_inst[best_inst].get(pid, 0) > 0:
+                    inst_players[best_inst].add(pid)
+            inst_to_key: dict[int, str] = {}
+            for inst, pids in inst_players.items():
+                if tk_a is not None and tk_a in pids:
+                    inst_to_key[inst] = "A"
+                elif tk_b is not None and tk_b in pids:
+                    inst_to_key[inst] = "B"
+            for inst, pids in inst_players.items():
+                if inst not in inst_to_key:
+                    used = set(inst_to_key.values())
+                    inst_to_key[inst] = "B" if "A" in used else "A"
+                gkey = inst_to_key[inst]
+                for pid in pids:
+                    fight_p2_group[pid] = gkey
+                    p2_side_votes[pid][gkey] += 1
+
+        # Cluster Soul Constrictor applies within <= 1200ms
+        sc_applies.sort(key=lambda x: x[0])
+        raw_clusters: list[dict[str, Any]] = []
+        for ts, pid in sc_applies:
+            if not raw_clusters or ts - int(raw_clusters[-1]["end"]) > 1200:
+                raw_clusters.append({"start": ts, "end": ts, "pids": {pid}})
+            else:
+                raw_clusters[-1]["end"] = ts
+                raw_clusters[-1]["pids"].add(pid)
+
+        p1_clusters: list[dict[str, Any]] = []
+        shat_clusters: list[dict[str, Any]] = []
+        for c in raw_clusters:
+            if len(c["pids"]) < 2:
+                continue
+            cts = int(c["start"])
+            if shat_start is not None and cts >= shat_start and (p3_start is None or cts < p3_start):
+                shat_clusters.append(c)
+            elif p2_start is None or cts < p2_start:
+                p1_clusters.append(c)
+
+        for idx_c, c in enumerate(p1_clusters):
+            gkey = "A" if (idx_c % 2 == 0) else "B"
+            for pid in c["pids"]:
+                p1_parity_votes[pid][gkey] += 1
+
+        fight_records.append(
+            {
+                "pull_num": pull_idx,
+                "fight_id": fid,
+                "f_start": f_start,
+                "f_end": f_end,
+                "is_kill": is_kill,
+                "fight_players": fight_players,
+                "player_deaths": player_deaths,
+                "deaths_by_player": deaths_by_player,
+                "boss_tank_ts": boss_tank_ts,
+                "fight_p2_group": fight_p2_group,
+                "p1_clusters": p1_clusters,
+                "shat_clusters": shat_clusters,
+            }
+        )
+
+    # Report-level Shattering groups (from P2 Warden sides; unmapped healers inferred from Shattering co-soaking)
+    shat_group_by_pid: dict[int, str] = {}
+    if tk_a is not None:
+        shat_group_by_pid[tk_a] = "A"
+    if tk_b is not None:
+        shat_group_by_pid[tk_b] = "B"
+    for pid, votes in p2_side_votes.items():
+        if pid in shat_group_by_pid:
+            continue
+        shat_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
+
+    # Infer unmapped players (e.g. pure healers with 0 Warden dmg) by co-soaking in Shattering clusters
+    shat_co_votes: dict[int, Counter[str]] = defaultdict(Counter)
+    for rec in fight_records:
+        for c in rec["shat_clusters"]:
+            cnt_a = sum(1 for p in c["pids"] if shat_group_by_pid.get(p) == "A")
+            cnt_b = sum(1 for p in c["pids"] if shat_group_by_pid.get(p) == "B")
+            if cnt_a == 0 and cnt_b == 0:
+                continue
+            cluster_key = "A" if cnt_a >= cnt_b else "B"
+            for p in c["pids"]:
+                if p not in shat_group_by_pid:
+                    shat_co_votes[p][cluster_key] += 1
+    for pid, votes in shat_co_votes.items():
+        if pid not in shat_group_by_pid:
+            shat_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
+
+    # Report-level Phase 1 groups (majority even vs odd P1 soak parity)
+    p1_group_by_pid: dict[int, str] = {}
+    for pid, votes in p1_parity_votes.items():
+        p1_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
+
+    def _pref(pid: int, double_soak: bool = False) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "player": actors[pid]["name"],
+            "class": actors[pid].get("subType", ""),
+            "player_id": pid,
+        }
+        if double_soak:
+            out["double_soak"] = True
+        return out
+
+    # Pass 2: Evaluate each soak with strict A <-> B alternation
+    group_soaks: list[dict[str, Any]] = []
+    for rec in fight_records:
+        fid = rec["fight_id"]
+        f_start = rec["f_start"]
+        f_end = rec["f_end"]
+        pull_idx = rec["pull_num"]
+        is_kill = rec["is_kill"]
+        fight_players: set[int] = rec["fight_players"]
+        player_deaths: list[tuple[int, int]] = rec["player_deaths"]
+        deaths_by_player: dict[int, list[int]] = rec["deaths_by_player"]
+        boss_tank_ts: dict[int, list[int]] = rec["boss_tank_ts"]
+        fight_p2_group: dict[int, str] = rec["fight_p2_group"]
+
+        def _count_deaths_before(ts_now: int) -> int:
+            return sum(1 for dts, _ in player_deaths if dts < ts_now)
+
+        def _is_dead_at(pid: int, ts_now: int) -> bool:
+            return any(dts <= ts_now for dts in deaths_by_player.get(pid, []))
+
+        def _active_boss_tank_at(ts_now: int) -> int | None:
+            best_tk = None
+            best_ts = -1
+            for tk in tank_ids:
+                recent = [bts for bts in boss_tank_ts.get(tk, []) if ts_now - 8000 <= bts <= ts_now]
+                if recent and max(recent) > best_ts:
+                    best_ts = max(recent)
+                    best_tk = tk
+            return best_tk
+
+        for phase_key, clusters, label_a, class_a, label_b, class_b in (
+            ("p1", rec["p1_clusters"], "Soak-Gruppe 1", "", "Soak-Gruppe 2", ""),
+            ("shattering", rec["shat_clusters"], shat_label_a, shat_class_a, shat_label_b, shat_class_b),
+        ):
+            if not clusters:
+                continue
+
+            def _grp_of(pid: int, pk: str = phase_key) -> str | None:
+                if pk == "shattering":
+                    return fight_p2_group.get(pid) or shat_group_by_pid.get(pid)
+                return p1_group_by_pid.get(pid)
+
+            # Determine starting group from Soak #1 majority
+            c0_pids = clusters[0]["pids"]
+            c0_a = sum(1 for p in c0_pids if _grp_of(p) == "A")
+            c0_b = sum(1 for p in c0_pids if _grp_of(p) == "B")
+            start_key = "A" if c0_a >= c0_b else "B"
+
+            prev_pids: set[int] = set()
+            prev_ts = -999_999
+
+            for s_idx, c in enumerate(clusters, start=1):
+                cts = int(c["start"])
+                cpids: set[int] = set(c["pids"])
+                exp_key = start_key if (s_idx % 2 == 1) else ("B" if start_key == "A" else "A")
+                oth_key = "B" if exp_key == "A" else "A"
+                exp_label = label_a if exp_key == "A" else label_b
+                exp_class = class_a if exp_key == "A" else class_b
+
+                expected_pids = {p for p in fight_players if _grp_of(p) == exp_key}
+                if phase_key == "p1":
+                    active_bt = _active_boss_tank_at(cts)
+                    if active_bt is not None and active_bt not in cpids:
+                        expected_pids.discard(active_bt)
+
+                soakers_pids = sorted(
+                    [p for p in cpids if _grp_of(p) != oth_key],
+                    key=lambda p: actors[p]["name"],
+                )
+                wrong_pids = sorted(
+                    [p for p in cpids if _grp_of(p) == oth_key],
+                    key=lambda p: actors[p]["name"],
+                )
+                missing_pids = sorted(expected_pids - cpids, key=lambda p: actors[p]["name"])
+                missed_alive_pids = [p for p in missing_pids if not _is_dead_at(p, cts)]
+                dead_expected_pids = [p for p in missing_pids if _is_dead_at(p, cts)]
+
+                is_prev_recent = 0 < cts - prev_ts <= 35_000
+                wrong_refs = [
+                    {
+                        "player": actors[p]["name"],
+                        "class": actors[p].get("subType", ""),
+                        "player_id": p,
+                        "double_soak": bool(is_prev_recent and p in prev_pids),
+                    }
+                    for p in wrong_pids
+                ]
+
+                rel_ms = cts - f_start
+                group_soaks.append(
+                    {
+                        "id": f"{report_code}-{fid}-{phase_key}-{s_idx}-{cts}-gsk",
+                        "phase": phase_key,
+                        "pull_num": pull_idx,
+                        "fight_id": fid,
+                        "is_kill": is_kill,
+                        "soak_num": s_idx,
+                        "rel_time": format_rel_time(rel_ms),
+                        "rel_ms": rel_ms,
+                        "timestamp": cts,
+                        "deaths_before": _count_deaths_before(cts),
+                        "expected_group": exp_label,
+                        "expected_group_class": exp_class,
+                        "total_soakers": len(cpids),
+                        "correct_count": len(soakers_pids),
+                        "alternation_ok": len(wrong_refs) == 0 and len(missed_alive_pids) == 0,
+                        "soakers": [_pref(p) for p in soakers_pids],
+                        "missed_alive": [_pref(p) for p in missed_alive_pids],
+                        "wrong_group": wrong_refs,
+                        "dead_expected": [_pref(p) for p in dead_expected_pids],
+                        "events_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}&type=auras&ability={SPELL_SOUL_CONSTRICTOR}&view=events&start={max(f_start, cts - 2000)}&end={min(f_end, cts + 4000)}",
+                        "replay_url": build_replay_url(report_code, fid, rel_ms),
+                    }
+                )
+                prev_pids = cpids
+                prev_ts = cts
+
+    def _group_roster(gmap: dict[int, str], key: str) -> list[dict[str, Any]]:
+        return [
+            {"player": actors[p]["name"], "class": actors[p].get("subType", ""), "player_id": p}
+            for p, k in sorted(gmap.items(), key=lambda kv: actors[kv[0]]["name"])
+            if k == key and p in actors
+        ]
+
+    soak_groups_out = {
+        "shattering": {
+            "group_a_label": shat_label_a,
+            "group_a_class": shat_class_a,
+            "group_a_players": _group_roster(shat_group_by_pid, "A"),
+            "group_b_label": shat_label_b,
+            "group_b_class": shat_class_b,
+            "group_b_players": _group_roster(shat_group_by_pid, "B"),
+        },
+        "p1": {
+            "group_a_label": "Soak-Gruppe 1",
+            "group_a_class": "",
+            "group_a_players": _group_roster(p1_group_by_pid, "A"),
+            "group_b_label": "Soak-Gruppe 2",
+            "group_b_class": "",
+            "group_b_players": _group_roster(p1_group_by_pid, "B"),
+        },
+    }
+
+    group_soaks.sort(key=lambda x: (x["pull_num"], x["timestamp"]))
+    return soak_groups_out, group_soaks
 
 
 def _build_healer_analysis(

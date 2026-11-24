@@ -1840,6 +1840,13 @@ export function analyzeReportEventsTS(
     extraTables,
     reportCode,
   )
+  const { soakGroupsOut, groupSoaksOut } = buildGroupSoakAnalysis(
+    sortedFights,
+    actors,
+    eventsByFight,
+    tankIds,
+    reportCode,
+  )
 
   return {
     code: reportCode,
@@ -1867,6 +1874,7 @@ export function analyzeReportEventsTS(
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     egg_regular_carriers: regularCarrierNames,
+    soak_groups: soakGroupsOut,
     removal_summary: removalSummary,
     pulls: pullsOut,
     egg_fails: eggFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
@@ -1876,12 +1884,525 @@ export function analyzeReportEventsTS(
     defensive_events: defensiveEvents.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     healer_emergency_events: healerEmergencyEvents,
     healer_tank_soak_events: healerTankSoakEvents,
+    group_soaks: groupSoaksOut,
     consumable_usage: consumableUsage,
     heart_phases: heartPhases.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.window_num as number) - (b.window_num as number)),
     phase_events: phaseEvents.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     warden_summaries: wardenSummaries.sort((a, b) => (a.pull_num as number) - (b.pull_num as number)),
     p3_summaries: p3Summaries.sort((a, b) => (a.pull_num as number) - (b.pull_num as number)),
   }
+}
+
+function cmpStr(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function buildGroupSoakAnalysis(
+  sortedFights: WclFight[],
+  actors: Record<number, WclActor>,
+  eventsByFight: Record<number, WclEvent[]>,
+  tankIds: number[],
+  reportCode: string,
+): {
+  soakGroupsOut: Record<string, unknown>
+  groupSoaksOut: Record<string, unknown>[]
+} {
+  const tankIdSet = new Set(tankIds)
+  const sortedTanks = [...tankIds].sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+  const tkA = sortedTanks.length >= 1 ? sortedTanks[0] : null
+  const tkB = sortedTanks.length >= 2 ? sortedTanks[1] : null
+
+  const shatLabelA = tkA !== null ? `Gruppe ${actors[tkA].name}` : 'Gruppe 1'
+  const shatClassA = tkA !== null ? actors[tkA].subType ?? '' : ''
+  const shatLabelB = tkB !== null ? `Gruppe ${actors[tkB].name}` : 'Gruppe 2'
+  const shatClassB = tkB !== null ? actors[tkB].subType ?? '' : ''
+
+  interface SoakCluster {
+    start: number
+    end: number
+    pids: Set<number>
+  }
+  interface FightSoakRec {
+    pull_num: number
+    fight_id: number
+    f_start: number
+    f_end: number
+    is_kill: boolean
+    fight_players: Set<number>
+    player_deaths: { ts: number; pid: number }[]
+    deaths_by_player: Map<number, number[]>
+    boss_tank_ts: Map<number, number[]>
+    fight_p2_group: Map<number, 'A' | 'B'>
+    p1_clusters: SoakCluster[]
+    shat_clusters: SoakCluster[]
+  }
+
+  const fightRecords: FightSoakRec[] = []
+  const p2SideVotes = new Map<number, { A: number; B: number }>()
+  const p1ParityVotes = new Map<number, { A: number; B: number }>()
+
+  const incVote = (m: Map<number, { A: number; B: number }>, pid: number, key: 'A' | 'B') => {
+    let v = m.get(pid)
+    if (!v) {
+      v = { A: 0, B: 0 }
+      m.set(pid, v)
+    }
+    v[key]++
+  }
+
+  for (let idx = 0; idx < sortedFights.length; idx++) {
+    const fight = sortedFights[idx]
+    const pullNum = idx + 1
+    const fid = fight.id
+    const fStart = fight.startTime
+    const fEnd = fight.endTime
+    const isKill = Boolean(fight.kill)
+    // eventsByFight[fid] is already sorted in-place in analyzeReportEventsTS
+    const fevs = eventsByFight[fid] ?? []
+
+    const pts = fight.phaseTransitions ?? []
+    let p2Start: number | null = null
+    let shatStart: number | null = null
+    let p3Start: number | null = null
+    for (let i = 0; i < pts.length; i++) {
+      const pt = pts[i]
+      if (pt.id === 2 && p2Start === null) p2Start = pt.startTime
+      else if (pt.id === 3 && shatStart === null) shatStart = pt.startTime
+      else if (pt.id === 4 && p3Start === null) p3Start = pt.startTime
+    }
+
+    const fightPlayers = new Set<number>()
+    const fpList = fight.friendlyPlayers ?? []
+    for (let i = 0; i < fpList.length; i++) {
+      const pid = fpList[i]
+      if (actors[pid]?.type === 'Player') fightPlayers.add(pid)
+    }
+
+    const playerDeaths: { ts: number; pid: number }[] = []
+    const deathsByPlayer = new Map<number, number[]>()
+    const seenDk = new Set<string>()
+    const bossTankTs = new Map<number, number[]>()
+    const wardenDmgByInst = new Map<number, Map<number, number>>()
+    const scApplies: { ts: number; pid: number }[] = []
+
+    for (let i = 0; i < fevs.length; i++) {
+      const ev = fevs[i]
+      const t = ev.type
+      const ts = ev.timestamp
+      const src = ev.sourceID
+      const tid = ev.targetID
+      const aid = ev.abilityGameID
+
+      if (src !== undefined && actors[src]?.type === 'Player') fightPlayers.add(src)
+      if (tid !== undefined && actors[tid]?.type === 'Player') fightPlayers.add(tid)
+
+      if (t === 'death' && tid !== undefined && actors[tid]?.type === 'Player') {
+        const dk = `${tid}:${ts}`
+        if (!seenDk.has(dk)) {
+          seenDk.add(dk)
+          playerDeaths.push({ ts, pid: tid })
+          let dlist = deathsByPlayer.get(tid)
+          if (!dlist) {
+            dlist = []
+            deathsByPlayer.set(tid, dlist)
+          }
+          dlist.push(ts)
+        }
+      }
+
+      if (tid !== undefined && tankIdSet.has(tid)) {
+        const srcName = src !== undefined ? actors[src]?.name ?? '' : ''
+        if (
+          (t === 'damage' && aid === SPELL_MELEE && srcName === "Ula'tek") ||
+          aid === SPELL_STONE_VENOM_DEBUFF ||
+          aid === SPELL_STONE_VENOM_DMG
+        ) {
+          let blist = bossTankTs.get(tid)
+          if (!blist) {
+            blist = []
+            bossTankTs.set(tid, blist)
+          }
+          blist.push(ts)
+        }
+      }
+
+      if (
+        src !== undefined &&
+        actors[src]?.type === 'Player' &&
+        tid !== undefined &&
+        actors[tid]?.name === 'Doomscale Warden'
+      ) {
+        const inst = ev.targetInstance || 1
+        if (t === 'damage' || t === 'interrupt') {
+          let imap = wardenDmgByInst.get(inst)
+          if (!imap) {
+            imap = new Map<number, number>()
+            wardenDmgByInst.set(inst, imap)
+          }
+          const add = t === 'damage' ? Math.max(1, ev.amount || 0) : 1000
+          imap.set(src, (imap.get(src) ?? 0) + add)
+        }
+      }
+
+      if (
+        aid === SPELL_SOUL_CONSTRICTOR &&
+        (t === 'applydebuff' || t === 'applydebuffstack') &&
+        tid !== undefined &&
+        actors[tid]?.type === 'Player'
+      ) {
+        scApplies.push({ ts, pid: tid })
+      }
+    }
+
+    // Map Warden instances in this fight to Group A (tkA) vs Group B (tkB)
+    const fightP2Group = new Map<number, 'A' | 'B'>()
+    if (wardenDmgByInst.size > 0) {
+      const allWPids = new Set<number>()
+      const instKeys = Array.from(wardenDmgByInst.keys())
+      for (const imap of wardenDmgByInst.values()) {
+        for (const pid of imap.keys()) allWPids.add(pid)
+      }
+      const instPlayers = new Map<number, Set<number>>()
+      for (const pid of allWPids) {
+        let bestInst = instKeys[0]
+        let bestAmt = -1
+        for (let k = 0; k < instKeys.length; k++) {
+          const ik = instKeys[k]
+          const amt = wardenDmgByInst.get(ik)!.get(pid) ?? 0
+          if (amt > bestAmt) {
+            bestAmt = amt
+            bestInst = ik
+          }
+        }
+        if (bestAmt > 0) {
+          let pset = instPlayers.get(bestInst)
+          if (!pset) {
+            pset = new Set<number>()
+            instPlayers.set(bestInst, pset)
+          }
+          pset.add(pid)
+        }
+      }
+      const instToKey = new Map<number, 'A' | 'B'>()
+      for (const [inst, pids] of instPlayers.entries()) {
+        if (tkA !== null && pids.has(tkA)) instToKey.set(inst, 'A')
+        else if (tkB !== null && pids.has(tkB)) instToKey.set(inst, 'B')
+      }
+      for (const [inst, pids] of instPlayers.entries()) {
+        let gkey = instToKey.get(inst)
+        if (!gkey) {
+          let hasA = false
+          for (const v of instToKey.values()) if (v === 'A') hasA = true
+          gkey = hasA ? 'B' : 'A'
+          instToKey.set(inst, gkey)
+        }
+        for (const pid of pids) {
+          fightP2Group.set(pid, gkey)
+          incVote(p2SideVotes, pid, gkey)
+        }
+      }
+    }
+
+    // Cluster Soul Constrictor applies within <= 1200ms
+    const rawClusters: SoakCluster[] = []
+    for (let i = 0; i < scApplies.length; i++) {
+      const { ts, pid } = scApplies[i]
+      if (rawClusters.length === 0 || ts - rawClusters[rawClusters.length - 1].end > 1200) {
+        rawClusters.push({ start: ts, end: ts, pids: new Set([pid]) })
+      } else {
+        const last = rawClusters[rawClusters.length - 1]
+        last.end = ts
+        last.pids.add(pid)
+      }
+    }
+
+    const p1Clusters: SoakCluster[] = []
+    const shatClusters: SoakCluster[] = []
+    for (let i = 0; i < rawClusters.length; i++) {
+      const c = rawClusters[i]
+      if (c.pids.size < 2) continue
+      const cts = c.start
+      if (shatStart !== null && cts >= shatStart && (p3Start === null || cts < p3Start)) {
+        shatClusters.push(c)
+      } else if (p2Start === null || cts < p2Start) {
+        p1Clusters.push(c)
+      }
+    }
+
+    for (let idxC = 0; idxC < p1Clusters.length; idxC++) {
+      const gkey: 'A' | 'B' = idxC % 2 === 0 ? 'A' : 'B'
+      for (const pid of p1Clusters[idxC].pids) {
+        incVote(p1ParityVotes, pid, gkey)
+      }
+    }
+
+    fightRecords.push({
+      pull_num: pullNum,
+      fight_id: fid,
+      f_start: fStart,
+      f_end: fEnd,
+      is_kill: isKill,
+      fight_players: fightPlayers,
+      player_deaths: playerDeaths,
+      deaths_by_player: deathsByPlayer,
+      boss_tank_ts: bossTankTs,
+      fight_p2_group: fightP2Group,
+      p1_clusters: p1Clusters,
+      shat_clusters: shatClusters,
+    })
+  }
+
+  // Report-level Shattering groups
+  const shatGroupByPid = new Map<number, 'A' | 'B'>()
+  if (tkA !== null) shatGroupByPid.set(tkA, 'A')
+  if (tkB !== null) shatGroupByPid.set(tkB, 'B')
+  for (const [pid, votes] of p2SideVotes.entries()) {
+    if (shatGroupByPid.has(pid)) continue
+    shatGroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
+  }
+
+  // Infer unmapped players (e.g. pure healers with 0 Warden dmg) by co-soaking in Shattering clusters
+  const shatCoVotes = new Map<number, { A: number; B: number }>()
+  for (let r = 0; r < fightRecords.length; r++) {
+    const scList = fightRecords[r].shat_clusters
+    for (let i = 0; i < scList.length; i++) {
+      const c = scList[i]
+      let cntA = 0
+      let cntB = 0
+      for (const p of c.pids) {
+        const g = shatGroupByPid.get(p)
+        if (g === 'A') cntA++
+        else if (g === 'B') cntB++
+      }
+      if (cntA === 0 && cntB === 0) continue
+      const cKey: 'A' | 'B' = cntA >= cntB ? 'A' : 'B'
+      for (const p of c.pids) {
+        if (!shatGroupByPid.has(p)) incVote(shatCoVotes, p, cKey)
+      }
+    }
+  }
+  for (const [pid, votes] of shatCoVotes.entries()) {
+    if (!shatGroupByPid.has(pid)) {
+      shatGroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
+    }
+  }
+
+  // Report-level Phase 1 groups
+  const p1GroupByPid = new Map<number, 'A' | 'B'>()
+  for (const [pid, votes] of p1ParityVotes.entries()) {
+    p1GroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
+  }
+
+  const pref = (pid: number) => ({
+    player: actors[pid].name,
+    class: actors[pid].subType ?? '',
+    player_id: pid,
+  })
+
+  // Pass 2: Evaluate each soak with strict A <-> B alternation
+  const groupSoaks: Record<string, unknown>[] = []
+  for (let r = 0; r < fightRecords.length; r++) {
+    const rec = fightRecords[r]
+    const fid = rec.fight_id
+    const fStart = rec.f_start
+    const fEnd = rec.f_end
+    const pullNum = rec.pull_num
+    const isKill = rec.is_kill
+    const fightPlayers = rec.fight_players
+    const playerDeaths = rec.player_deaths
+    const deathsByPlayer = rec.deaths_by_player
+    const bossTankTs = rec.boss_tank_ts
+    const fightP2Group = rec.fight_p2_group
+
+    const countDeathsBefore = (tsNow: number) => {
+      let c = 0
+      for (let i = 0; i < playerDeaths.length; i++) if (playerDeaths[i].ts < tsNow) c++
+      return c
+    }
+    const isDeadAt = (pid: number, tsNow: number) => {
+      const dl = deathsByPlayer.get(pid)
+      if (!dl) return false
+      for (let i = 0; i < dl.length; i++) if (dl[i] <= tsNow) return true
+      return false
+    }
+    const activeBossTankAt = (tsNow: number): number | null => {
+      let bestTk: number | null = null
+      let bestTs = -1
+      for (let i = 0; i < tankIds.length; i++) {
+        const tk = tankIds[i]
+        const list = bossTankTs.get(tk)
+        if (!list) continue
+        let maxRecent = -1
+        for (let j = 0; j < list.length; j++) {
+          const bts = list[j]
+          if (bts >= tsNow - 8000 && bts <= tsNow && bts > maxRecent) maxRecent = bts
+        }
+        if (maxRecent > bestTs) {
+          bestTs = maxRecent
+          bestTk = tk
+        }
+      }
+      return bestTk
+    }
+
+    const phaseSpecs: {
+      phaseKey: 'p1' | 'shattering'
+      clusters: SoakCluster[]
+      labelA: string
+      classA: string
+      labelB: string
+      classB: string
+    }[] = [
+      {
+        phaseKey: 'p1',
+        clusters: rec.p1_clusters,
+        labelA: 'Soak-Gruppe 1',
+        classA: '',
+        labelB: 'Soak-Gruppe 2',
+        classB: '',
+      },
+      {
+        phaseKey: 'shattering',
+        clusters: rec.shat_clusters,
+        labelA: shatLabelA,
+        classA: shatClassA,
+        labelB: shatLabelB,
+        classB: shatClassB,
+      },
+    ]
+
+    for (let psIdx = 0; psIdx < phaseSpecs.length; psIdx++) {
+      const { phaseKey, clusters, labelA, classA, labelB, classB } = phaseSpecs[psIdx]
+      if (clusters.length === 0) continue
+
+      const grpOf = (pid: number): 'A' | 'B' | undefined =>
+        phaseKey === 'shattering' ? fightP2Group.get(pid) ?? shatGroupByPid.get(pid) : p1GroupByPid.get(pid)
+
+      let c0A = 0
+      let c0B = 0
+      for (const p of clusters[0].pids) {
+        const g = grpOf(p)
+        if (g === 'A') c0A++
+        else if (g === 'B') c0B++
+      }
+      const startKey: 'A' | 'B' = c0A >= c0B ? 'A' : 'B'
+
+      let prevPids = new Set<number>()
+      let prevTs = -999_999
+
+      for (let i = 0; i < clusters.length; i++) {
+        const sIdx = i + 1
+        const c = clusters[i]
+        const cts = c.start
+        const cpids = c.pids
+        const expKey: 'A' | 'B' = sIdx % 2 === 1 ? startKey : startKey === 'A' ? 'B' : 'A'
+        const othKey: 'A' | 'B' = expKey === 'A' ? 'B' : 'A'
+        const expLabel = expKey === 'A' ? labelA : labelB
+        const expClass = expKey === 'A' ? classA : classB
+
+        const expectedPids = new Set<number>()
+        for (const p of fightPlayers) {
+          if (grpOf(p) === expKey) expectedPids.add(p)
+        }
+        if (phaseKey === 'p1') {
+          const activeBt = activeBossTankAt(cts)
+          if (activeBt !== null && !cpids.has(activeBt)) {
+            expectedPids.delete(activeBt)
+          }
+        }
+
+        const soakersPids: number[] = []
+        const wrongPids: number[] = []
+        for (const p of cpids) {
+          if (grpOf(p) === othKey) wrongPids.push(p)
+          else soakersPids.push(p)
+        }
+        soakersPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+        wrongPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+
+        const missingPids: number[] = []
+        for (const p of expectedPids) {
+          if (!cpids.has(p)) missingPids.push(p)
+        }
+        missingPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+
+        const missedAlivePids: number[] = []
+        const deadExpectedPids: number[] = []
+        for (let m = 0; m < missingPids.length; m++) {
+          const p = missingPids[m]
+          if (isDeadAt(p, cts)) deadExpectedPids.push(p)
+          else missedAlivePids.push(p)
+        }
+
+        const isPrevRecent = cts - prevTs > 0 && cts - prevTs <= 35_000
+        const wrongRefs = wrongPids.map((p) => ({
+          player: actors[p].name,
+          class: actors[p].subType ?? '',
+          player_id: p,
+          double_soak: Boolean(isPrevRecent && prevPids.has(p)),
+        }))
+
+        const relMs = cts - fStart
+        groupSoaks.push({
+          id: `${reportCode}-${fid}-${phaseKey}-${sIdx}-${cts}-gsk`,
+          phase: phaseKey,
+          pull_num: pullNum,
+          fight_id: fid,
+          is_kill: isKill,
+          soak_num: sIdx,
+          rel_time: formatRelTime(relMs),
+          rel_ms: relMs,
+          timestamp: cts,
+          deaths_before: countDeathsBefore(cts),
+          expected_group: expLabel,
+          expected_group_class: expClass,
+          total_soakers: cpids.size,
+          correct_count: soakersPids.length,
+          alternation_ok: wrongRefs.length === 0 && missedAlivePids.length === 0,
+          soakers: soakersPids.map(pref),
+          missed_alive: missedAlivePids.map(pref),
+          wrong_group: wrongRefs,
+          dead_expected: deadExpectedPids.map(pref),
+          events_url: `https://www.warcraftlogs.com/reports/${reportCode}?fight=${fid}&type=auras&ability=${SPELL_SOUL_CONSTRICTOR}&view=events&start=${Math.max(fStart, cts - 2000)}&end=${Math.min(fEnd, cts + 4000)}`,
+          replay_url: buildReplayUrl(reportCode, fid, relMs),
+        })
+
+        prevPids = cpids
+        prevTs = cts
+      }
+    }
+  }
+
+  const groupRoster = (gmap: Map<number, 'A' | 'B'>, key: 'A' | 'B') => {
+    const pids: number[] = []
+    for (const [p, k] of gmap.entries()) {
+      if (k === key && actors[p]) pids.push(p)
+    }
+    pids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+    return pids.map(pref)
+  }
+
+  const soakGroupsOut = {
+    shattering: {
+      group_a_label: shatLabelA,
+      group_a_class: shatClassA,
+      group_a_players: groupRoster(shatGroupByPid, 'A'),
+      group_b_label: shatLabelB,
+      group_b_class: shatClassB,
+      group_b_players: groupRoster(shatGroupByPid, 'B'),
+    },
+    p1: {
+      group_a_label: 'Soak-Gruppe 1',
+      group_a_class: '',
+      group_a_players: groupRoster(p1GroupByPid, 'A'),
+      group_b_label: 'Soak-Gruppe 2',
+      group_b_class: '',
+      group_b_players: groupRoster(p1GroupByPid, 'B'),
+    },
+  }
+
+  groupSoaks.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number))
+  return { soakGroupsOut, groupSoaksOut: groupSoaks }
 }
 
 function buildHealerAnalysis(

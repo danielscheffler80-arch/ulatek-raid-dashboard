@@ -393,6 +393,51 @@ export interface P3PullSummary {
   replay_url: string
 }
 
+export interface GroupSoakPlayerRef {
+  player: string
+  class: string
+  player_id: number
+  double_soak?: boolean
+}
+
+export interface SoakGroupDefinition {
+  group_a_label: string
+  group_a_class: string
+  group_a_players: GroupSoakPlayerRef[]
+  group_b_label: string
+  group_b_class: string
+  group_b_players: GroupSoakPlayerRef[]
+}
+
+export interface ReportSoakGroups {
+  shattering: SoakGroupDefinition
+  p1: SoakGroupDefinition
+}
+
+export interface GroupSoakEvent {
+  id: string
+  phase: 'shattering' | 'p1'
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  soak_num: number
+  rel_time: string
+  rel_ms: number
+  timestamp: number
+  deaths_before: number
+  expected_group: string
+  expected_group_class: string
+  total_soakers: number
+  correct_count: number
+  alternation_ok: boolean
+  soakers: GroupSoakPlayerRef[]
+  missed_alive: GroupSoakPlayerRef[]
+  wrong_group: GroupSoakPlayerRef[]
+  dead_expected: GroupSoakPlayerRef[]
+  events_url: string
+  replay_url: string
+}
+
 export interface ReportData {
   code: string
   title: string
@@ -411,6 +456,7 @@ export interface ReportData {
   healers?: HealerActor[]
   players: PlayerSummary[]
   egg_regular_carriers?: string[]
+  soak_groups?: ReportSoakGroups
   removal_summary: {
     spectral_coils: number
     caustic_waves: number
@@ -427,6 +473,7 @@ export interface ReportData {
   defensive_events: DefensiveEvent[]
   healer_emergency_events?: HealerEmergencyEvent[]
   healer_tank_soak_events?: HealerTankSoakEvent[]
+  group_soaks?: GroupSoakEvent[]
   consumable_usage: ConsumableUsage[]
   heart_phases?: HeartPhaseWindow[]
   phase_events?: PhaseEvent[]

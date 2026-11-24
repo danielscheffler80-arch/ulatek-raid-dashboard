@@ -4,6 +4,7 @@ import {
   aggregateDefensives,
   aggregateEggCarriers,
   aggregateEggFails,
+  aggregateGroupSoaks,
   aggregateHealerEmergency,
   aggregateHealerTankSoaks,
   aggregateHeartPhases,
@@ -614,5 +615,100 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const resStrict = aggregateHealerEmergency([repTol], 4, { from: 1, to: 2 }, 1.5, 1.7)
     expect(resStrict.filteredInstantDeathCount).toBe(2)
     expect(resStrict.totalEvents).toBe(0)
+  })
+
+  it('aggregates group soaks by phase (shattering / p1 / all), missed_alive, wrong_group, double_soak, and dead_expected', () => {
+    const repWithSoaks: ReportData = {
+      ...mockReport,
+      soak_groups: {
+        shattering: {
+          group_a_label: 'Gruppe Barrumir',
+          group_a_class: 'DeathKnight',
+          group_a_players: [
+            { player: 'Barrumir', class: 'DeathKnight', player_id: 2 },
+            { player: 'Narande', class: 'Warlock', player_id: 3 },
+          ],
+          group_b_label: 'Gruppe Betøng',
+          group_b_class: 'Monk',
+          group_b_players: [
+            { player: 'Betøng', class: 'Monk', player_id: 1 },
+            { player: 'Slyfastorm', class: 'Shaman', player_id: 4 },
+          ],
+        },
+        p1: {
+          group_a_label: 'Soak-Gruppe 1',
+          group_a_class: '',
+          group_a_players: [{ player: 'Narande', class: 'Warlock', player_id: 3 }],
+          group_b_label: 'Soak-Gruppe 2',
+          group_b_class: '',
+          group_b_players: [{ player: 'Slyfastorm', class: 'Shaman', player_id: 4 }],
+        },
+      },
+      group_soaks: [
+        {
+          id: 'gsk-p1-1', phase: 'p1', pull_num: 1, fight_id: 10, is_kill: false, soak_num: 1,
+          rel_time: '00:25.000', rel_ms: 25000, timestamp: 26000, deaths_before: 0,
+          expected_group: 'Soak-Gruppe 1', expected_group_class: '',
+          total_soakers: 1, correct_count: 1, alternation_ok: true,
+          soakers: [{ player: 'Narande', class: 'Warlock', player_id: 3 }],
+          missed_alive: [], wrong_group: [], dead_expected: [],
+          events_url: 'https://wcl/g1', replay_url: 'https://wcl/rg1',
+        },
+        {
+          id: 'gsk-shat-1', phase: 'shattering', pull_num: 2, fight_id: 11, is_kill: false, soak_num: 1,
+          rel_time: '04:10.000', rel_ms: 250000, timestamp: 450000, deaths_before: 0,
+          expected_group: 'Gruppe Betøng', expected_group_class: 'Monk',
+          total_soakers: 2, correct_count: 2, alternation_ok: true,
+          soakers: [
+            { player: 'Betøng', class: 'Monk', player_id: 1 },
+            { player: 'Slyfastorm', class: 'Shaman', player_id: 4 },
+          ],
+          missed_alive: [], wrong_group: [], dead_expected: [],
+          events_url: 'https://wcl/gs1', replay_url: 'https://wcl/rgs1',
+        },
+        {
+          id: 'gsk-shat-2', phase: 'shattering', pull_num: 2, fight_id: 11, is_kill: false, soak_num: 2,
+          rel_time: '04:20.000', rel_ms: 260000, timestamp: 460000, deaths_before: 1,
+          expected_group: 'Gruppe Barrumir', expected_group_class: 'DeathKnight',
+          total_soakers: 1, correct_count: 0, alternation_ok: false,
+          soakers: [],
+          missed_alive: [{ player: 'Narande', class: 'Warlock', player_id: 3 }],
+          wrong_group: [{ player: 'Slyfastorm', class: 'Shaman', player_id: 4, double_soak: true }],
+          dead_expected: [{ player: 'Barrumir', class: 'DeathKnight', player_id: 2 }],
+          events_url: 'https://wcl/gs2', replay_url: 'https://wcl/rgs2',
+        },
+      ],
+    }
+
+    const shat = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'shattering')
+    expect(shat.shatteringCount).toBe(2)
+    expect(shat.p1Count).toBe(1)
+    expect(shat.totalSoaks).toBe(2)
+    expect(shat.cleanSoaks).toBe(1)
+    expect(shat.cleanRatePct).toBe(50)
+    expect(shat.missedAliveTotal).toBe(1)
+    expect(shat.wrongGroupTotal).toBe(1)
+    expect(shat.doubleSoakTotal).toBe(1)
+    expect(shat.groups?.group_a_label).toBe('Gruppe Barrumir')
+    const nar = shat.players.find((p) => p.player === 'Narande')!
+    expect(nar.missedAliveCount).toBe(1)
+    expect(nar.soakRatePct).toBe(0)
+    expect(nar.groupLabel).toBe('Gruppe Barrumir')
+    const sly = shat.players.find((p) => p.player === 'Slyfastorm')!
+    expect(sly.correctCount).toBe(1)
+    expect(sly.wrongGroupCount).toBe(1)
+    expect(sly.doubleSoakCount).toBe(1)
+    // Dead expected (Barrumir) is NOT counted as missed_alive!
+    const bar = shat.players.find((p) => p.player === 'Barrumir')!
+    expect(bar.missedAliveCount).toBe(0)
+    expect(bar.deadCount).toBe(1)
+
+    const p1 = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'p1')
+    expect(p1.totalSoaks).toBe(1)
+    expect(p1.cleanRatePct).toBe(100)
+    expect(p1.groups?.group_a_label).toBe('Soak-Gruppe 1')
+
+    const all = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'all')
+    expect(all.totalSoaks).toBe(3)
   })
 })

@@ -1101,6 +1101,113 @@ def test_healer_tank_soak_reactions_separate():
     assert by_h["RestoYav"]["heal_count"] == 0
 
 
+def test_group_soaks_shattering_p2_groups_and_p1_alternation():
+    meta = {"title": "Group Soak Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "Betøng", "type": "Player", "subType": "Monk"},
+        2: {"id": 2, "name": "Barrumir", "type": "Player", "subType": "DeathKnight"},
+        3: {"id": 3, "name": "Alveria", "type": "Player", "subType": "Rogue"},
+        4: {"id": 4, "name": "Valysa", "type": "Player", "subType": "Priest"},  # pure healer (0 Warden dmg!)
+        5: {"id": 5, "name": "Narande", "type": "Player", "subType": "Warlock"},
+        6: {"id": 6, "name": "Kaida", "type": "Player", "subType": "Mage"},
+        7: {"id": 7, "name": "DeadGuy", "type": "Player", "subType": "Hunter"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+        200: {"id": 200, "name": "Doomscale Warden", "type": "NPC", "subType": "NPC"},
+    }
+    abilities = {
+        1: "Melee",
+        1300685: "Soul Constrictor",
+        1298417: "Stone Venom",
+        1308275: "Putrid Membrane",
+    }
+    fights = [
+        {
+            "id": 90,
+            "name": "Ula'tek",
+            "startTime": 100_000,
+            "endTime": 400_000,
+            "bossPercentage": 35.0,
+            "kill": False,
+            "friendlyPlayers": [1, 2, 3, 4, 5, 6, 7],
+            "phaseTransitions": [
+                {"id": 1, "startTime": 100_000},
+                {"id": 2, "startTime": 270_000},
+                {"id": 3, "startTime": 330_000},  # Intermission: The Shattering
+            ],
+        }
+    ]
+    events = [
+        # Identify tanks (Betøng=1, Barrumir=2) via boss melee & Stone Venom
+        {"timestamp": 110_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 90},
+        {"timestamp": 112_000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 90},
+        # ---- Phase 1 Soaks (140s & 143s) ----
+        # Betøng actively tanking Ula'tek at 138s -> must NOT be blamed for missing P1 Soak #1!
+        {"timestamp": 138_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 90},
+        # P1 Soak #1 (140s): Barrumir, Alveria, Valysa
+        {"timestamp": 140_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 140_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 140_100, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 90},
+        # P1 Soak #2 (143s): Narande, Kaida, DeadGuy
+        {"timestamp": 143_000, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 143_050, "type": "applydebuff", "targetID": 6, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 143_100, "type": "applydebuff", "targetID": 7, "abilityGameID": 1300685, "fight": 90},
+        # ---- Stage Two (270s..330s): Warden sides assign P2 groups! ----
+        # Warden #1 (Betøng Seite): Betøng (1), Alveria (3)  [Valysa (4) is pure healer -> 0 Warden dmg!]
+        {"timestamp": 280_000, "type": "damage", "sourceID": 1, "targetID": 200, "targetInstance": 1, "abilityGameID": 1, "amount": 500_000, "fight": 90},
+        {"timestamp": 280_100, "type": "damage", "sourceID": 3, "targetID": 200, "targetInstance": 1, "abilityGameID": 1, "amount": 900_000, "fight": 90},
+        # Warden #2 (Barrumir Seite): Barrumir (2), Narande (5), Kaida (6), DeadGuy (7)
+        {"timestamp": 280_000, "type": "damage", "sourceID": 2, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 500_000, "fight": 90},
+        {"timestamp": 280_100, "type": "damage", "sourceID": 5, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
+        {"timestamp": 280_200, "type": "damage", "sourceID": 6, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
+        {"timestamp": 280_300, "type": "damage", "sourceID": 7, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
+        # DeadGuy dies at 320s BEFORE Shattering soaks -> must be in dead_expected, NEVER missed_alive!
+        {"timestamp": 320_000, "type": "death", "targetID": 7, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 90},
+        # ---- Intermission: The Shattering (starts at 330s) ----
+        # Shattering Soak #1 (340s): Gruppe Betøng -> Betøng (1), Alveria (3), Valysa (4) all soak cleanly!
+        {"timestamp": 340_000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 340_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 340_100, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 90},
+        # Shattering Soak #2 (345s): Expected Gruppe Barrumir -> Barrumir (2) & Narande (5) soak;
+        # Kaida (6) MISSED while ALIVE; DeadGuy (7) DEAD (no fail); Alveria (3) WRONG GROUP + DOUBLE SOAK!
+        {"timestamp": 345_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 345_050, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 345_100, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {90: events}, "TESTSOAKS1234567")
+    soaks = rep["group_soaks"]
+    shat = [s for s in soaks if s["phase"] == "shattering"]
+    p1 = [s for s in soaks if s["phase"] == "p1"]
+
+    assert len(p1) == 2
+    assert len(shat) == 2
+
+    # Shattering Soak #1: Gruppe Betøng (incl. pure healer Valysa!) — 100% clean
+    s1 = shat[0]
+    assert s1["soak_num"] == 1
+    assert s1["expected_group"] == "Gruppe Betøng"
+    assert sorted(p["player"] for p in s1["soakers"]) == ["Alveria", "Betøng", "Valysa"]
+    assert s1["missed_alive"] == []
+    assert s1["wrong_group"] == []
+    assert s1["alternation_ok"] is True
+
+    # Shattering Soak #2: strictly alternates to Gruppe Barrumir!
+    s2 = shat[1]
+    assert s2["soak_num"] == 2
+    assert s2["expected_group"] == "Gruppe Barrumir"
+    assert sorted(p["player"] for p in s2["soakers"]) == ["Barrumir", "Narande"]
+    assert [p["player"] for p in s2["missed_alive"]] == ["Kaida"]
+    assert [p["player"] for p in s2["dead_expected"]] == ["DeadGuy"]
+    assert len(s2["wrong_group"]) == 1
+    assert s2["wrong_group"][0]["player"] == "Alveria"
+    assert s2["wrong_group"][0]["double_soak"] is True
+    assert s2["alternation_ok"] is False
+
+    # P1 active boss tank Betøng must NOT be flagged as missed_alive in P1 Soak #1
+    assert all(p["player"] != "Betøng" for p in p1[0]["missed_alive"])
+
+
+
 
 
 
