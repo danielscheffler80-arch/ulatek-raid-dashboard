@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Menu, Plus } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import type { ReportsStore, TabKey } from './types'
 import { getReportDisplayName } from './lib/stats'
 import type { PullRange } from './lib/stats'
@@ -10,7 +10,7 @@ import { WaveFailsTab } from './components/WaveFailsTab'
 import { TankFailsTab } from './components/TankFailsTab'
 import { DefensivesTab } from './components/DefensivesTab'
 import { PullsTab } from './components/PullsTab'
-import { MaxDeathsStepper, Pill, TryRangeFilter } from './components/ui'
+import { Pill } from './components/ui'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'egg', label: 'Egg Fails' },
@@ -115,6 +115,12 @@ export default function App() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
+        pullRange={pullRange}
+        maxPullAvailable={maxPullAvailable}
+        onPullRangeChange={setPullRange}
+        maxDeaths={currentMaxDeaths}
+        onMaxDeathsChange={setCurrentMaxDeaths}
+        onOpenImport={() => setImportOpen(true)}
         updatedAt={store?.updated_at ?? ''}
         mobileOpen={mobileNavOpen}
         onCloseMobile={() => setMobileNavOpen(false)}
@@ -136,14 +142,19 @@ export default function App() {
             <div className="flex items-center gap-1.5 text-[13px] min-w-0">
               <span className="text-[#8b96a9] shrink-0">Ula&apos;tek Mythic</span>
               <span className="text-[#8b96a9]" aria-hidden="true">/</span>
-              <span className="truncate font-semibold text-white max-w-[160px] sm:max-w-[220px]">
+              <span className="truncate font-semibold text-white max-w-[160px] sm:max-w-[240px]">
                 {breadcrumbLabel}
               </span>
             </div>
             <Pill variant="success">{totalPulls} Trys</Pill>
+            {(pullRange.from > 1 || pullRange.to < maxPullAvailable) && (
+              <Pill variant="info">
+                Try {pullRange.from}–{pullRange.to}
+              </Pill>
+            )}
           </div>
 
-          {/* Center: Obsidian Segmented Tabs */}
+          {/* Right: Obsidian Segmented Tabs */}
           <nav
             className="obsidian-tabs flex items-center overflow-x-auto"
             aria-label="Analyse-Tabs"
@@ -164,28 +175,6 @@ export default function App() {
               )
             })}
           </nav>
-
-          {/* Right: Try Range (ab/bis Try) + Compact Max-Deaths Stepper (Default: 4) + Mint CTA */}
-          <div className="flex flex-wrap items-center gap-2">
-            <TryRangeFilter
-              range={pullRange}
-              maxPull={maxPullAvailable}
-              onChange={setPullRange}
-            />
-            <MaxDeathsStepper
-              value={currentMaxDeaths}
-              onChange={setCurrentMaxDeaths}
-            />
-            <button
-              type="button"
-              onClick={() => setImportOpen(true)}
-              className="obsidian-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
-            >
-              <Plus className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-              <span className="hidden xl:inline">Neuen Log hinzufügen</span>
-              <span className="xl:hidden">Log</span>
-            </button>
-          </div>
         </header>
 
         {/* Main Workstage */}

@@ -130,15 +130,19 @@ export function WclActionLinks({
 export function MaxDeathsStepper({
   value,
   onChange,
+  fullWidth = false,
 }: {
   value: number
   onChange: (next: number) => void
+  fullWidth?: boolean
 }) {
   const clamp = (n: number) => Math.max(0, Math.min(25, n))
 
   return (
     <div
-      className="inline-flex items-center gap-2 rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[rgba(10,14,22,0.88)] pl-2.5 pr-1.5 py-1 focus-within:border-[rgba(52,245,197,0.5)] focus-within:ring-2 focus-within:ring-[rgba(52,245,197,0.22)] transition-[border-color,box-shadow]"
+      className={`${
+        fullWidth ? 'flex w-full justify-between' : 'inline-flex'
+      } items-center gap-2 rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[rgba(10,14,22,0.88)] pl-2.5 pr-1.5 py-1 focus-within:border-[rgba(52,245,197,0.5)] focus-within:ring-2 focus-within:ring-[rgba(52,245,197,0.22)] transition-[border-color,box-shadow]`}
       title="Filtert alle Listen bis maximal so viele Tode im Try"
     >
       <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#c5cdd9] select-none whitespace-nowrap">
@@ -188,101 +192,107 @@ export function TryRangeFilter({
   range,
   maxPull,
   onChange,
+  fullWidth = false,
 }: {
   range: PullRange
   maxPull: number
   onChange: (next: PullRange) => void
+  fullWidth?: boolean
 }) {
   const safeMax = Math.max(1, maxPull)
   const clamp = (n: number) => Math.max(1, Math.min(safeMax, n))
 
   return (
     <div
-      className="inline-flex items-center gap-1.5 rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[rgba(10,14,22,0.88)] px-2.5 py-1 focus-within:border-[rgba(56,189,248,0.5)] focus-within:ring-2 focus-within:ring-[rgba(56,189,248,0.2)] transition-[border-color,box-shadow]"
+      className={`${
+        fullWidth ? 'flex w-full justify-between' : 'inline-flex'
+      } items-center gap-1.5 rounded-[10px] border border-[rgba(255,255,255,0.12)] bg-[rgba(10,14,22,0.88)] pl-2.5 pr-1.5 py-1 focus-within:border-[rgba(56,189,248,0.5)] focus-within:ring-2 focus-within:ring-[rgba(56,189,248,0.2)] transition-[border-color,box-shadow]`}
       title="Filtert alle Listen von Try X bis Try Y"
     >
-      <span className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[#c5cdd9] select-none whitespace-nowrap">
+      <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#c5cdd9] select-none whitespace-nowrap">
         <Hash className="h-3.5 w-3.5 text-[#38bdf8]" strokeWidth={1.8} aria-hidden="true" />
         <span>Try</span>
       </span>
 
-      <div className="inline-flex items-center rounded-[7px] border border-[rgba(255,255,255,0.12)] bg-[#050911] pl-1 pr-0.5 py-0.5">
-        <input
-          type="number"
-          min={1}
-          max={safeMax}
-          value={range.from}
-          aria-label="Ab Try Nummer"
-          onChange={(e) => {
-            const p = Number.parseInt(e.target.value, 10)
-            if (!Number.isNaN(p)) {
-              const nextFrom = clamp(p)
-              onChange({ from: nextFrom, to: Math.max(nextFrom, range.to) })
-            }
-          }}
-          className="w-7 bg-transparent text-center font-mono-num text-[12.5px] font-semibold text-white focus:outline-none"
-        />
-        <div className="flex flex-col border-l border-[rgba(255,255,255,0.09)] pl-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              const nf = clamp(range.from + 1)
-              onChange({ from: nf, to: Math.max(nf, range.to) })
+      <div className="inline-flex items-center gap-1">
+        <div className="inline-flex items-center rounded-[7px] border border-[rgba(255,255,255,0.12)] bg-[#050911] pl-1 pr-0.5 py-0.5">
+          <input
+            type="number"
+            min={1}
+            max={safeMax}
+            value={range.from}
+            aria-label="Ab Try Nummer"
+            onChange={(e) => {
+              const p = Number.parseInt(e.target.value, 10)
+              if (!Number.isNaN(p)) {
+                const nextFrom = clamp(p)
+                onChange({ from: nextFrom, to: Math.max(nextFrom, range.to) })
+              }
             }}
-            aria-label="Start-Try erhöhen"
-            className="flex h-[12px] w-[16px] items-center justify-center rounded-t-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] transition-colors"
-          >
-            <ChevronUp className="h-2.5 w-2.5" strokeWidth={2.4} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onChange({ from: clamp(range.from - 1), to: range.to })}
-            aria-label="Start-Try verringern"
-            className="flex h-[12px] w-[16px] items-center justify-center rounded-b-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] transition-colors"
-          >
-            <ChevronDown className="h-2.5 w-2.5" strokeWidth={2.4} />
-          </button>
+            className="w-7 bg-transparent text-center font-mono-num text-[12.5px] font-semibold text-white focus:outline-none"
+          />
+          <div className="flex flex-col border-l border-[rgba(255,255,255,0.09)] pl-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                const nf = clamp(range.from + 1)
+                onChange({ from: nf, to: Math.max(nf, range.to) })
+              }}
+              aria-label="Start-Try erhöhen"
+              className="flex h-[12px] w-[16px] items-center justify-center rounded-t-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8]"
+            >
+              <ChevronUp className="h-2.5 w-2.5" strokeWidth={2.4} />
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange({ from: clamp(range.from - 1), to: range.to })}
+              aria-label="Start-Try verringern"
+              className="flex h-[12px] w-[16px] items-center justify-center rounded-b-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8]"
+            >
+              <ChevronDown className="h-2.5 w-2.5" strokeWidth={2.4} />
+            </button>
+          </div>
         </div>
-      </div>
 
-      <span className="text-[11px] text-[#8b96a9] select-none">–</span>
+        <span className="text-[11px] text-[#8b96a9] select-none">–</span>
 
-      <div className="inline-flex items-center rounded-[7px] border border-[rgba(255,255,255,0.12)] bg-[#050911] pl-1 pr-0.5 py-0.5">
-        <input
-          type="number"
-          min={1}
-          max={safeMax}
-          value={range.to}
-          aria-label="Bis Try Nummer"
-          onChange={(e) => {
-            const p = Number.parseInt(e.target.value, 10)
-            if (!Number.isNaN(p)) {
-              const nextTo = clamp(p)
-              onChange({ from: Math.min(range.from, nextTo), to: nextTo })
-            }
-          }}
-          className="w-7 bg-transparent text-center font-mono-num text-[12.5px] font-semibold text-white focus:outline-none"
-        />
-        <div className="flex flex-col border-l border-[rgba(255,255,255,0.09)] pl-0.5">
-          <button
-            type="button"
-            onClick={() => onChange({ from: range.from, to: clamp(range.to + 1) })}
-            aria-label="End-Try erhöhen"
-            className="flex h-[12px] w-[16px] items-center justify-center rounded-t-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] transition-colors"
-          >
-            <ChevronUp className="h-2.5 w-2.5" strokeWidth={2.4} />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const nt = clamp(range.to - 1)
-              onChange({ from: Math.min(range.from, nt), to: nt })
+        <div className="inline-flex items-center rounded-[7px] border border-[rgba(255,255,255,0.12)] bg-[#050911] pl-1 pr-0.5 py-0.5">
+          <input
+            type="number"
+            min={1}
+            max={safeMax}
+            value={range.to}
+            aria-label="Bis Try Nummer"
+            onChange={(e) => {
+              const p = Number.parseInt(e.target.value, 10)
+              if (!Number.isNaN(p)) {
+                const nextTo = clamp(p)
+                onChange({ from: Math.min(range.from, nextTo), to: nextTo })
+              }
             }}
-            aria-label="End-Try verringern"
-            className="flex h-[12px] w-[16px] items-center justify-center rounded-b-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] transition-colors"
-          >
-            <ChevronDown className="h-2.5 w-2.5" strokeWidth={2.4} />
-          </button>
+            className="w-7 bg-transparent text-center font-mono-num text-[12.5px] font-semibold text-white focus:outline-none"
+          />
+          <div className="flex flex-col border-l border-[rgba(255,255,255,0.09)] pl-0.5">
+            <button
+              type="button"
+              onClick={() => onChange({ from: range.from, to: clamp(range.to + 1) })}
+              aria-label="End-Try erhöhen"
+              className="flex h-[12px] w-[16px] items-center justify-center rounded-t-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8]"
+            >
+              <ChevronUp className="h-2.5 w-2.5" strokeWidth={2.4} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const nt = clamp(range.to - 1)
+                onChange({ from: Math.min(range.from, nt), to: nt })
+              }}
+              aria-label="End-Try verringern"
+              className="flex h-[12px] w-[16px] items-center justify-center rounded-b-[3px] text-[#c5cdd9] hover:bg-[rgba(56,189,248,0.18)] hover:text-[#38bdf8] active:scale-[0.92] transition-[background-color,color,transform] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#38bdf8]"
+            >
+              <ChevronDown className="h-2.5 w-2.5" strokeWidth={2.4} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

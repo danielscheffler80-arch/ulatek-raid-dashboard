@@ -4,11 +4,14 @@ import {
   Calendar,
   ExternalLink,
   Layers,
+  Plus,
   Search,
   X,
 } from 'lucide-react'
 import type { ReportData } from '../types'
 import { getReportDisplayName } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
+import { MaxDeathsStepper, TryRangeFilter } from './ui'
 
 export const GITHUB_ACTION_URL =
   'https://github.com/danielscheffler80-arch/ulatek-raid-dashboard/actions/workflows/add-log.yml'
@@ -20,6 +23,12 @@ interface SidebarProps {
   searchQuery: string
   onSearchChange: (q: string) => void
   searchInputRef: React.RefObject<HTMLInputElement | null>
+  pullRange: PullRange
+  maxPullAvailable: number
+  onPullRangeChange: (next: PullRange) => void
+  maxDeaths: number
+  onMaxDeathsChange: (next: number) => void
+  onOpenImport: () => void
   updatedAt: string
   mobileOpen: boolean
   onCloseMobile: () => void
@@ -32,6 +41,12 @@ export function Sidebar({
   searchQuery,
   onSearchChange,
   searchInputRef,
+  pullRange,
+  maxPullAvailable,
+  onPullRangeChange,
+  maxDeaths,
+  onMaxDeathsChange,
+  onOpenImport,
   updatedAt,
   mobileOpen,
   onCloseMobile,
@@ -94,36 +109,70 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto px-3 space-y-5" aria-label="Raidabende Navigation">
+      {/* Navigation & Filter */}
+      <nav className="flex-1 overflow-y-auto px-3 space-y-4" aria-label="Raidabende Navigation">
+        {/* Filter (Try-Bereich & Max. Tode) */}
+        <div className="border-b border-[rgba(255,255,255,0.07)] pb-4">
+          <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.6px] text-[#8b96a9]">
+            Filter
+          </div>
+          <div className="space-y-2">
+            <TryRangeFilter
+              range={pullRange}
+              maxPull={maxPullAvailable}
+              onChange={onPullRangeChange}
+              fullWidth
+            />
+            <MaxDeathsStepper
+              value={maxDeaths}
+              onChange={onMaxDeathsChange}
+              fullWidth
+            />
+          </div>
+        </div>
+
         <div>
           <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.6px] text-[#8b96a9]">
             Übersicht
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              onSelectReport('all')
-              onCloseMobile()
-            }}
-            className={`flex w-full items-center justify-between gap-2 rounded-[8px] border px-2.5 py-2 text-left text-[13px] transition-[background-color,color,border-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 ${
-              selectedCode === 'all'
-                ? 'bg-[rgba(52,245,197,0.13)] border-[rgba(52,245,197,0.42)] text-white font-semibold shadow-[0_0_16px_-6px_rgba(52,245,197,0.3)]'
-                : 'border-transparent text-[#c5cdd9] hover:bg-white/[0.06] hover:text-white'
-            }`}
-          >
-            <span className="flex items-center gap-2 min-w-0">
-              <Layers
-                className={`h-4 w-4 shrink-0 ${selectedCode === 'all' ? 'text-[#34f5c5]' : 'text-[#8b96a9]'}`}
-                strokeWidth={selectedCode === 'all' ? 2 : 1.5}
-                aria-hidden="true"
-              />
-              <span className="truncate">Alle Raidabende</span>
-            </span>
-            <span className="font-mono-num text-[11px] text-[#8b96a9] shrink-0">
-              {totalPulls}
-            </span>
-          </button>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                onSelectReport('all')
+                onCloseMobile()
+              }}
+              className={`flex w-full items-center justify-between gap-2 rounded-[8px] border px-2.5 py-2 text-left text-[13px] transition-[background-color,color,border-color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 ${
+                selectedCode === 'all'
+                  ? 'bg-[rgba(52,245,197,0.13)] border-[rgba(52,245,197,0.42)] text-white font-semibold shadow-[0_0_16px_-6px_rgba(52,245,197,0.3)]'
+                  : 'border-transparent text-[#c5cdd9] hover:bg-white/[0.06] hover:text-white'
+              }`}
+            >
+              <span className="flex items-center gap-2 min-w-0">
+                <Layers
+                  className={`h-4 w-4 shrink-0 ${selectedCode === 'all' ? 'text-[#34f5c5]' : 'text-[#8b96a9]'}`}
+                  strokeWidth={selectedCode === 'all' ? 2 : 1.5}
+                  aria-hidden="true"
+                />
+                <span className="truncate">Alle Raidabende</span>
+              </span>
+              <span className="font-mono-num text-[11px] text-[#8b96a9] shrink-0">
+                {totalPulls}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                onOpenImport()
+                onCloseMobile()
+              }}
+              className="obsidian-btn-primary flex w-full items-center justify-center gap-1.5 px-3 py-2 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+              <span>Neuen Log hinzufügen</span>
+            </button>
+          </div>
         </div>
 
         <div>
