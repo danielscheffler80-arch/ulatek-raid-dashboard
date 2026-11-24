@@ -85,6 +85,9 @@ export interface TankFail {
   tank_was_dead: boolean
   min_hp_pct: number | null
   stacks: number | null
+  lethal: boolean
+  death_rel_time: string | null
+  death_ability: string | null
   pull_num: number
   fight_id: number
   is_kill: boolean

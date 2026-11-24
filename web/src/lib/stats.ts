@@ -12,6 +12,11 @@ export type WithReport<T> = T & {
   reportDate: string
 }
 
+export interface PullRange {
+  from: number
+  to: number
+}
+
 export function getReportDisplayName(report: ReportData): string {
   return report.label || report.title || report.code
 }
@@ -22,6 +27,16 @@ export function filterByMaxDeaths<T extends { deaths_before: number }>(
 ): T[] {
   if (maxDeaths === null) return items
   return items.filter((item) => item.deaths_before <= maxDeaths)
+}
+
+export function filterByPullRange<T extends { pull_num: number }>(
+  items: T[],
+  pullRange?: PullRange | null,
+): T[] {
+  if (!pullRange) return items
+  const lo = Math.min(pullRange.from, pullRange.to)
+  const hi = Math.max(pullRange.from, pullRange.to)
+  return items.filter((item) => item.pull_num >= lo && item.pull_num <= hi)
 }
 
 export interface PhaseBucket {
@@ -58,6 +73,7 @@ export interface EggPlayerRow {
 export function aggregateEggFails(
   reports: ReportData[],
   maxDeaths: number | null,
+  pullRange?: PullRange | null,
 ) {
   const rawFails: WithReport<EggFail>[] = []
   const rawSplashes: WithReport<EggFail>[] = []
@@ -79,8 +95,8 @@ export function aggregateEggFails(
     }
   }
 
-  const filtered = filterByMaxDeaths(rawFails, maxDeaths)
-  const filteredSplashes = filterByMaxDeaths(rawSplashes, maxDeaths)
+  const filtered = filterByPullRange(filterByMaxDeaths(rawFails, maxDeaths), pullRange)
+  const filteredSplashes = filterByPullRange(filterByMaxDeaths(rawSplashes, maxDeaths), pullRange)
   const byPlayer = new Map<string, EggPlayerRow & { totalDamage: number }>()
 
   for (const item of filtered) {
@@ -136,7 +152,11 @@ export interface WavePlayerRow {
   items: WithReport<WaveFail>[]
 }
 
-export function aggregateWaveFails(reports: ReportData[], maxDeaths: number | null) {
+export function aggregateWaveFails(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
   const raw: WithReport<WaveFail>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
@@ -144,7 +164,7 @@ export function aggregateWaveFails(reports: ReportData[], maxDeaths: number | nu
       raw.push({ ...item, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }
   }
-  const filtered = filterByMaxDeaths(raw, maxDeaths)
+  const filtered = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange)
   const byPlayer = new Map<string, WavePlayerRow>()
 
   for (const item of filtered) {
@@ -197,6 +217,7 @@ export interface TankPlayerRow {
   count: number
   tentacleCount: number
   stoneVenomCount: number
+  stoneVenomLethalCount: number
   lowestHpPct: number | null
   items: WithReport<TankFail>[]
 }
@@ -205,6 +226,7 @@ export function aggregateTankFails(
   reports: ReportData[],
   maxDeaths: number | null,
   subFilter: 'all' | 'tentacle_aggro' | 'stone_venom_no_def' = 'all',
+  pullRange?: PullRange | null,
 ) {
   const raw: WithReport<TankFail>[] = []
   for (const rep of reports) {
@@ -214,7 +236,7 @@ export function aggregateTankFails(
       raw.push({ ...item, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }
   }
-  const filtered = filterByMaxDeaths(raw, maxDeaths)
+  const filtered = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange)
   const byTank = new Map<string, TankPlayerRow>()
 
   for (const item of filtered) {
@@ -226,6 +248,7 @@ export function aggregateTankFails(
         count: 0,
         tentacleCount: 0,
         stoneVenomCount: 0,
+        stoneVenomLethalCount: 0,
         lowestHpPct: null,
         items: [],
       }
@@ -235,6 +258,7 @@ export function aggregateTankFails(
     if (item.kind === 'tentacle_aggro') row.tentacleCount++
     if (item.kind === 'stone_venom_no_def') {
       row.stoneVenomCount++
+      if (item.lethal) row.stoneVenomLethalCount++
       if (item.min_hp_pct !== null && (row.lowestHpPct === null || item.min_hp_pct < row.lowestHpPct)) {
         row.lowestHpPct = item.min_hp_pct
       }
@@ -253,6 +277,7 @@ export function aggregateTankFails(
     total: filtered.length,
     tentacleCount: filtered.filter((x) => x.kind === 'tentacle_aggro').length,
     stoneVenomCount: filtered.filter((x) => x.kind === 'stone_venom_no_def').length,
+    stoneVenomLethalCount: filtered.filter((x) => x.kind === 'stone_venom_no_def' && x.lethal).length,
     items: filtered,
     players,
   }
@@ -277,7 +302,11 @@ export interface DefensivePlayerRow {
   items: WithReport<DefensiveEvent>[]
 }
 
-export function aggregateDefensives(reports: ReportData[], maxDeaths: number | null) {
+export function aggregateDefensives(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
   const byPlayer = new Map<string, DefensivePlayerRow>()
 
   const ensure = (player: string, className: string) => {
@@ -309,14 +338,14 @@ export function aggregateDefensives(reports: ReportData[], maxDeaths: number | n
   const allEvents: WithReport<DefensiveEvent>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
-    for (const u of rep.consumable_usage) {
+    for (const u of filterByPullRange(rep.consumable_usage, pullRange)) {
       const row = ensure(u.player, u.class)
       row.pullsPresent++
       if (u.used_health_pot) row.potPulls++
       if (u.used_healthstone) row.hsPulls++
       row.defCdCasts += u.def_cd_casts
     }
-    for (const ev of filterByMaxDeaths(rep.defensive_events, maxDeaths)) {
+    for (const ev of filterByPullRange(filterByMaxDeaths(rep.defensive_events, maxDeaths), pullRange)) {
       const enriched: WithReport<DefensiveEvent> = {
         ...ev,
         reportCode: rep.code,

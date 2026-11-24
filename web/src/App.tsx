@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Menu, Plus } from 'lucide-react'
 import type { ReportsStore, TabKey } from './types'
 import { getReportDisplayName } from './lib/stats'
+import type { PullRange } from './lib/stats'
 import { Sidebar } from './components/Sidebar'
 import { ImportModal } from './components/ImportModal'
 import { EggFailsTab } from './components/EggFailsTab'
@@ -9,7 +10,7 @@ import { WaveFailsTab } from './components/WaveFailsTab'
 import { TankFailsTab } from './components/TankFailsTab'
 import { DefensivesTab } from './components/DefensivesTab'
 import { PullsTab } from './components/PullsTab'
-import { MaxDeathsStepper, Pill } from './components/ui'
+import { MaxDeathsStepper, Pill, TryRangeFilter } from './components/ui'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'egg', label: 'Egg Fails' },
@@ -32,6 +33,7 @@ export default function App() {
     defensives: 4,
     pulls: 4,
   })
+  const [pullRange, setPullRange] = useState<PullRange>({ from: 1, to: 40 })
   const [searchQuery, setSearchQuery] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
@@ -75,6 +77,19 @@ export default function App() {
     return found ? [found] : reports
   }, [reports, selectedCode])
 
+  const maxPullAvailable = useMemo(() => {
+    let maxP = 1
+    for (const r of activeReports) {
+      if (r.pulls_total > maxP) maxP = r.pulls_total
+    }
+    return maxP
+  }, [activeReports])
+
+  // Reset pull range cleanly whenever the active report selection changes
+  useEffect(() => {
+    setPullRange({ from: 1, to: maxPullAvailable })
+  }, [selectedCode, maxPullAvailable])
+
   const isMultiReport = selectedCode === 'all' && reports.length > 1
   const totalPulls = activeReports.reduce((s, r) => s + r.pulls_total, 0)
   const breadcrumbLabel =
@@ -107,7 +122,7 @@ export default function App() {
 
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
         {/* Obsidian Mint Top Header Bar */}
-        <header className="obsidian-topbar flex min-h-[58px] flex-wrap items-center justify-between gap-3 px-4 py-2">
+        <header className="obsidian-topbar flex min-h-[58px] flex-wrap items-center justify-between gap-2.5 px-4 py-2">
           {/* Left: Breadcrumb + Pull Badge */}
           <div className="flex items-center gap-2.5 min-w-0">
             <button
@@ -121,7 +136,7 @@ export default function App() {
             <div className="flex items-center gap-1.5 text-[13px] min-w-0">
               <span className="text-[#8b96a9] shrink-0">Ula&apos;tek Mythic</span>
               <span className="text-[#8b96a9]" aria-hidden="true">/</span>
-              <span className="truncate font-semibold text-white max-w-[180px] sm:max-w-[240px]">
+              <span className="truncate font-semibold text-white max-w-[160px] sm:max-w-[220px]">
                 {breadcrumbLabel}
               </span>
             </div>
@@ -150,8 +165,13 @@ export default function App() {
             })}
           </nav>
 
-          {/* Right: Compact Max-Deaths Stepper (Default: 4) + Mint CTA */}
-          <div className="flex items-center gap-2.5">
+          {/* Right: Try Range (ab/bis Try) + Compact Max-Deaths Stepper (Default: 4) + Mint CTA */}
+          <div className="flex flex-wrap items-center gap-2">
+            <TryRangeFilter
+              range={pullRange}
+              maxPull={maxPullAvailable}
+              onChange={setPullRange}
+            />
             <MaxDeathsStepper
               value={currentMaxDeaths}
               onChange={setCurrentMaxDeaths}
@@ -162,8 +182,8 @@ export default function App() {
               className="obsidian-btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
             >
               <Plus className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-              <span className="hidden sm:inline">Neuen Log hinzufügen</span>
-              <span className="sm:hidden">Log</span>
+              <span className="hidden xl:inline">Neuen Log hinzufügen</span>
+              <span className="xl:hidden">Log</span>
             </button>
           </div>
         </header>
@@ -186,6 +206,7 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
                 />
               )}
               {activeTab === 'wave' && (
@@ -194,6 +215,7 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
                 />
               )}
               {activeTab === 'tank' && (
@@ -202,6 +224,7 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
                 />
               )}
               {activeTab === 'defensives' && (
@@ -210,6 +233,7 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
                 />
               )}
               {activeTab === 'pulls' && (
@@ -218,6 +242,7 @@ export default function App() {
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
                 />
               )}
             </>

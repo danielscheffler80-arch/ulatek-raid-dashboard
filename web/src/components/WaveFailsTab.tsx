@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Clock, Egg, Skull, Users, Waves } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateWaveFails, formatDamage } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -16,17 +17,19 @@ export function WaveFailsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
+  pullRange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
+  pullRange: PullRange
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const stats = useMemo(
-    () => aggregateWaveFails(reports, maxDeaths),
-    [reports, maxDeaths],
+    () => aggregateWaveFails(reports, maxDeaths, pullRange),
+    [reports, maxDeaths, pullRange],
   )
 
   const q = searchQuery.trim().toLowerCase()

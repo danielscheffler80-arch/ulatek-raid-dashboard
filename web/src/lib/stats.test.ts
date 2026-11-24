@@ -68,12 +68,12 @@ const mockReport: ReportData = {
   tank_fails: [
     {
       id: 't1', kind: 'tentacle_aggro', tank: 'Barrumir', tank_class: 'DeathKnight', tank_id: 2, victim: 'Narande', victim_class: 'Warlock',
-      other_tank: 'Betøng', tank_was_dead: false, min_hp_pct: null, stacks: null, pull_num: 1, fight_id: 10, is_kill: false,
+      other_tank: 'Betøng', tank_was_dead: false, min_hp_pct: null, stacks: null, lethal: true, death_rel_time: '01:33.000', death_ability: 'Gore Rattle Melee', pull_num: 1, fight_id: 10, is_kill: false,
       rel_time: '01:33.000', rel_ms: 93000, timestamp: 94000, deaths_before: 0, events_url: 'https://wcl/t1', replay_url: 'https://wcl/rt1',
     },
     {
       id: 't2', kind: 'stone_venom_no_def', tank: 'Betøng', tank_class: 'Monk', tank_id: 1, victim: null, victim_class: null,
-      other_tank: 'Barrumir', tank_was_dead: false, min_hp_pct: 21.5, stacks: 5, pull_num: 2, fight_id: 11, is_kill: false,
+      other_tank: 'Barrumir', tank_was_dead: false, min_hp_pct: 21.5, stacks: 5, lethal: true, death_rel_time: '01:14.200', death_ability: 'Stone Venom', pull_num: 2, fight_id: 11, is_kill: false,
       rel_time: '01:12.000', rel_ms: 72000, timestamp: 272000, deaths_before: 3, events_url: 'https://wcl/t2', replay_url: 'https://wcl/rt2',
     },
   ],
@@ -124,10 +124,17 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(tanksAll.total).toBe(2)
     expect(tanksAll.tentacleCount).toBe(1)
     expect(tanksAll.stoneVenomCount).toBe(1)
+    expect(tanksAll.stoneVenomLethalCount).toBe(1)
 
     const tanksZero = aggregateTankFails([mockReport], 0)
     expect(tanksZero.total).toBe(1)
     expect(tanksZero.players[0].tank).toBe('Barrumir')
+
+    // Pull range filter (ab Try 2 bis Try 2)
+    expect(aggregateWaveFails([mockReport], null, { from: 2, to: 2 }).total).toBe(1)
+    expect(aggregateEggFails([mockReport], null, { from: 2, to: 2 }).total).toBe(0)
+    expect(aggregateTankFails([mockReport], null, 'all', { from: 2, to: 2 }).total).toBe(1)
+    expect(aggregateDefensives([mockReport], null, { from: 2, to: 2 }).players[0].pullsPresent).toBe(1)
   })
 
   it('aggregates defensive events and consumable quotes', () => {

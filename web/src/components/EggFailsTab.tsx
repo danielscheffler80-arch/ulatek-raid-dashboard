@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, Clock, Egg, Flame, Skull, Users } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateEggFails, formatDamage } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -16,17 +17,19 @@ export function EggFailsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
+  pullRange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
+  pullRange: PullRange
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const stats = useMemo(
-    () => aggregateEggFails(reports, maxDeaths),
-    [reports, maxDeaths],
+    () => aggregateEggFails(reports, maxDeaths, pullRange),
+    [reports, maxDeaths, pullRange],
   )
 
   const q = searchQuery.trim().toLowerCase()

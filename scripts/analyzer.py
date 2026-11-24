@@ -203,6 +203,30 @@ def analyze_report_events(
         # Track which CW event timestamps broke a Noxious Shell (filled after shell pass)
         cw_broke_shell_keys: set[tuple[int, int]] = set()
 
+        def _finalize_sv_fail(tk_id: int, end_ts: int) -> None:
+            pending = sv_window_fail[tk_id]
+            if pending is None:
+                return
+            last_low = int(pending.pop("_last_low_ts", pending["timestamp"]))
+            window_end = max(end_ts, last_low) + 5000
+            matched_death = None
+            for dts, dtid, dev in player_deaths:
+                if dtid == tk_id and pending["timestamp"] <= dts <= window_end:
+                    matched_death = (dts, dev)
+                    break
+            if matched_death is not None:
+                dts, dev = matched_death
+                kaid = dev.get("killingAbilityGameID")
+                pending["lethal"] = True
+                pending["death_rel_time"] = format_rel_time(dts - f_start)
+                pending["death_ability"] = abilities.get(kaid, str(kaid)) if kaid else "Unbekannt"
+            else:
+                pending["lethal"] = False
+                pending["death_rel_time"] = None
+                pending["death_ability"] = None
+            tank_fails.append(pending)
+            sv_window_fail[tk_id] = None
+
         for ev in fevs:
             t = ev.get("type")
             aid = ev.get("abilityGameID")
@@ -272,9 +296,7 @@ def analyze_report_events(
                     else:
                         sv_stacks[tid] = max(1, sv_stacks[tid] + (1 if t == "applydebuffstack" else 0))
                 elif t == "removedebuff":
-                    if sv_window_fail[tid] is not None:
-                        tank_fails.append(sv_window_fail[tid])
-                        sv_window_fail[tid] = None
+                    _finalize_sv_fail(tid, ts)
                     sv_active[tid] = False
                     sv_stacks[tid] = 0
 
@@ -300,6 +322,10 @@ def analyze_report_events(
                                 "tank_was_dead": False,
                                 "min_hp_pct": hp_pct,
                                 "stacks": max(1, sv_stacks[tid]),
+                                "lethal": False,
+                                "death_rel_time": None,
+                                "death_ability": None,
+                                "_last_low_ts": ts,
                                 "pull_num": pull_idx,
                                 "fight_id": fid,
                                 "is_kill": is_kill,
@@ -311,6 +337,7 @@ def analyze_report_events(
                                 "replay_url": build_replay_url(report_code, fid, rel_ms),
                             }
                         else:
+                            cur_fail["_last_low_ts"] = ts
                             if hp_pct < cur_fail["min_hp_pct"]:
                                 cur_fail["min_hp_pct"] = hp_pct
                             if sv_stacks[tid] > cur_fail["stacks"]:
@@ -358,6 +385,9 @@ def analyze_report_events(
                             "tank_was_dead": tank_was_dead,
                             "min_hp_pct": None,
                             "stacks": None,
+                            "lethal": True,
+                            "death_rel_time": format_rel_time(rel_ms),
+                            "death_ability": "Gore Rattle Melee",
                             "pull_num": pull_idx,
                             "fight_id": fid,
                             "is_kill": is_kill,
@@ -436,9 +466,8 @@ def analyze_report_events(
                     )
 
         # Flush any still-open Stone Venom window at fight end
-        for tk, pending_fail in sv_window_fail.items():
-            if pending_fail is not None:
-                tank_fails.append(pending_fail)
+        for tk in list(sv_window_fail.keys()):
+            _finalize_sv_fail(tk, f_end)
 
         # ---- 2. Classify all Noxious Shell (1307612) removals ----
         for rem in shell_removes:

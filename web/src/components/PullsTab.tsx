@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import { ExternalLink, Trophy } from 'lucide-react'
 import type { ReportData } from '../types'
-import { filterByMaxDeaths, formatDuration, getReportDisplayName } from '../lib/stats'
+import { filterByMaxDeaths, filterByPullRange, formatDuration, getReportDisplayName } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import { Card, EmptyState, Pill } from './ui'
 
 export function PullsTab({
@@ -9,11 +10,13 @@ export function PullsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
+  pullRange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
+  pullRange: PullRange
 }) {
   const rows = useMemo(() => {
     const out: Array<{
@@ -43,7 +46,7 @@ export function PullsTab({
       const tanks = filterByMaxDeaths(rep.tank_fails, maxDeaths)
       const defs = filterByMaxDeaths(rep.defensive_events, maxDeaths)
 
-      for (const p of rep.pulls) {
+      for (const p of filterByPullRange(rep.pulls, pullRange)) {
         out.push({
           key: `${rep.code}-${p.fight_id}`,
           reportDate: rep.date_iso,
@@ -73,7 +76,7 @@ export function PullsTab({
         r.reportDate.includes(q) ||
         r.reportLabel.toLowerCase().includes(q),
     )
-  }, [reports, maxDeaths, searchQuery])
+  }, [reports, maxDeaths, pullRange, searchQuery])
 
   return (
     <Card className="overflow-hidden">

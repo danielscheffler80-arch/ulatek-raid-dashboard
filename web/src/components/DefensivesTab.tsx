@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, FlaskConical, Gem, Shield, Skull } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateDefensives } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -17,18 +18,20 @@ export function DefensivesTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
+  pullRange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
+  pullRange: PullRange
 }) {
   const [eventFilter, setEventFilter] = useState<'all' | 'unprotected_only'>('unprotected_only')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const stats = useMemo(
-    () => aggregateDefensives(reports, maxDeaths),
-    [reports, maxDeaths],
+    () => aggregateDefensives(reports, maxDeaths, pullRange),
+    [reports, maxDeaths, pullRange],
   )
 
   const q = searchQuery.trim().toLowerCase()

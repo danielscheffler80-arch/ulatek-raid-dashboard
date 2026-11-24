@@ -44,6 +44,9 @@ def _base_abilities():
         1234768: "Silvermoon Health Potion",
         33206: "Pain Suppression",
         115203: "Fortifying Brew",
+        1241059: "Celestial Infusion",
+        132578: "Invoke Niuzao, the Black Ox",
+        465: "Devotion Aura",
         104773: "Unending Resolve",
         1292403: "Caustic Waves",
         1296301: "Mephitic Thrash",
@@ -150,18 +153,20 @@ def test_tank_fails_tentacle_aggro_and_stone_venom_under_30():
         # Tank Betøng is tanking Ula'tek at 130000; Gore Rattle Melee kills non-tank Näxxs at 132000 -> Barrumir failed!
         {"timestamp": 130000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200000, "fight": 41},
         {"timestamp": 132000, "type": "death", "targetID": 4, "killerID": 176, "killingAbilityGameID": 1, "fight": 41},
-        # Stone Venom window 1 on Betøng WITH Fortifying Brew active -> drops to 20% -> NOT a fail!
-        {"timestamp": 150000, "type": "applybuff", "sourceID": 1, "targetID": 1, "abilityGameID": 115203, "fight": 41},
+        # Stone Venom window 1 on Betøng WITH Celestial Infusion active -> drops to 20% -> NOT a fail!
+        {"timestamp": 150000, "type": "applybuff", "sourceID": 1, "targetID": 1, "abilityGameID": 1241059, "fight": 41},
         {"timestamp": 151000, "type": "applydebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 41},
         {"timestamp": 152000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1298418, "amount": 100000, "hitPoints": 320000, "maxHitPoints": 1600000, "fight": 41},
         {"timestamp": 155000, "type": "removedebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 41},
-        {"timestamp": 156000, "type": "removebuff", "sourceID": 1, "targetID": 1, "abilityGameID": 115203, "fight": 41},
-        # Stone Venom window 2 on Barrumir WITHOUT any def-CD or external -> drops to 24% then 18% -> 1 deduplicated fail with min_hp_pct=18.0
+        {"timestamp": 156000, "type": "removebuff", "sourceID": 1, "targetID": 1, "abilityGameID": 1241059, "fight": 41},
+        # Stone Venom window 2 on Barrumir with ONLY passive Devotion Aura -> drops to 24% then 18% and DIES 1.5s later -> 1 lethal fail!
+        {"timestamp": 169000, "type": "applybuff", "sourceID": 5, "targetID": 2, "abilityGameID": 465, "fight": 41},
         {"timestamp": 170000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 41},
         {"timestamp": 171000, "type": "applydebuffstack", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "stack": 4, "fight": 41},
         {"timestamp": 172000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 90000, "hitPoints": 408000, "maxHitPoints": 1700000, "fight": 41},
         {"timestamp": 173000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 95000, "hitPoints": 306000, "maxHitPoints": 1700000, "fight": 41},
-        {"timestamp": 176000, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 41},
+        {"timestamp": 174500, "type": "death", "targetID": 2, "killerID": 152, "killingAbilityGameID": 1298418, "fight": 41},
+        {"timestamp": 174500, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 41},
     ]
 
     rep = analyze_report_events(meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7")
@@ -177,6 +182,9 @@ def test_tank_fails_tentacle_aggro_and_stone_venom_under_30():
     assert sv_fails[0]["tank"] == "Barrumir"
     assert sv_fails[0]["min_hp_pct"] == 18.0
     assert sv_fails[0]["stacks"] == 4
+    assert sv_fails[0]["lethal"] is True
+    assert sv_fails[0]["death_rel_time"] == "01:14.500"
+    assert sv_fails[0]["death_ability"] == "Stone Venom"
 
 
 def test_defensive_and_consumable_tracking():

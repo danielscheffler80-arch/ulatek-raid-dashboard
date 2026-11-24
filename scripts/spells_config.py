@@ -54,7 +54,7 @@ HEALTHSTONE_NAME_SUBSTRINGS = (
     "healthstone",
 )
 
-# Healer Externals & Raid DR buffs
+# Healer Externals & Active Raid DR buffs (NO permanent passive auras like Devotion Aura!)
 EXTERNAL_DEF_NAMES = {
     "pain suppression",
     "guardian spirit",
@@ -72,14 +72,16 @@ EXTERNAL_DEF_NAMES = {
     "zephyr",
     "rescue",
     "twin guardian",
+    "blistering scales",
+    "intervene",
+    "rewind",
     "rallying cry",
-    "devotion aura",
     "aura mastery",
     "ancestral protection totem",
     "luminous barrier",
 }
 
-# Personal & Tank Defensive Cooldowns (all classes)
+# Personal & Tank Defensive Cooldowns (all classes, incl. Midnight Season 2)
 PERSONAL_DEF_NAMES = {
     # Death Knight (Blood / Frost / Unholy)
     "icebound fortitude",
@@ -89,13 +91,17 @@ PERSONAL_DEF_NAMES = {
     "rune tap",
     "lichborne",
     "tombstone",
+    "purgatory",
     "blood shield",
     # Monk (Brewmaster / Windwalker / Mistweaver)
     "fortifying brew",
+    "celestial infusion",
+    "celestial brew",
+    "invoke niuzao, the black ox",
     "dampen harm",
     "diffuse magic",
-    "celestial brew",
     "zen meditation",
+    "exploding keg",
     "touch of karma",
     # Paladin
     "divine shield",

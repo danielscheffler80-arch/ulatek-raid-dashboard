@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight, HeartPulse, ShieldAlert, Skull } from 'lucide-react'
+import { ChevronDown, ChevronRight, HeartPulse, Shield, ShieldAlert, Skull } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateTankFails } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -17,19 +18,24 @@ export function TankFailsTab({
   isMultiReport,
   searchQuery,
   maxDeaths,
+  pullRange,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
+  pullRange: PullRange
 }) {
   const [subFilter, setSubFilter] = useState<'all' | 'tentacle_aggro' | 'stone_venom_no_def'>('all')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  const allStats = useMemo(() => aggregateTankFails(reports, maxDeaths, 'all'), [reports, maxDeaths])
+  const allStats = useMemo(
+    () => aggregateTankFails(reports, maxDeaths, 'all', pullRange),
+    [reports, maxDeaths, pullRange],
+  )
   const stats = useMemo(
-    () => aggregateTankFails(reports, maxDeaths, subFilter),
-    [reports, maxDeaths, subFilter],
+    () => aggregateTankFails(reports, maxDeaths, subFilter, pullRange),
+    [reports, maxDeaths, subFilter, pullRange],
   )
 
   const q = searchQuery.trim().toLowerCase()
@@ -47,14 +53,6 @@ export function TankFailsTab({
     )
   }, [stats.players, q])
 
-  const detectedTanks = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const r of reports) {
-      for (const t of r.tanks) map.set(t.name, t.class)
-    }
-    return Array.from(map.entries())
-  }, [reports])
-
   const toggle = (tank: string) =>
     setExpanded((prev) => ({ ...prev, [tank]: !prev[tank] }))
 
@@ -64,7 +62,7 @@ export function TankFailsTab({
         <KpiCard
           label="Tank Fails gesamt"
           value={stats.total}
-          subtext={`Gefiltert bis max. ${maxDeaths} Tode`}
+          subtext={`Try ${pullRange.from}–${pullRange.to} · max. ${maxDeaths} Tode`}
           icon={<ShieldAlert className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.total > 0 ? 'destructive' : 'success'}
         />
@@ -83,10 +81,11 @@ export function TankFailsTab({
           tone={allStats.stoneVenomCount > 0 ? 'warning' : 'success'}
         />
         <KpiCard
-          label="Erkannte Raid-Tanks"
-          value={detectedTanks.length}
-          subtext={detectedTanks.map(([n]) => n).join(' & ') || '—'}
-          icon={<AlertTriangle className="h-4 w-4" strokeWidth={1.75} />}
+          label="Tank dadurch gestorben"
+          value={allStats.stoneVenomLethalCount}
+          subtext={`Von ${allStats.stoneVenomCount} Stone-Venom-Drops < 30%`}
+          icon={<Skull className="h-4 w-4" strokeWidth={1.75} />}
+          tone={allStats.stoneVenomLethalCount > 0 ? 'destructive' : 'success'}
         />
       </div>
 
@@ -96,7 +95,7 @@ export function TankFailsTab({
             <div>
               <h2 className="text-[14px] font-semibold text-white">Tank-Auswertung — Aggro & Stone Venom</h2>
               <p className="text-[12px] text-[#8b96a9]">
-                Klicke auf einen Tank für alle Vorfälle inkl. Opfer, HP-% bei Stone Venom und Direktlinks.
+                Klicke auf einen Tank für alle Vorfälle inkl. ob der Tank danach gestorben ist, HP-% und Direktlinks.
               </p>
             </div>
             <SubFilterPills
@@ -113,7 +112,7 @@ export function TankFailsTab({
           {filteredTanks.length === 0 ? (
             <EmptyState
               title="Keine Tank Fails im aktuellen Filter"
-              description={`Bis maximal ${maxDeaths} Tode wurden weder Tentakel-Aggro-Tode noch ungeschützte Stone-Venom-Drops unter 30 % HP gefunden.`}
+              description={`In Try ${pullRange.from}–${pullRange.to} (max. ${maxDeaths} Tode) wurden keine Tentakel-Aggro-Tode oder ungeschützten Stone-Venom-Drops unter 30 % HP gefunden.`}
             />
           ) : (
             <div className="overflow-x-auto">
@@ -121,9 +120,10 @@ export function TankFailsTab({
                 <thead>
                   <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
                     <th className="py-2.5 pl-4 pr-2">Tank</th>
-                    <th className="py-2.5 px-2 text-right">Fails gesamt</th>
-                    <th className="py-2.5 px-2 text-right">Tentakel-Aggro</th>
-                    <th className="py-2.5 px-2 text-right">Stone Venom &lt; 30%</th>
+                    <th className="py-2.5 px-2 text-right">Gesamt</th>
+                    <th className="py-2.5 px-2 text-right">Tentakel</th>
+                    <th className="py-2.5 px-2 text-right">Stone Venom</th>
+                    <th className="py-2.5 px-2 text-right">Gestorben</th>
                     <th className="py-2.5 pl-2 pr-4 text-right">Tiefste HP</th>
                   </tr>
                 </thead>
@@ -147,18 +147,25 @@ export function TankFailsTab({
         </Card>
 
         <Card className="p-4 space-y-3 self-start">
-          <h3 className="text-[14px] font-semibold text-white">Bewertungsregeln</h3>
-          <div className="space-y-2.5 text-[12px] text-[#c5cdd9] leading-relaxed">
+          <div className="flex items-center gap-2 text-[14px] font-semibold text-white">
+            <Shield className="h-4 w-4 text-[#34f5c5]" strokeWidth={1.8} aria-hidden="true" />
+            <span>Geprüfte Def-CDs & Externals</span>
+          </div>
+          <div className="space-y-2.5 text-[11.5px] text-[#c5cdd9] leading-relaxed">
             <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
-              <div className="font-semibold text-white mb-1">Tentakel-Aggro-Fail</div>
-              Zählt nur, wenn ein <strong>Nicht-Tank</strong> durch <code className="font-mono-num text-[#34f5c5]">Gore Rattle Melee</code> stirbt. Der Tank, der gerade nicht Ula&apos;tek tankt, wird als zuständiger Tentakel-Tank markiert.
+              <div className="font-semibold text-[#00FF98] mb-1">Brewmaster Monk</div>
+              Fortifying Brew, Celestial Infusion, Invoke Niuzao, Dampen Harm, Diffuse Magic, Zen Meditation, Exploding Keg.
             </div>
             <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
-              <div className="font-semibold text-white mb-1">Stone Venom (1298417) &lt; 30%</div>
-              Zählt pro Stone-Venom-Fenster, wenn der aktive Tank unter 30 % Leben droppt und weder ein Tank-Def-CD noch ein Heiler-External aktiv ist.
+              <div className="font-semibold text-[#f87171] mb-1">Blood Death Knight</div>
+              Vampiric Blood, Dancing Rune Weapon, Anti-Magic Shell, Icebound Fortitude, Lichborne, Rune Tap, Tombstone, Purgatory.
+            </div>
+            <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
+              <div className="font-semibold text-[#38bdf8] mb-1">Aktive Raid-Externals</div>
+              Ironbark, Time Dilation, Guardian Spirit, Pain Suppression, Life Cocoon, Blessing of Sacrifice/Protection, Spirit Link, AMZ, Rewind, Zephyr, Rallying Cry, Darkness, Rescue, Blistering Scales.
             </div>
             <p className="text-[11px] text-[#8b96a9]">
-              Hinweis: <strong>Mephitic Thrash (1296301)</strong> und <strong>Rattler Slam (1299206)</strong> werden nicht als Tank-Fail gewertet.
+              <strong>Mephitic Thrash</strong>, <strong>Rattler Slam</strong> und passive Auren (z. B. Devotion Aura) werden korrekt ausgeklammert.
             </p>
           </div>
         </Card>
@@ -215,13 +222,20 @@ function TankRowView({
             <span className="text-[#8b96a9]">0</span>
           )}
         </td>
+        <td className="py-2.5 px-2 text-right font-mono-num text-[13px]">
+          {row.stoneVenomLethalCount > 0 ? (
+            <span className="text-[#f87171] font-semibold">{row.stoneVenomLethalCount}×</span>
+          ) : (
+            <span className="text-[#34f5c5]">0</span>
+          )}
+        </td>
         <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[12px] text-[#c5cdd9]">
           {row.lowestHpPct !== null ? `${row.lowestHpPct.toFixed(1)}%` : '—'}
         </td>
       </tr>
       {isOpen && (
         <tr className="border-b border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.7)]">
-          <td colSpan={5} className="px-4 py-3">
+          <td colSpan={6} className="px-4 py-3">
             <div className="space-y-1.5">
               {row.items.map((item) => (
                 <div
@@ -249,6 +263,14 @@ function TankRowView({
                         <Pill variant="warning">
                           Stone Venom · Min {item.min_hp_pct?.toFixed(1)}% HP
                         </Pill>
+                        {item.lethal ? (
+                          <Pill variant="destructive">
+                            <Skull className="h-3 w-3" aria-hidden="true" />
+                            Gestorben{item.death_rel_time ? ` (${item.death_rel_time}` : ''}{item.death_ability ? ` · ${item.death_ability})` : item.death_rel_time ? ')' : ''}
+                          </Pill>
+                        ) : (
+                          <Pill variant="success">Überlebt</Pill>
+                        )}
                         {item.stacks !== null && (
                           <span className="font-mono-num text-[11px] text-[#8b96a9]">
                             {item.stacks} Stacks · kein Def-CD/External
