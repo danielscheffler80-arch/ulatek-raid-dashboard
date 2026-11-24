@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
-import { CheckCircle2, ChevronDown, ChevronRight, Egg, Flame, Skull, Users } from 'lucide-react'
+import { Fragment, useMemo, useState } from 'react'
+import { ArrowLeftRight, CheckCircle2, ChevronDown, ChevronRight, Egg, Flame, Skull, Users } from 'lucide-react'
 import type { ReportData } from '../types'
 import { aggregateEggFails, formatDamage, WOW_CLASS_COLORS } from '../lib/stats'
-import type { PullRange } from '../lib/stats'
+import type { EggCollisionIncident, PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
@@ -50,8 +50,128 @@ export function EggFailsTab({
     )
   }, [stats.players, q])
 
+  const filteredCollisions = useMemo(() => {
+    if (!q) return stats.collisionIncidents
+    return stats.collisionIncidents.filter(
+      (inc) =>
+        `try ${inc.pull_num}`.includes(q) ||
+        String(inc.pull_num) === q ||
+        inc.participants.some(
+          (p) =>
+            p.player.toLowerCase().includes(q) || p.className.toLowerCase().includes(q),
+        ),
+    )
+  }, [stats.collisionIncidents, q])
+
   const toggle = (name: string) =>
     setExpanded((prev) => ({ ...prev, [name]: !prev[name] }))
+
+  const collisionListCard = subFilter !== 'caustic_waves' && (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
+        <div>
+          <h2 className="text-[14px] font-semibold text-white">
+            Egg-Kollisionen — Wer ist mit wem zusammengelaufen?
+          </h2>
+          <p className="text-[12px] text-[#8b96a9]">
+            Direkte Paar-Übersicht aller 2-Träger-Kollisionen (beide verlieren Noxious Shell ≤ 250 ms mit Noxious Splash).
+          </p>
+        </div>
+        <Pill variant={filteredCollisions.length > 0 ? 'destructive' : 'success'}>
+          {filteredCollisions.length} {filteredCollisions.length === 1 ? 'Kollision' : 'Kollisionen'}
+        </Pill>
+      </div>
+
+      {filteredCollisions.length === 0 ? (
+        <EmptyState
+          title="Keine Egg-Kollisionen im aktuellen Filter"
+          description={`Bis maximal ${maxDeaths} Tode sind keine 2 Egg-Träger ineinander gelaufen.`}
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
+                <th className="py-2.5 pl-4 pr-2">Try &amp; Zeit</th>
+                <th className="py-2.5 px-2">Beteiligte Spieler</th>
+                <th className="py-2.5 px-2 text-right">Abstand</th>
+                <th className="py-2.5 px-2">Status</th>
+                <th className="py-2.5 pl-2 pr-4 text-right">WCL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCollisions.map((inc) => (
+                <CollisionIncidentRow
+                  key={inc.id}
+                  incident={inc}
+                  isMultiReport={isMultiReport}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+
+  const playerTableCard = (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
+        <div>
+          <h2 className="text-[14px] font-semibold text-white">Spieler-Auswertung — Egg Fails &amp; Kollisionen</h2>
+          <p className="text-[12px] text-[#8b96a9]">
+            Caustic-Waves-Treffer mit Ei + 2-Träger-Kollisionen (beide verlieren Noxious Shell ≤ 250 ms mit Noxious Splash).
+          </p>
+        </div>
+        <SubFilterPills
+          value={subFilter}
+          onChange={setSubFilter}
+          options={[
+            { value: 'all', label: 'Alle', count: stats.allTotal },
+            { value: 'caustic_waves', label: 'Welle', count: stats.waveTotal },
+            { value: 'egg_collision', label: 'Kollision (2 Träger)', count: stats.collisionIncidents.length },
+          ]}
+        />
+      </div>
+
+      {filteredPlayers.length === 0 ? (
+        <EmptyState
+          title="Keine Egg Fails im aktuellen Filter"
+          description={`Bis maximal ${maxDeaths} Tode wurde kein Ei-Fehler (Welle oder 2-Träger-Kollision) gefunden.`}
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
+                <th className="py-2.5 pl-4 pr-2">Spieler</th>
+                <th className="py-2.5 px-2 text-right">Gesamt</th>
+                <th className="py-2.5 px-2 text-right">Welle</th>
+                <th className="py-2.5 px-2 text-right">Kollision</th>
+                <th className="py-2.5 px-2 text-right">Ø Schaden</th>
+                <th className="py-2.5 pl-2 pr-4 text-right">Tödlich</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredPlayers.map((row) => {
+                const isOpen = !!expanded[row.player]
+                return (
+                  <EggPlayerRowView
+                    key={row.player}
+                    row={row}
+                    playerClassMap={stats.playerClassMap}
+                    isOpen={isOpen}
+                    isMultiReport={isMultiReport}
+                    onToggle={() => toggle(row.player)}
+                  />
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
 
   return (
     <div className="space-y-4">
@@ -60,7 +180,7 @@ export function EggFailsTab({
         <KpiCard
           label="Egg Fails gesamt"
           value={stats.allTotal}
-          subtext={`${stats.waveTotal} Welle + ${stats.collisionTotal} Kollisionen (≤ ${maxDeaths} Tode)`}
+          subtext={`${stats.waveTotal} Welle + ${stats.collisionIncidents.length} Kollisionen (≤ ${maxDeaths} Tode)`}
           icon={<Egg className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.allTotal > 0 ? 'warning' : 'success'}
         />
@@ -72,11 +192,11 @@ export function EggFailsTab({
           tone={stats.waveTotal > 0 ? 'warning' : 'success'}
         />
         <KpiCard
-          label="Egg-Kollisionen (2 Träger)"
-          value={stats.collisionTotal}
-          subtext={`~${Math.round(stats.collisionTotal / 2)} Paare (beide Shell ≤ 250 ms verloren)`}
+          label="Egg-Kollisionen (Paare)"
+          value={stats.collisionIncidents.length}
+          subtext={`${stats.collisionTotal} beteiligte Spieler (Shell ≤ 250 ms verloren)`}
           icon={<Users className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.collisionTotal > 0 ? 'destructive' : 'success'}
+          tone={stats.collisionIncidents.length > 0 ? 'destructive' : 'success'}
         />
         <KpiCard
           label="Tödliche Egg Fails"
@@ -89,88 +209,85 @@ export function EggFailsTab({
 
       {/* Main Bento Grid */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card className="xl:col-span-2 overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
-            <div>
-              <h2 className="text-[14px] font-semibold text-white">Spieler-Auswertung — Egg Fails &amp; Kollisionen</h2>
-              <p className="text-[12px] text-[#8b96a9]">
-                Caustic-Waves-Treffer mit Ei + 2-Träger-Kollisionen (beide verlieren Noxious Shell ≤ 250 ms mit Noxious Splash).
-              </p>
-            </div>
-            <SubFilterPills
-              value={subFilter}
-              onChange={setSubFilter}
-              options={[
-                { value: 'all', label: 'Alle', count: stats.allTotal },
-                { value: 'caustic_waves', label: 'Welle', count: stats.waveTotal },
-                { value: 'egg_collision', label: 'Kollision (2 Träger)', count: stats.collisionTotal },
-              ]}
-            />
-          </div>
-
-          {filteredPlayers.length === 0 ? (
-            <EmptyState
-              title="Keine Egg Fails im aktuellen Filter"
-              description={`Bis maximal ${maxDeaths} Tode wurde kein Ei-Fehler (Welle oder 2-Träger-Kollision) gefunden.`}
-            />
+        <div className="xl:col-span-2 space-y-4">
+          {subFilter === 'egg_collision' ? (
+            <>
+              {collisionListCard}
+              {playerTableCard}
+            </>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                    <th className="py-2.5 pl-4 pr-2">Spieler</th>
-                    <th className="py-2.5 px-2 text-right">Gesamt</th>
-                    <th className="py-2.5 px-2 text-right">Welle</th>
-                    <th className="py-2.5 px-2 text-right">Kollision</th>
-                    <th className="py-2.5 px-2 text-right">Ø Schaden</th>
-                    <th className="py-2.5 pl-2 pr-4 text-right">Tödlich</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPlayers.map((row) => {
-                    const isOpen = !!expanded[row.player]
-                    return (
-                      <EggPlayerRowView
-                        key={row.player}
-                        row={row}
-                        isOpen={isOpen}
-                        isMultiReport={isMultiReport}
-                        onToggle={() => toggle(row.player)}
-                      />
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {playerTableCard}
+              {collisionListCard}
+            </>
           )}
-        </Card>
+        </div>
 
-        {/* Right Side Panel: Phase Distribution & Clean Splashes */}
+        {/* Right Side Panel: Separated Phase Distributions & Clean Splashes */}
         <Card className="p-4 space-y-4 self-start">
           <div>
             <h3 className="text-[14px] font-semibold text-white">Zeitfenster-Verteilung</h3>
             <p className="text-[12px] text-[#8b96a9]">
-              Wann im Kampf passieren Wellen-Treffer &amp; Egg-Kollisionen?
+              Getrennt nach Wellen-Treffern (mit Ei) und 2-Träger-Kollisionen (Paare).
             </p>
           </div>
 
-          <div className="space-y-3">
-            {stats.phases.map((ph) => (
-              <div key={ph.label} className="space-y-1.5">
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#c5cdd9]">{ph.label}</span>
-                  <span className="font-mono-num text-white font-medium">
-                    {ph.count}× ({ph.pct}%)
-                  </span>
+          {/* Block 1: Wellen-Treffer (mit Ei) */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.6px]">
+              <span className="inline-flex items-center gap-1.5 text-[#fbbf24]">
+                <Flame className="h-3.5 w-3.5" strokeWidth={1.9} aria-hidden="true" />
+                Wellen-Treffer (mit Ei)
+              </span>
+              <span className="font-mono-num text-white">{stats.waveTotal}×</span>
+            </div>
+            <div className="space-y-2">
+              {stats.wavePhases.map((ph) => (
+                <div key={`wave-${ph.label}`} className="space-y-1">
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span className="text-[#c5cdd9]">{ph.label}</span>
+                    <span className="font-mono-num text-white font-medium">
+                      {ph.count}× ({ph.pct}%)
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#fbbf24] to-[#f59e0b] transition-[width] duration-300"
+                      style={{ width: `${ph.pct}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#34f5c5] to-[#38bdf8] transition-[width] duration-300"
-                    style={{ width: `${ph.pct}%` }}
-                  />
+              ))}
+            </div>
+          </div>
+
+          {/* Block 2: Egg-Kollisionen (Paare) */}
+          <div className="border-t border-[rgba(255,255,255,0.08)] pt-3.5 space-y-2.5">
+            <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.6px]">
+              <span className="inline-flex items-center gap-1.5 text-[#f87171]">
+                <Users className="h-3.5 w-3.5" strokeWidth={1.9} aria-hidden="true" />
+                Egg-Kollisionen (Paare)
+              </span>
+              <span className="font-mono-num text-white">{stats.collisionIncidents.length}×</span>
+            </div>
+            <div className="space-y-2">
+              {stats.collisionPhases.map((ph) => (
+                <div key={`col-${ph.label}`} className="space-y-1">
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span className="text-[#c5cdd9]">{ph.label}</span>
+                    <span className="font-mono-num text-white font-medium">
+                      {ph.count}× ({ph.pct}%)
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#f87171] to-[#ef4444] transition-[width] duration-300"
+                      style={{ width: `${ph.pct}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
           {/* Positive Clean Single Splash Note */}
@@ -203,13 +320,79 @@ export function EggFailsTab({
   )
 }
 
+function CollisionIncidentRow({
+  incident,
+  isMultiReport,
+}: {
+  incident: EggCollisionIncident
+  isMultiReport: boolean
+}) {
+  return (
+    <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(239,68,68,0.05)] transition-colors">
+      <td className="py-2.5 pl-4 pr-2 whitespace-nowrap">
+        <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+          {isMultiReport && <Pill>{incident.reportDate}</Pill>}
+          <span className="font-mono-num font-semibold text-white">Try {incident.pull_num}</span>
+          <span className="font-mono-num text-[#34f5c5]">{incident.rel_time}</span>
+        </div>
+        {incident.deaths_before > 0 && (
+          <div className="mt-0.5 text-[10.5px] text-[#8b96a9]">
+            nach {incident.deaths_before} {incident.deaths_before === 1 ? 'Tod' : 'Toden'}
+          </div>
+        )}
+      </td>
+      <td className="py-2.5 px-2">
+        <div className="flex flex-wrap items-center gap-1.5 text-[12.5px] font-semibold">
+          {incident.participants.map((p, idx) => (
+            <Fragment key={`${incident.id}-${p.player}`}>
+              {idx > 0 && (
+                <ArrowLeftRight
+                  className="h-3.5 w-3.5 text-[#f87171] shrink-0"
+                  strokeWidth={2}
+                  aria-label="kollidiert mit"
+                />
+              )}
+              <span className="inline-flex items-center gap-1.5 rounded-[6px] border border-[rgba(255,255,255,0.09)] bg-[rgba(10,14,22,0.82)] px-2 py-0.5">
+                <ClassDot className={p.className} />
+                <span style={{ color: WOW_CLASS_COLORS[p.className] ?? '#ffffff' }}>
+                  {p.player}
+                </span>
+                {p.lethal && (
+                  <Skull className="h-3 w-3 text-[#f87171]" aria-label="gestorben" />
+                )}
+              </span>
+            </Fragment>
+          ))}
+        </div>
+      </td>
+      <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9] whitespace-nowrap">
+        {incident.gap_ms} ms
+      </td>
+      <td className="py-2.5 px-2 whitespace-nowrap">
+        {incident.lethal ? (
+          <Pill variant="destructive">Tödlich</Pill>
+        ) : (
+          <Pill variant="warning">Überlebt</Pill>
+        )}
+      </td>
+      <td className="py-2.5 pl-2 pr-4 text-right whitespace-nowrap">
+        <div className="inline-flex justify-end">
+          <WclActionLinks eventsUrl={incident.events_url} replayUrl={incident.replay_url} />
+        </div>
+      </td>
+    </tr>
+  )
+}
+
 function EggPlayerRowView({
   row,
+  playerClassMap,
   isOpen,
   isMultiReport,
   onToggle,
 }: {
   row: ReturnType<typeof aggregateEggFails>['players'][number]
+  playerClassMap: Record<string, string>
   isOpen: boolean
   isMultiReport: boolean
   onToggle: () => void
@@ -277,10 +460,23 @@ function EggPlayerRowView({
                     </span>
                     <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
                     {item.kind === 'egg_collision' ? (
-                      <Pill variant="destructive">
-                        Kollision mit {(item.collision_partners ?? []).join(', ') || '?'}
-                        {item.collision_gap_ms != null ? ` (${item.collision_gap_ms} ms)` : ''}
-                      </Pill>
+                      <span className="inline-flex flex-wrap items-center gap-1 rounded-[6px] border border-[rgba(239,68,68,0.34)] bg-[rgba(239,68,68,0.12)] px-2 py-0.5 text-[11px] font-medium text-[#f87171]">
+                        <span>Kollision mit</span>
+                        {(item.collision_partners ?? []).map((cp, idx) => (
+                          <Fragment key={`${item.id}-${cp}`}>
+                            {idx > 0 && <span className="text-[#8b96a9]">,</span>}
+                            <span
+                              className="font-semibold"
+                              style={{ color: WOW_CLASS_COLORS[playerClassMap[cp] ?? ''] ?? '#ffffff' }}
+                            >
+                              {cp}
+                            </span>
+                          </Fragment>
+                        ))}
+                        {item.collision_gap_ms != null && (
+                          <span className="font-mono-num text-[#fca5a5]">({item.collision_gap_ms} ms)</span>
+                        )}
+                      </span>
                     ) : (
                       <Pill variant="warning">Caustic Waves</Pill>
                     )}

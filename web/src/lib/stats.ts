@@ -76,6 +76,32 @@ export interface EggPlayerRow {
   items: WithReport<EggFail>[]
 }
 
+export interface EggCollisionParticipant {
+  player: string
+  className: string
+  damage: number
+  lethal: boolean
+  events_url: string
+}
+
+export interface EggCollisionIncident {
+  id: string
+  reportCode: string
+  reportDate: string
+  reportLabel: string
+  pull_num: number
+  fight_id: number
+  rel_time: string
+  rel_ms: number
+  timestamp: number
+  deaths_before: number
+  gap_ms: number
+  lethal: boolean
+  participants: EggCollisionParticipant[]
+  events_url: string
+  replay_url: string
+}
+
 export function aggregateEggFails(
   reports: ReportData[],
   maxDeaths: number | null,
@@ -84,10 +110,15 @@ export function aggregateEggFails(
 ) {
   const rawFails: WithReport<EggFail>[] = []
   const rawSplashes: WithReport<EggFail>[] = []
+  const playerClassMap: Record<string, string> = {}
 
   for (const rep of reports) {
+    for (const pl of rep.players ?? []) {
+      if (pl.name && pl.class) playerClassMap[pl.name] = pl.class
+    }
     const label = getReportDisplayName(rep)
     for (const item of rep.egg_fails) {
+      if (item.player && item.class) playerClassMap[item.player] = item.class
       const enriched: WithReport<EggFail> = {
         ...item,
         reportCode: rep.code,
@@ -143,18 +174,117 @@ export function aggregateEggFails(
     p.items.sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp)
   }
 
-  const waveTotal = allFilteredFails.filter((x) => x.kind === 'caustic_waves').length
-  const collisionTotal = allFilteredFails.filter((x) => x.kind === 'egg_collision').length
+  const waveItems = allFilteredFails.filter((x) => x.kind === 'caustic_waves')
+  const collisionItems = allFilteredFails.filter((x) => x.kind === 'egg_collision')
+
+  // Group paired egg_collision events (same report + fight within <= 300 ms) into deduplicated incidents
+  const collisionsByFight = new Map<string, WithReport<EggFail>[]>()
+  for (const item of collisionItems) {
+    const key = `${item.reportCode}:${item.fight_id}`
+    const list = collisionsByFight.get(key)
+    if (list) list.push(item)
+    else collisionsByFight.set(key, [item])
+  }
+
+  const collisionIncidents: EggCollisionIncident[] = []
+  for (const fightItems of collisionsByFight.values()) {
+    const sorted = [...fightItems].sort((a, b) => a.timestamp - b.timestamp || a.player.localeCompare(b.player))
+    const clusters: WithReport<EggFail>[][] = []
+    for (const ev of sorted) {
+      const lastCluster = clusters[clusters.length - 1]
+      if (lastCluster && ev.timestamp - lastCluster[lastCluster.length - 1].timestamp <= 300) {
+        lastCluster.push(ev)
+      } else {
+        clusters.push([ev])
+      }
+    }
+
+    for (const cluster of clusters) {
+      const first = cluster[0]
+      const participantMap = new Map<string, EggCollisionParticipant>()
+      for (const ev of cluster) {
+        const existing = participantMap.get(ev.player)
+        if (!existing) {
+          participantMap.set(ev.player, {
+            player: ev.player,
+            className: ev.class || playerClassMap[ev.player] || '',
+            damage: ev.damage,
+            lethal: ev.lethal,
+            events_url: ev.events_url,
+          })
+        } else {
+          existing.damage = Math.max(existing.damage, ev.damage)
+          existing.lethal = existing.lethal || ev.lethal
+        }
+      }
+      // Include any collision_partners referenced by events in this cluster if filtered out at exact death boundary
+      for (const ev of cluster) {
+        for (const partnerName of ev.collision_partners ?? []) {
+          if (!participantMap.has(partnerName)) {
+            participantMap.set(partnerName, {
+              player: partnerName,
+              className: playerClassMap[partnerName] || '',
+              damage: 0,
+              lethal: false,
+              events_url: ev.events_url,
+            })
+          }
+        }
+      }
+
+      const participants = Array.from(participantMap.values()).sort((a, b) =>
+        a.player.localeCompare(b.player),
+      )
+      const measuredSpan =
+        cluster.length >= 2
+          ? Math.max(...cluster.map((e) => e.timestamp)) - Math.min(...cluster.map((e) => e.timestamp))
+          : first.collision_gap_ms ?? 0
+      const gapMs =
+        first.collision_gap_ms != null ? Math.max(first.collision_gap_ms, measuredSpan) : measuredSpan
+
+      collisionIncidents.push({
+        id: `${first.reportCode}-${first.fight_id}-${first.timestamp}-colpair`,
+        reportCode: first.reportCode,
+        reportDate: first.reportDate,
+        reportLabel: first.reportLabel,
+        pull_num: first.pull_num,
+        fight_id: first.fight_id,
+        rel_time: first.rel_time,
+        rel_ms: first.rel_ms,
+        timestamp: first.timestamp,
+        deaths_before: Math.min(...cluster.map((e) => e.deaths_before)),
+        gap_ms: gapMs,
+        lethal: cluster.some((e) => e.lethal),
+        participants,
+        events_url: first.events_url,
+        replay_url: first.replay_url,
+      })
+    }
+  }
+
+  collisionIncidents.sort(
+    (a, b) =>
+      b.reportDate.localeCompare(a.reportDate) ||
+      a.pull_num - b.pull_num ||
+      a.timestamp - b.timestamp,
+  )
+
+  const waveTotal = waveItems.length
+  const collisionTotal = collisionItems.length
 
   return {
     total: filtered.length,
     allTotal: allFilteredFails.length,
     waveTotal,
     collisionTotal,
+    collisionIncidents,
     cleanSplashCount: filteredSplashes.length,
     lethalTotal: filtered.filter((x) => x.lethal).length,
     affectedPlayers: players.length,
     phases: computePhaseBuckets(filtered),
+    wavePhases: computePhaseBuckets(waveItems),
+    collisionPhases: computePhaseBuckets(collisionIncidents),
+    playerClassMap,
     items: filtered,
     players,
   }
