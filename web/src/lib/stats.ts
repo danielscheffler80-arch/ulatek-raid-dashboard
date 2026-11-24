@@ -1777,8 +1777,30 @@ export interface GroupSoakPlayerRow {
   wrongGroupCount: number
   doubleSoakCount: number
   deadCount: number
+  bossTankExemptCount: number
   soakRatePct: number
   incidents: GroupSoakPlayerIncident[]
+}
+
+export interface GroupSoakTableGroup {
+  label: string
+  tankClass: string
+  players: GroupSoakPlayerRow[]
+  totalCorrect: number
+  totalMissedAlive: number
+  totalWrongGroup: number
+  totalDoubleSoak: number
+}
+
+export function getLatestP2Groups(reports: ReportData[]): SoakGroupDefinition | null {
+  const sortedReps = [...reports].sort((a, b) => b.start_time_epoch_ms - a.start_time_epoch_ms)
+  for (const rep of sortedReps) {
+    const g = rep.soak_groups?.shattering
+    if (g && (g.group_a_players.length > 0 || g.group_b_players.length > 0)) {
+      return g
+    }
+  }
+  return null
 }
 
 export function aggregateGroupSoaks(
@@ -1857,6 +1879,7 @@ export function aggregateGroupSoaks(
         wrongGroupCount: 0,
         doubleSoakCount: 0,
         deadCount: 0,
+        bossTankExemptCount: 0,
         soakRatePct: 100,
         incidents: [],
       }
@@ -1871,6 +1894,7 @@ export function aggregateGroupSoaks(
   let missedAliveTotal = 0
   let wrongGroupTotal = 0
   let doubleSoakTotal = 0
+  let bossTankExemptTotal = 0
 
   for (const s of soaks) {
     if (s.alternation_ok) cleanSoaks++
@@ -1901,6 +1925,11 @@ export function aggregateGroupSoaks(
       r.deadCount++
       r.incidents.push({ soak: s, kind: 'dead_expected', doubleSoak: false })
     }
+    if (s.boss_tank_exempt) {
+      const r = ensure(s.boss_tank_exempt.player, s.boss_tank_exempt.class)
+      r.bossTankExemptCount++
+      bossTankExemptTotal++
+    }
   }
 
   const players = Array.from(byPlayer.values())
@@ -1916,14 +1945,42 @@ export function aggregateGroupSoaks(
         a.player.localeCompare(b.player),
     )
 
+  const makeTableGroup = (label: string, tankClass: string, list: GroupSoakPlayerRow[]): GroupSoakTableGroup => ({
+    label,
+    tankClass,
+    players: list,
+    totalCorrect: list.reduce((acc, r) => acc + r.correctCount, 0),
+    totalMissedAlive: list.reduce((acc, r) => acc + r.missedAliveCount, 0),
+    totalWrongGroup: list.reduce((acc, r) => acc + r.wrongGroupCount, 0),
+    totalDoubleSoak: list.reduce((acc, r) => acc + r.doubleSoakCount, 0),
+  })
+
+  const groupTables: GroupSoakTableGroup[] = []
+  if (groups) {
+    const grpA = players.filter((p) => p.groupLabel === groups!.group_a_label)
+    const grpB = players.filter((p) => p.groupLabel === groups!.group_b_label)
+    const others = players.filter(
+      (p) => p.groupLabel !== groups!.group_a_label && p.groupLabel !== groups!.group_b_label,
+    )
+    groupTables.push(makeTableGroup(groups.group_a_label, groups.group_a_class, grpA))
+    groupTables.push(makeTableGroup(groups.group_b_label, groups.group_b_class, grpB))
+    if (others.length > 0) {
+      groupTables.push(makeTableGroup('Weitere Spieler', '', others))
+    }
+  } else if (players.length > 0) {
+    groupTables.push(makeTableGroup('Alle Spieler', '', players))
+  }
+
   return {
     groups,
+    groupTables,
     totalSoaks: soaks.length,
     cleanSoaks,
     cleanRatePct: soaks.length > 0 ? Math.round((cleanSoaks / soaks.length) * 100) : 100,
     missedAliveTotal,
     wrongGroupTotal,
     doubleSoakTotal,
+    bossTankExemptTotal,
     shatteringCount,
     p1Count,
     soaks,

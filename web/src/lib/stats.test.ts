@@ -652,6 +652,7 @@ describe('stats aggregation and maxDeaths filtering', () => {
           total_soakers: 1, correct_count: 1, alternation_ok: true,
           soakers: [{ player: 'Narande', class: 'Warlock', player_id: 3 }],
           missed_alive: [], wrong_group: [], dead_expected: [],
+          boss_tank_exempt: { player: 'Betøng', class: 'Monk', player_id: 1 },
           events_url: 'https://wcl/g1', replay_url: 'https://wcl/rg1',
         },
         {
@@ -702,11 +703,21 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const bar = shat.players.find((p) => p.player === 'Barrumir')!
     expect(bar.missedAliveCount).toBe(0)
     expect(bar.deadCount).toBe(1)
+    // Split group tables: 2 distinct tables (Gruppe Barrumir & Gruppe Betøng)
+    expect(shat.groupTables).toHaveLength(2)
+    expect(shat.groupTables[0].label).toBe('Gruppe Barrumir')
+    expect(shat.groupTables[0].players.map((p) => p.player)).toEqual(['Narande', 'Barrumir'])
+    expect(shat.groupTables[1].label).toBe('Gruppe Betøng')
+    expect(shat.groupTables[1].players.map((p) => p.player)).toEqual(['Slyfastorm', 'Betøng'])
 
     const p1 = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'p1')
     expect(p1.totalSoaks).toBe(1)
     expect(p1.cleanRatePct).toBe(100)
     expect(p1.groups?.group_a_label).toBe('Soak-Gruppe 1')
+    expect(p1.bossTankExemptTotal).toBe(1)
+    const betP1 = p1.players.find((p) => p.player === 'Betøng')!
+    expect(betP1.bossTankExemptCount).toBe(1)
+    expect(betP1.missedAliveCount).toBe(0)
 
     const all = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'all')
     expect(all.totalSoaks).toBe(3)

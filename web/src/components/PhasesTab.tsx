@@ -10,11 +10,12 @@ import {
   Users,
   Zap,
 } from 'lucide-react'
-import type { ReportData } from '../types'
+import type { ReportData, SoakGroupDefinition } from '../types'
 import {
   aggregateGroupSoaks,
   aggregatePhaseAnalysis,
   formatDamage,
+  getLatestP2Groups,
   WOW_CLASS_COLORS,
 } from '../lib/stats'
 import type { GroupSoakPhaseFilter, PullRange } from '../lib/stats'
@@ -52,6 +53,8 @@ export function PhasesTab({
     () => aggregatePhaseAnalysis(reports, maxDeaths, pullRange),
     [reports, maxDeaths, pullRange],
   )
+
+  const p2Groups = useMemo(() => getLatestP2Groups(reports), [reports])
 
   const soakCounts = useMemo(
     () => aggregateGroupSoaks(reports, maxDeaths, pullRange, 'all'),
@@ -193,8 +196,10 @@ export function PhasesTab({
               </div>
             </div>
 
-            {/* 2-Column Group Roster Banner */}
-            {soakStats.groups && (soakStats.groups.group_a_players.length > 0 || soakStats.groups.group_b_players.length > 0) && (
+            {/* 2-Column Group Roster Banner (shown when 0 soaks exist so P2 groups are immediately visible) */}
+            {soakStats.totalSoaks === 0 &&
+              soakStats.groups &&
+              (soakStats.groups.group_a_players.length > 0 || soakStats.groups.group_b_players.length > 0) && (
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                 {[
                   {
@@ -303,151 +308,187 @@ export function PhasesTab({
                   </div>
                 </div>
 
-                {/* Per-Player Summary Table */}
+                {/* Per-Group Split Player Summary Tables (each group gets its own table) */}
                 <div>
-                  <h4 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-[#34f5c5]">
-                    Spieler-Auswertung ({soakStats.players.filter((p) => matchName(p.player)).length})
+                  <h4 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wider text-[#34f5c5]">
+                    Spieler-Auswertung nach Gruppe ({soakStats.players.filter((p) => matchName(p.player)).length})
                   </h4>
-                  <div className="overflow-x-auto rounded-[10px] border border-[rgba(255,255,255,0.08)]">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                          <th className="py-2.5 pl-4 pr-2">Spieler</th>
-                          <th className="py-2.5 px-2">Gruppe</th>
-                          <th className="py-2.5 px-2 text-right">Korrekt</th>
-                          <th className="py-2.5 px-2 text-right text-[#f87171]">Verpasst (lebte!)</th>
-                          <th className="py-2.5 px-2 text-right text-[#fbbf24]">Falscher Soak</th>
-                          <th className="py-2.5 px-2 text-right">Doppel-Soak</th>
-                          <th className="py-2.5 pl-2 pr-4 text-right">Quote</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {soakStats.players
-                          .filter((r) => matchName(r.player))
-                          .map((row) => {
-                            const hasDetails = row.incidents.length > 0
-                            const isOpen = !!expanded[`gsk-${activeSoakPhase}-${row.player}`]
-                            return (
-                              <FragmentRow
-                                key={row.player}
-                                isOpen={isOpen && hasDetails}
-                                colSpan={7}
-                                summary={
-                                  <tr className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors">
-                                    <td className="py-2 pl-4 pr-2">
-                                      {hasDetails ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => toggle(`gsk-${activeSoakPhase}-${row.player}`)}
-                                          aria-expanded={isOpen}
-                                          className="flex items-center gap-2 text-left text-[13px] font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
-                                        >
-                                          {isOpen ? (
-                                            <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
-                                          ) : (
-                                            <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
-                                          )}
-                                          <ClassDot className={row.className} />
-                                          <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
-                                            {row.player}
-                                          </span>
-                                        </button>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-2 pl-[22px] text-[13px] font-semibold">
-                                          <ClassDot className={row.className} />
-                                          <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
-                                            {row.player}
-                                          </span>
-                                        </span>
-                                      )}
-                                    </td>
-                                    <td className="py-2 px-2 text-[12px]">
-                                      <GroupNameLabel label={row.groupLabel} tankClass={row.groupClass} />
-                                    </td>
-                                    <td className="py-2 px-2 text-right font-mono-num text-[13px] text-[#34f5c5]">
-                                      {row.correctCount}
-                                    </td>
-                                    <td className="py-2 px-2 text-right font-mono-num text-[13px]">
-                                      {row.missedAliveCount > 0 ? (
-                                        <span className="font-semibold text-[#f87171]">{row.missedAliveCount}×</span>
-                                      ) : (
-                                        <span className="text-[#8b96a9]">0</span>
-                                      )}
-                                    </td>
-                                    <td className="py-2 px-2 text-right font-mono-num text-[13px]">
-                                      {row.wrongGroupCount > 0 ? (
-                                        <span className="font-semibold text-[#fbbf24]">{row.wrongGroupCount}×</span>
-                                      ) : (
-                                        <span className="text-[#8b96a9]">0</span>
-                                      )}
-                                    </td>
-                                    <td className="py-2 px-2 text-right font-mono-num text-[12.5px]">
-                                      {row.doubleSoakCount > 0 ? (
-                                        <span className="font-semibold text-[#f87171]">{row.doubleSoakCount}×</span>
-                                      ) : (
-                                        <span className="text-[#8b96a9]">0</span>
-                                      )}
-                                    </td>
-                                    <td className="py-2 pl-2 pr-4 text-right font-mono-num text-[12.5px]">
-                                      <span
-                                        className={
-                                          row.soakRatePct === 100
-                                            ? 'font-semibold text-[#34f5c5]'
-                                            : row.soakRatePct >= 80
-                                              ? 'font-semibold text-[#fbbf24]'
-                                              : 'font-semibold text-[#f87171]'
-                                        }
-                                      >
-                                        {row.soakRatePct}%
-                                      </span>
-                                    </td>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {soakStats.groupTables.map((grp) => {
+                      const visibleRows = grp.players.filter((r) => matchName(r.player))
+                      return (
+                        <div
+                          key={grp.label}
+                          className="overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)]"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.8)] px-3.5 py-2.5">
+                            <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold">
+                              <Users className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} />
+                              <GroupNameLabel label={grp.label} tankClass={grp.tankClass} />
+                              <span className="font-mono-num text-[11px] font-normal text-[#8b96a9]">
+                                ({visibleRows.length})
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <Pill variant={grp.totalMissedAlive > 0 ? 'destructive' : 'success'}>
+                                {grp.totalMissedAlive}× verpasst
+                              </Pill>
+                              <Pill variant={grp.totalWrongGroup > 0 ? 'warning' : 'neutral'}>
+                                {grp.totalWrongGroup}× falsch
+                              </Pill>
+                            </div>
+                          </div>
+
+                          {visibleRows.length === 0 ? (
+                            <div className="px-3.5 py-3 text-[12px] text-[#8b96a9]">
+                              Keine Spieler im aktuellen Suchfilter.
+                            </div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="border-b border-[rgba(255,255,255,0.06)] text-[10.5px] font-medium uppercase tracking-wider text-[#8b96a9]">
+                                    <th className="py-2 pl-3.5 pr-2">Spieler</th>
+                                    <th className="py-2 px-1.5 text-right">Korrekt</th>
+                                    <th className="py-2 px-1.5 text-right text-[#f87171]">Verpasst</th>
+                                    <th className="py-2 px-1.5 text-right text-[#fbbf24]">Falsch</th>
+                                    <th className="py-2 pl-1.5 pr-3.5 text-right">Quote</th>
                                   </tr>
-                                }
-                                detail={
-                                  <div className="space-y-1.5">
-                                    {row.incidents.map((inc) => (
-                                      <div
-                                        key={`${inc.soak.id}-${inc.kind}`}
-                                        className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.85)] px-3 py-2 text-[12px]"
-                                      >
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          {isMultiReport && <Pill>{inc.soak.reportDate}</Pill>}
-                                          <span className="font-mono-num font-semibold text-white">
-                                            Try {inc.soak.pull_num} · Soak #{inc.soak.soak_num}
-                                          </span>
-                                          <span className="font-mono-num text-[#34f5c5]">{inc.soak.rel_time}</span>
-                                          <Pill variant="info">
-                                            {inc.soak.phase === 'shattering' ? 'The Shattering' : 'Phase 1'}
-                                          </Pill>
-                                          {inc.kind === 'missed_alive' && (
-                                            <Pill variant="destructive">
-                                              Verpasst (lebte!) — dran: {inc.soak.expected_group}
-                                            </Pill>
-                                          )}
-                                          {inc.kind === 'wrong_group' && (
-                                            <Pill variant={inc.doubleSoak ? 'destructive' : 'warning'}>
-                                              {inc.doubleSoak
-                                                ? `Falscher Soak (Doppel-Soak!) — dran: ${inc.soak.expected_group}`
-                                                : `Falscher Soak — dran: ${inc.soak.expected_group}`}
-                                            </Pill>
-                                          )}
-                                          {inc.kind === 'dead_expected' && (
-                                            <Pill variant="neutral">Bereits tot (kein Fail)</Pill>
-                                          )}
-                                        </div>
-                                        <WclActionLinks
-                                          eventsUrl={inc.soak.events_url}
-                                          replayUrl={inc.soak.replay_url}
-                                        />
-                                      </div>
-                                    ))}
-                                  </div>
-                                }
-                              />
-                            )
-                          })}
-                      </tbody>
-                    </table>
+                                </thead>
+                                <tbody>
+                                  {visibleRows.map((row) => {
+                                    const hasDetails = row.incidents.length > 0
+                                    const isOpen = !!expanded[`gsk-${activeSoakPhase}-${grp.label}-${row.player}`]
+                                    return (
+                                      <FragmentRow
+                                        key={`${grp.label}-${row.player}`}
+                                        isOpen={isOpen && hasDetails}
+                                        colSpan={5}
+                                        summary={
+                                          <tr className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors">
+                                            <td className="py-2 pl-3.5 pr-2">
+                                              <div className="flex flex-wrap items-center gap-1.5">
+                                                {hasDetails ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => toggle(`gsk-${activeSoakPhase}-${grp.label}-${row.player}`)}
+                                                    aria-expanded={isOpen}
+                                                    className="flex items-center gap-1.5 text-left text-[13px] font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                                                  >
+                                                    {isOpen ? (
+                                                      <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
+                                                    ) : (
+                                                      <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
+                                                    )}
+                                                    <ClassDot className={row.className} />
+                                                    <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                                      {row.player}
+                                                    </span>
+                                                  </button>
+                                                ) : (
+                                                  <span className="inline-flex items-center gap-1.5 pl-[20px] text-[13px] font-semibold">
+                                                    <ClassDot className={row.className} />
+                                                    <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                                      {row.player}
+                                                    </span>
+                                                  </span>
+                                                )}
+                                                {row.bossTankExemptCount > 0 && (
+                                                  <span
+                                                    title="Soaks, in denen der Tank aktiv Ula'tek tankte (ausgenommen)"
+                                                    className="rounded border border-[rgba(56,189,248,0.3)] bg-[rgba(56,189,248,0.1)] px-1.5 py-0.5 font-mono-num text-[10px] text-[#38bdf8]"
+                                                  >
+                                                    {row.bossTankExemptCount}× Boss-Tank
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </td>
+                                            <td className="py-2 px-1.5 text-right font-mono-num text-[12.5px] text-[#34f5c5]">
+                                              {row.correctCount}
+                                            </td>
+                                            <td className="py-2 px-1.5 text-right font-mono-num text-[12.5px]">
+                                              {row.missedAliveCount > 0 ? (
+                                                <span className="font-semibold text-[#f87171]">{row.missedAliveCount}×</span>
+                                              ) : (
+                                                <span className="text-[#8b96a9]">0</span>
+                                              )}
+                                            </td>
+                                            <td className="py-2 px-1.5 text-right font-mono-num text-[12.5px]">
+                                              {row.wrongGroupCount > 0 ? (
+                                                <span className="font-semibold text-[#fbbf24]">
+                                                  {row.wrongGroupCount}×
+                                                  {row.doubleSoakCount > 0 && (
+                                                    <span className="ml-1 text-[10.5px] text-[#f87171]">
+                                                      ({row.doubleSoakCount}× Dpl)
+                                                    </span>
+                                                  )}
+                                                </span>
+                                              ) : (
+                                                <span className="text-[#8b96a9]">0</span>
+                                              )}
+                                            </td>
+                                            <td className="py-2 pl-1.5 pr-3.5 text-right font-mono-num text-[12.5px]">
+                                              <span
+                                                className={
+                                                  row.soakRatePct === 100
+                                                    ? 'font-semibold text-[#34f5c5]'
+                                                    : row.soakRatePct >= 80
+                                                      ? 'font-semibold text-[#fbbf24]'
+                                                      : 'font-semibold text-[#f87171]'
+                                                }
+                                              >
+                                                {row.soakRatePct}%
+                                              </span>
+                                            </td>
+                                          </tr>
+                                        }
+                                        detail={
+                                          <div className="space-y-1.5">
+                                            {row.incidents.map((inc) => (
+                                              <div
+                                                key={`${inc.soak.id}-${inc.kind}`}
+                                                className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.85)] px-3 py-2 text-[12px]"
+                                              >
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  {isMultiReport && <Pill>{inc.soak.reportDate}</Pill>}
+                                                  <span className="font-mono-num font-semibold text-white">
+                                                    Try {inc.soak.pull_num} · Soak #{inc.soak.soak_num}
+                                                  </span>
+                                                  <span className="font-mono-num text-[#34f5c5]">{inc.soak.rel_time}</span>
+                                                  {inc.kind === 'missed_alive' && (
+                                                    <Pill variant="destructive">
+                                                      Verpasst (lebte!) — dran: {inc.soak.expected_group}
+                                                    </Pill>
+                                                  )}
+                                                  {inc.kind === 'wrong_group' && (
+                                                    <Pill variant={inc.doubleSoak ? 'destructive' : 'warning'}>
+                                                      {inc.doubleSoak
+                                                        ? `Falscher Soak (Doppel-Soak!) — dran: ${inc.soak.expected_group}`
+                                                        : `Falscher Soak — dran: ${inc.soak.expected_group}`}
+                                                    </Pill>
+                                                  )}
+                                                  {inc.kind === 'dead_expected' && (
+                                                    <Pill variant="neutral">Bereits tot (kein Fail)</Pill>
+                                                  )}
+                                                </div>
+                                                <WclActionLinks
+                                                  eventsUrl={inc.soak.events_url}
+                                                  replayUrl={inc.soak.replay_url}
+                                                />
+                                              </div>
+                                            ))}
+                                          </div>
+                                        }
+                                      />
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
 
@@ -542,15 +583,28 @@ export function PhasesTab({
                             </div>
                           )}
 
-                          {s.dead_expected.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#8b96a9]">
-                              <span>Bereits tot (kein Fail):</span>
-                              {s.dead_expected.map((p) => (
-                                <span key={`de-${p.player}`} className="inline-flex items-center gap-1">
-                                  <ClassDot className={p.class} />
-                                  <span>{p.player}</span>
+                          {(s.dead_expected.length > 0 || s.boss_tank_exempt) && (
+                            <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#8b96a9]">
+                              {s.boss_tank_exempt && (
+                                <span className="inline-flex items-center gap-1.5 text-[#38bdf8]">
+                                  <span>Boss-Tank (ausgenommen):</span>
+                                  <ClassDot className={s.boss_tank_exempt.class} />
+                                  <span style={{ color: WOW_CLASS_COLORS[s.boss_tank_exempt.class] ?? '#38bdf8' }}>
+                                    {s.boss_tank_exempt.player}
+                                  </span>
                                 </span>
-                              ))}
+                              )}
+                              {s.dead_expected.length > 0 && (
+                                <span className="inline-flex flex-wrap items-center gap-1.5">
+                                  <span>Bereits tot (kein Fail):</span>
+                                  {s.dead_expected.map((p) => (
+                                    <span key={`de-${p.player}`} className="inline-flex items-center gap-1">
+                                      <ClassDot className={p.class} />
+                                      <span>{p.player}</span>
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -563,7 +617,7 @@ export function PhasesTab({
           </div>
         )}
 
-        {/* 1. BLIGHT VEIN OVERLAPS */}
+        {/* 1. BLIGHT VEIN OVERLAPS (NACH P2-GRUPPEN GESPLITTET) */}
         {subTab === 'overlaps' && (
           stats.blightOverlapPlayers.filter((r) => matchName(r.player)).length === 0 ? (
             <EmptyState
@@ -571,80 +625,112 @@ export function PhasesTab({
               description="Entweder wurden alle Grasping Fangs sauber zeitversetzt (> 2,5 s) gebrochen oder kein Try im Filter erreichte P2."
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                    <th className="py-2.5 pl-4 pr-2">Spieler (zu früh gebrochen)</th>
-                    <th className="py-2.5 px-2 text-right">Overlaps</th>
-                    <th className="py-2.5 pl-2 pr-4 text-right">Kürzester Abstand</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.blightOverlapPlayers
-                    .filter((r) => matchName(r.player))
-                    .map((row) => {
-                      const isOpen = !!expanded[`bvo-${row.player}`]
-                      const minGap = Math.min(...row.items.map((i) => i.gap_ms ?? 9999))
-                      return (
-                        <FragmentRow
-                          key={row.player}
-                          isOpen={isOpen}
-                          colSpan={3}
-                          summary={
-                            <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(52,245,197,0.055)] transition-colors">
-                              <td className="py-2.5 pl-4 pr-2">
-                                <button
-                                  type="button"
-                                  onClick={() => toggle(`bvo-${row.player}`)}
-                                  aria-expanded={isOpen}
-                                  className="flex items-center gap-2 text-left text-[13px] font-medium text-white rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
-                                >
-                                  {isOpen ? (
-                                    <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
-                                  ) : (
-                                    <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
-                                  )}
-                                  <ClassDot className={row.className} />
-                                  <span>{row.player}</span>
-                                </button>
-                              </td>
-                              <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-[#f87171]">
-                                {row.count}×
-                              </td>
-                              <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[12px] text-[#fbbf24]">
-                                {(minGap / 1000).toFixed(2)}s
-                              </td>
-                            </tr>
-                          }
-                          detail={
-                            <div className="space-y-1.5">
-                              {row.items.map((item) => (
-                                <div
-                                  key={item.id}
-                                  className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
-                                >
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                                    <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
-                                    <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
-                                    <Pill variant="destructive">
-                                      +{((item.gap_ms ?? 0) / 1000).toFixed(2)}s nach {item.detail}
-                                    </Pill>
-                                    {item.deaths_before > 0 && (
-                                      <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
-                                    )}
-                                  </div>
-                                  <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
-                                </div>
-                              ))}
-                            </div>
-                          }
-                        />
-                      )
-                    })}
-                </tbody>
-              </table>
+            <div className="p-4">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {splitRowsByP2Group(
+                  stats.blightOverlapPlayers.filter((r) => matchName(r.player)),
+                  p2Groups,
+                ).map((grp) => {
+                  const grpCount = grp.rows.reduce((s, r) => s + r.count, 0)
+                  return (
+                    <div
+                      key={grp.label}
+                      className="overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)]"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.8)] px-3.5 py-2.5">
+                        <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold">
+                          <Users className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} />
+                          <GroupNameLabel label={grp.label} tankClass={grp.tankClass} />
+                        </div>
+                        <Pill variant={grpCount > 0 ? 'destructive' : 'success'}>
+                          {grpCount}× Overlap{grpCount === 1 ? '' : 's'}
+                        </Pill>
+                      </div>
+                      {grp.rows.length === 0 ? (
+                        <div className="px-3.5 py-3 text-[12px] text-[#34f5c5]">
+                          Keine Blight-Vein-Overlaps in dieser Gruppe.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-[rgba(255,255,255,0.06)] text-[10.5px] font-medium uppercase tracking-wider text-[#8b96a9]">
+                                <th className="py-2 pl-3.5 pr-2">Spieler (zu früh gebrochen)</th>
+                                <th className="py-2 px-2 text-right">Overlaps</th>
+                                <th className="py-2 pl-2 pr-3.5 text-right">Kürzester Abstand</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {grp.rows.map((row) => {
+                                const isOpen = !!expanded[`bvo-${grp.label}-${row.player}`]
+                                const minGap = Math.min(...row.items.map((i) => i.gap_ms ?? 9999))
+                                return (
+                                  <FragmentRow
+                                    key={row.player}
+                                    isOpen={isOpen}
+                                    colSpan={3}
+                                    summary={
+                                      <tr className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors">
+                                        <td className="py-2 pl-3.5 pr-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => toggle(`bvo-${grp.label}-${row.player}`)}
+                                            aria-expanded={isOpen}
+                                            className="flex items-center gap-1.5 text-left text-[13px] font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                                          >
+                                            {isOpen ? (
+                                              <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
+                                            ) : (
+                                              <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
+                                            )}
+                                            <ClassDot className={row.className} />
+                                            <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                              {row.player}
+                                            </span>
+                                          </button>
+                                        </td>
+                                        <td className="py-2 px-2 text-right font-mono-num text-[13px] font-semibold text-[#f87171]">
+                                          {row.count}×
+                                        </td>
+                                        <td className="py-2 pl-2 pr-3.5 text-right font-mono-num text-[12px] text-[#fbbf24]">
+                                          {(minGap / 1000).toFixed(2)}s
+                                        </td>
+                                      </tr>
+                                    }
+                                    detail={
+                                      <div className="space-y-1.5">
+                                        {row.items.map((item) => (
+                                          <div
+                                            key={item.id}
+                                            className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
+                                          >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              {isMultiReport && <Pill>{item.reportDate}</Pill>}
+                                              <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
+                                              <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
+                                              <Pill variant="destructive">
+                                                +{((item.gap_ms ?? 0) / 1000).toFixed(2)}s nach {item.detail}
+                                              </Pill>
+                                              {item.deaths_before > 0 && (
+                                                <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
+                                              )}
+                                            </div>
+                                            <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    }
+                                  />
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )
         )}
@@ -927,49 +1013,77 @@ export function PhasesTab({
                 ))}
               </div>
 
-              <div className="overflow-x-auto rounded-[10px] border border-[rgba(255,255,255,0.08)]">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                      <th className="py-2.5 pl-4 pr-2">Spieler (Doomscale Warden Fokus-DMG)</th>
-                      <th className="py-2.5 px-2 text-right">P2-Trys</th>
-                      <th className="py-2.5 px-2 text-right">Gesamt-DMG</th>
-                      <th className="py-2.5 pl-2 pr-4 text-right">Ø / P2-Try</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stats.wardenPlayers
-                      .filter((r) => matchName(r.player))
-                      .map((row) => (
-                        <tr
-                          key={row.player}
-                          className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors"
-                        >
-                          <td className="py-2 pl-4 pr-2">
-                            <span className="inline-flex items-center gap-2 text-[13px] font-medium text-white">
-                              <ClassDot className={row.className} />
-                              {row.player}
-                            </span>
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9]">
-                            {row.pullsPresent}×
-                          </td>
-                          <td className="py-2 px-2 text-right font-mono-num text-[13px] font-semibold text-white">
-                            {formatDamage(row.totalDamage)}
-                          </td>
-                          <td className="py-2 pl-2 pr-4 text-right font-mono-num text-[12.5px] text-[#34f5c5]">
-                            {formatDamage(row.avgDamage)}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {splitRowsByP2Group(
+                  stats.wardenPlayers.filter((r) => matchName(r.player)),
+                  p2Groups,
+                ).map((grp) => {
+                  const grpTotalDmg = grp.rows.reduce((s, r) => s + r.totalDamage, 0)
+                  return (
+                    <div
+                      key={grp.label}
+                      className="overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)]"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.8)] px-3.5 py-2.5">
+                        <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold">
+                          <Users className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} />
+                          <GroupNameLabel label={grp.label} tankClass={grp.tankClass} />
+                        </div>
+                        <Pill variant="info">Gesamt: {formatDamage(grpTotalDmg)}</Pill>
+                      </div>
+                      {grp.rows.length === 0 ? (
+                        <div className="px-3.5 py-3 text-[12px] text-[#8b96a9]">
+                          Kein Warden-Schaden im Filter für diese Gruppe.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-[rgba(255,255,255,0.06)] text-[10.5px] font-medium uppercase tracking-wider text-[#8b96a9]">
+                                <th className="py-2 pl-3.5 pr-2">Spieler</th>
+                                <th className="py-2 px-1.5 text-right">Trys</th>
+                                <th className="py-2 px-1.5 text-right">Gesamt</th>
+                                <th className="py-2 pl-1.5 pr-3.5 text-right">Ø / Try</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {grp.rows.map((row) => (
+                                <tr
+                                  key={row.player}
+                                  className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors"
+                                >
+                                  <td className="py-2 pl-3.5 pr-2">
+                                    <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold">
+                                      <ClassDot className={row.className} />
+                                      <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                        {row.player}
+                                      </span>
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-1.5 text-right font-mono-num text-[12px] text-[#c5cdd9]">
+                                    {row.pullsPresent}×
+                                  </td>
+                                  <td className="py-2 px-1.5 text-right font-mono-num text-[13px] font-semibold text-white">
+                                    {formatDamage(row.totalDamage)}
+                                  </td>
+                                  <td className="py-2 pl-1.5 pr-3.5 text-right font-mono-num text-[12.5px] text-[#34f5c5]">
+                                    {formatDamage(row.avgDamage)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )
         )}
 
-        {/* 4. AVOIDABLE P2/P3 HITS */}
+        {/* 4. AVOIDABLE P2/P3 HITS (NACH P2-GRUPPEN GESPLITTET) */}
         {subTab === 'avoidables' && (
           stats.avoidablePlayers.filter((r) => matchName(r.player)).length === 0 ? (
             <EmptyState
@@ -977,87 +1091,121 @@ export function PhasesTab({
               description="Keine Treffer durch Acidic Burst, Acidic Expulsion, Petrifying Sting, Virulent Spit oder P3-Mechaniken."
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                    <th className="py-2.5 pl-4 pr-2">Spieler</th>
-                    <th className="py-2.5 px-2 text-right">Treffer</th>
-                    <th className="py-2.5 px-2 text-right">Tödlich</th>
-                    <th className="py-2.5 pl-2 pr-4 text-right">Schaden gesamt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.avoidablePlayers
-                    .filter((r) => matchName(r.player))
-                    .map((row) => {
-                      const isOpen = !!expanded[`av-${row.player}`]
-                      return (
-                        <FragmentRow
-                          key={row.player}
-                          isOpen={isOpen}
-                          colSpan={4}
-                          summary={
-                            <tr className="border-b border-[rgba(255,255,255,0.05)] hover:bg-[rgba(52,245,197,0.055)] transition-colors">
-                              <td className="py-2.5 pl-4 pr-2">
-                                <button
-                                  type="button"
-                                  onClick={() => toggle(`av-${row.player}`)}
-                                  aria-expanded={isOpen}
-                                  className="flex items-center gap-2 text-left text-[13px] font-medium text-white rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
-                                >
-                                  {isOpen ? (
-                                    <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
-                                  ) : (
-                                    <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
-                                  )}
-                                  <ClassDot className={row.className} />
-                                  <span>{row.player}</span>
-                                </button>
-                              </td>
-                              <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-[#fbbf24]">
-                                {row.count}×
-                              </td>
-                              <td className="py-2.5 px-2 text-right font-mono-num text-[12px]">
-                                {row.lethalCount > 0 ? (
-                                  <span className="text-[#f87171] font-semibold">{row.lethalCount}×</span>
-                                ) : (
-                                  <span className="text-[#8b96a9]">0</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 pl-2 pr-4 text-right font-mono-num text-[12px] text-[#c5cdd9]">
-                                {formatDamage(row.totalDamage)}
-                              </td>
-                            </tr>
-                          }
-                          detail={
-                            <div className="space-y-1.5">
-                              {row.items.map((item) => (
-                                <div
-                                  key={item.id}
-                                  className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
-                                >
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                                    <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
-                                    <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
-                                    <Pill variant={item.lethal ? 'destructive' : 'warning'}>
-                                      {item.ability} · {formatDamage(item.damage)}
-                                    </Pill>
-                                    {item.deaths_before > 0 && (
-                                      <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
-                                    )}
-                                  </div>
-                                  <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
-                                </div>
-                              ))}
-                            </div>
-                          }
-                        />
-                      )
-                    })}
-                </tbody>
-              </table>
+            <div className="p-4">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {splitRowsByP2Group(
+                  stats.avoidablePlayers.filter((r) => matchName(r.player)),
+                  p2Groups,
+                ).map((grp) => {
+                  const grpHits = grp.rows.reduce((s, r) => s + r.count, 0)
+                  const grpLethal = grp.rows.reduce((s, r) => s + r.lethalCount, 0)
+                  return (
+                    <div
+                      key={grp.label}
+                      className="overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)]"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.8)] px-3.5 py-2.5">
+                        <div className="inline-flex items-center gap-1.5 text-[13px] font-semibold">
+                          <Users className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} />
+                          <GroupNameLabel label={grp.label} tankClass={grp.tankClass} />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Pill variant={grpHits > 0 ? 'warning' : 'success'}>{grpHits}× Treffer</Pill>
+                          {grpLethal > 0 && <Pill variant="destructive">{grpLethal}× tödlich</Pill>}
+                        </div>
+                      </div>
+                      {grp.rows.length === 0 ? (
+                        <div className="px-3.5 py-3 text-[12px] text-[#34f5c5]">
+                          Keine vermeidbaren P2-/P3-Treffer in dieser Gruppe.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-[rgba(255,255,255,0.06)] text-[10.5px] font-medium uppercase tracking-wider text-[#8b96a9]">
+                                <th className="py-2 pl-3.5 pr-2">Spieler</th>
+                                <th className="py-2 px-1.5 text-right">Treffer</th>
+                                <th className="py-2 px-1.5 text-right">Tödlich</th>
+                                <th className="py-2 pl-1.5 pr-3.5 text-right">Schaden</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {grp.rows.map((row) => {
+                                const isOpen = !!expanded[`av-${grp.label}-${row.player}`]
+                                return (
+                                  <FragmentRow
+                                    key={row.player}
+                                    isOpen={isOpen}
+                                    colSpan={4}
+                                    summary={
+                                      <tr className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors">
+                                        <td className="py-2 pl-3.5 pr-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => toggle(`av-${grp.label}-${row.player}`)}
+                                            aria-expanded={isOpen}
+                                            className="flex items-center gap-1.5 text-left text-[13px] font-semibold rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                                          >
+                                            {isOpen ? (
+                                              <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
+                                            ) : (
+                                              <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
+                                            )}
+                                            <ClassDot className={row.className} />
+                                            <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                              {row.player}
+                                            </span>
+                                          </button>
+                                        </td>
+                                        <td className="py-2 px-1.5 text-right font-mono-num text-[13px] font-semibold text-[#fbbf24]">
+                                          {row.count}×
+                                        </td>
+                                        <td className="py-2 px-1.5 text-right font-mono-num text-[12px]">
+                                          {row.lethalCount > 0 ? (
+                                            <span className="text-[#f87171] font-semibold">{row.lethalCount}×</span>
+                                          ) : (
+                                            <span className="text-[#8b96a9]">0</span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 pl-1.5 pr-3.5 text-right font-mono-num text-[12px] text-[#c5cdd9]">
+                                          {formatDamage(row.totalDamage)}
+                                        </td>
+                                      </tr>
+                                    }
+                                    detail={
+                                      <div className="space-y-1.5">
+                                        {row.items.map((item) => (
+                                          <div
+                                            key={item.id}
+                                            className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
+                                          >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              {isMultiReport && <Pill>{item.reportDate}</Pill>}
+                                              <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
+                                              <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
+                                              <Pill variant={item.lethal ? 'destructive' : 'warning'}>
+                                                {item.ability} · {formatDamage(item.damage)}
+                                              </Pill>
+                                              {item.deaths_before > 0 && (
+                                                <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
+                                              )}
+                                            </div>
+                                            <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    }
+                                  />
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )
         )}
@@ -1119,6 +1267,28 @@ export function PhasesTab({
       </Card>
     </div>
   )
+}
+
+function splitRowsByP2Group<T extends { player: string }>(
+  rows: T[],
+  p2Groups: SoakGroupDefinition | null,
+): { label: string; tankClass: string; rows: T[] }[] {
+  if (!p2Groups || (p2Groups.group_a_players.length === 0 && p2Groups.group_b_players.length === 0)) {
+    return [{ label: 'Alle Spieler', tankClass: '', rows }]
+  }
+  const setA = new Set(p2Groups.group_a_players.map((p) => p.player))
+  const setB = new Set(p2Groups.group_b_players.map((p) => p.player))
+  const rowsA = rows.filter((r) => setA.has(r.player))
+  const rowsB = rows.filter((r) => setB.has(r.player))
+  const others = rows.filter((r) => !setA.has(r.player) && !setB.has(r.player))
+  const out = [
+    { label: p2Groups.group_a_label, tankClass: p2Groups.group_a_class, rows: rowsA },
+    { label: p2Groups.group_b_label, tankClass: p2Groups.group_b_class, rows: rowsB },
+  ]
+  if (others.length > 0) {
+    out.push({ label: 'Weitere Spieler', tankClass: '', rows: others })
+  }
+  return out
 }
 
 function GroupNameLabel({ label, tankClass }: { label: string; tankClass?: string }) {

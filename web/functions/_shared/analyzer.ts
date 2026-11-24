@@ -1931,7 +1931,8 @@ function buildGroupSoakAnalysis(
     fight_players: Set<number>
     player_deaths: { ts: number; pid: number }[]
     deaths_by_player: Map<number, number[]>
-    boss_tank_ts: Map<number, number[]>
+    boss_melee_ts: Map<number, number[]>
+    stone_venom_apply_ts: Map<number, number[]>
     fight_p2_group: Map<number, 'A' | 'B'>
     p1_clusters: SoakCluster[]
     shat_clusters: SoakCluster[]
@@ -1981,7 +1982,8 @@ function buildGroupSoakAnalysis(
     const playerDeaths: { ts: number; pid: number }[] = []
     const deathsByPlayer = new Map<number, number[]>()
     const seenDk = new Set<string>()
-    const bossTankTs = new Map<number, number[]>()
+    const bossMeleeTs = new Map<number, number[]>()
+    const stoneVenomApplyTs = new Map<number, number[]>()
     const wardenDmgByInst = new Map<number, Map<number, number>>()
     const scApplies: { ts: number; pid: number }[] = []
 
@@ -2012,17 +2014,20 @@ function buildGroupSoakAnalysis(
 
       if (tid !== undefined && tankIdSet.has(tid)) {
         const srcName = src !== undefined ? actors[src]?.name ?? '' : ''
-        if (
-          (t === 'damage' && aid === SPELL_MELEE && srcName === "Ula'tek") ||
-          aid === SPELL_STONE_VENOM_DEBUFF ||
-          aid === SPELL_STONE_VENOM_DMG
-        ) {
-          let blist = bossTankTs.get(tid)
+        if (t === 'damage' && aid === SPELL_MELEE && srcName === "Ula'tek") {
+          let blist = bossMeleeTs.get(tid)
           if (!blist) {
             blist = []
-            bossTankTs.set(tid, blist)
+            bossMeleeTs.set(tid, blist)
           }
           blist.push(ts)
+        } else if (aid === SPELL_STONE_VENOM_DEBUFF && (t === 'applydebuff' || t === 'applydebuffstack')) {
+          let slist = stoneVenomApplyTs.get(tid)
+          if (!slist) {
+            slist = []
+            stoneVenomApplyTs.set(tid, slist)
+          }
+          slist.push(ts)
         }
       }
 
@@ -2145,7 +2150,8 @@ function buildGroupSoakAnalysis(
       fight_players: fightPlayers,
       player_deaths: playerDeaths,
       deaths_by_player: deathsByPlayer,
-      boss_tank_ts: bossTankTs,
+      boss_melee_ts: bossMeleeTs,
+      stone_venom_apply_ts: stoneVenomApplyTs,
       fight_p2_group: fightP2Group,
       p1_clusters: p1Clusters,
       shat_clusters: shatClusters,
@@ -2211,7 +2217,8 @@ function buildGroupSoakAnalysis(
     const fightPlayers = rec.fight_players
     const playerDeaths = rec.player_deaths
     const deathsByPlayer = rec.deaths_by_player
-    const bossTankTs = rec.boss_tank_ts
+    const bossMeleeTs = rec.boss_melee_ts
+    const stoneVenomApplyTs = rec.stone_venom_apply_ts
     const fightP2Group = rec.fight_p2_group
 
     const countDeathsBefore = (tsNow: number) => {
@@ -2226,20 +2233,46 @@ function buildGroupSoakAnalysis(
       return false
     }
     const activeBossTankAt = (tsNow: number): number | null => {
+      const windows: [number, number][] = [
+        [12_000, 5_000],
+        [25_000, 10_000],
+      ]
+      for (let w = 0; w < windows.length; w++) {
+        const backMs = windows[w][0]
+        const fwdMs = windows[w][1]
+        let bestTk: number | null = null
+        let bestDist = 1_000_000_000
+        let bestTs = -1
+        for (let i = 0; i < tankIds.length; i++) {
+          const tk = tankIds[i]
+          const list = bossMeleeTs.get(tk)
+          if (!list) continue
+          for (let j = 0; j < list.length; j++) {
+            const bts = list[j]
+            if (bts >= tsNow - backMs && bts <= tsNow + fwdMs) {
+              const dist = Math.abs(bts - tsNow)
+              if (dist < bestDist || (dist === bestDist && bts > bestTs)) {
+                bestDist = dist
+                bestTs = bts
+                bestTk = tk
+              }
+            }
+          }
+        }
+        if (bestTk !== null) return bestTk
+      }
       let bestTk: number | null = null
       let bestTs = -1
       for (let i = 0; i < tankIds.length; i++) {
         const tk = tankIds[i]
-        const list = bossTankTs.get(tk)
+        const list = stoneVenomApplyTs.get(tk)
         if (!list) continue
-        let maxRecent = -1
         for (let j = 0; j < list.length; j++) {
-          const bts = list[j]
-          if (bts >= tsNow - 8000 && bts <= tsNow && bts > maxRecent) maxRecent = bts
-        }
-        if (maxRecent > bestTs) {
-          bestTs = maxRecent
-          bestTk = tk
+          const sts = list[j]
+          if (sts >= tsNow - 10_000 && sts <= tsNow && sts > bestTs) {
+            bestTs = sts
+            bestTk = tk
+          }
         }
       }
       return bestTk
@@ -2304,10 +2337,12 @@ function buildGroupSoakAnalysis(
         for (const p of fightPlayers) {
           if (grpOf(p) === expKey) expectedPids.add(p)
         }
+        let bossTankExemptRef: { player: string; class: string; player_id: number } | null = null
         if (phaseKey === 'p1') {
           const activeBt = activeBossTankAt(cts)
-          if (activeBt !== null && !cpids.has(activeBt)) {
+          if (activeBt !== null && !cpids.has(activeBt) && expectedPids.has(activeBt)) {
             expectedPids.delete(activeBt)
+            bossTankExemptRef = pref(activeBt)
           }
         }
 
@@ -2363,6 +2398,7 @@ function buildGroupSoakAnalysis(
           missed_alive: missedAlivePids.map(pref),
           wrong_group: wrongRefs,
           dead_expected: deadExpectedPids.map(pref),
+          boss_tank_exempt: bossTankExemptRef,
           events_url: `https://www.warcraftlogs.com/reports/${reportCode}?fight=${fid}&type=auras&ability=${SPELL_SOUL_CONSTRICTOR}&view=events&start=${Math.max(fStart, cts - 2000)}&end=${Math.min(fEnd, cts + 4000)}`,
           replay_url: buildReplayUrl(reportCode, fid, relMs),
         })

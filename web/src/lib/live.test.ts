@@ -307,4 +307,53 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
       double_soak: true,
     })
   })
+
+  it('exempts active P1 Boss-Tank in TS analyzer even when off-tank has Stone Venom DoT ticks and boss tank dodged prior melees', () => {
+    const actors = {
+      1: { id: 1, name: 'Betøng', type: 'Player', subType: 'Monk' },
+      2: { id: 2, name: 'Barrumir', type: 'Player', subType: 'DeathKnight' },
+      3: { id: 3, name: 'Alveria', type: 'Player', subType: 'Rogue' },
+      4: { id: 4, name: 'Narande', type: 'Player', subType: 'Warlock' },
+      152: { id: 152, name: "Ula'tek", type: 'NPC', subType: 'Boss' },
+    }
+    const abilities = { 1: 'Melee', 1300685: 'Soul Constrictor', 1298417: 'Stone Venom', 1298418: 'Stone Venom' }
+    const fights = [
+      {
+        id: 91,
+        name: "Ula'tek",
+        startTime: 100_000,
+        endTime: 260_000,
+        bossPercentage: 70,
+        kill: false,
+        friendlyPlayers: [1, 2, 3, 4],
+        phaseTransitions: [{ id: 1, startTime: 100_000 }],
+      },
+    ]
+    const events = [
+      { timestamp: 110_000, type: 'damage', sourceID: 152, targetID: 1, abilityGameID: 1, amount: 200_000 },
+      { timestamp: 112_000, type: 'applydebuff', sourceID: 152, targetID: 2, abilityGameID: 1298417 },
+      { timestamp: 138_000, type: 'damage', sourceID: 152, targetID: 2, abilityGameID: 1, amount: 200_000 },
+      { timestamp: 140_000, type: 'applydebuff', targetID: 1, abilityGameID: 1300685 },
+      { timestamp: 140_050, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 143_000, type: 'applydebuff', targetID: 4, abilityGameID: 1300685 },
+      { timestamp: 143_050, type: 'applydebuff', targetID: 2, abilityGameID: 1300685 },
+      { timestamp: 233_930, type: 'damage', sourceID: 152, targetID: 2, abilityGameID: 1298418, amount: 130_000 },
+      { timestamp: 234_000, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 234_050, type: 'applydebuff', targetID: 2, abilityGameID: 1300685 },
+      { timestamp: 235_092, type: 'damage', sourceID: 152, targetID: 1, abilityGameID: 1, amount: 300_000 },
+    ]
+    const res = analyzeReportEventsTS(
+      { title: 'Boss Tank Exempt TS', startTime: 1795450000000 },
+      fights,
+      actors,
+      abilities,
+      { 91: events },
+      'TESTBTTSEX123456',
+    )
+    const p1 = (res.group_soaks as Array<Record<string, unknown>>).filter((s) => s.phase === 'p1')
+    expect(p1).toHaveLength(3)
+    const s3 = p1[2]
+    expect((s3.missed_alive as Array<{ player: string }>).map((p) => p.player)).not.toContain('Betøng')
+    expect(s3.boss_tank_exempt).toMatchObject({ player: 'Betøng' })
+  })
 })

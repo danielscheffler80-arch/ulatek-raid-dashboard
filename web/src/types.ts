@@ -434,6 +434,7 @@ export interface GroupSoakEvent {
   missed_alive: GroupSoakPlayerRef[]
   wrong_group: GroupSoakPlayerRef[]
   dead_expected: GroupSoakPlayerRef[]
+  boss_tank_exempt?: GroupSoakPlayerRef | null
   events_url: string
   replay_url: string
 }

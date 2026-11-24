@@ -1904,7 +1904,8 @@ def _build_group_soak_analysis(
         player_deaths: list[tuple[int, int]] = []
         deaths_by_player: dict[int, list[int]] = defaultdict(list)
         seen_dk: set[tuple[int, int]] = set()
-        boss_tank_ts: dict[int, list[int]] = defaultdict(list)
+        boss_melee_ts: dict[int, list[int]] = defaultdict(list)
+        stone_venom_apply_ts: dict[int, list[int]] = defaultdict(list)
         warden_dmg_by_inst: dict[int, Counter[int]] = defaultdict(Counter)
         sc_applies: list[tuple[int, int]] = []
 
@@ -1928,11 +1929,10 @@ def _build_group_soak_analysis(
 
             if tid in tank_id_set:
                 src_name = actors.get(src, {}).get("name", "") if src is not None else ""
-                if (t == "damage" and aid == SPELL_MELEE and src_name == "Ula'tek") or aid in (
-                    SPELL_STONE_VENOM_DEBUFF,
-                    SPELL_STONE_VENOM_DMG,
-                ):
-                    boss_tank_ts[int(tid)].append(ts)
+                if t == "damage" and aid == SPELL_MELEE and src_name == "Ula'tek":
+                    boss_melee_ts[int(tid)].append(ts)
+                elif aid == SPELL_STONE_VENOM_DEBUFF and t in ("applydebuff", "applydebuffstack"):
+                    stone_venom_apply_ts[int(tid)].append(ts)
 
             if src in actors and actors[src].get("type") == "Player" and tid in actors and actors[tid].get("name") == "Doomscale Warden":
                 inst = int(ev.get("targetInstance") or 1)
@@ -2005,7 +2005,8 @@ def _build_group_soak_analysis(
                 "fight_players": fight_players,
                 "player_deaths": player_deaths,
                 "deaths_by_player": deaths_by_player,
-                "boss_tank_ts": boss_tank_ts,
+                "boss_melee_ts": boss_melee_ts,
+                "stone_venom_apply_ts": stone_venom_apply_ts,
                 "fight_p2_group": fight_p2_group,
                 "p1_clusters": p1_clusters,
                 "shat_clusters": shat_clusters,
@@ -2065,7 +2066,8 @@ def _build_group_soak_analysis(
         fight_players: set[int] = rec["fight_players"]
         player_deaths: list[tuple[int, int]] = rec["player_deaths"]
         deaths_by_player: dict[int, list[int]] = rec["deaths_by_player"]
-        boss_tank_ts: dict[int, list[int]] = rec["boss_tank_ts"]
+        boss_melee_ts: dict[int, list[int]] = rec["boss_melee_ts"]
+        stone_venom_apply_ts: dict[int, list[int]] = rec["stone_venom_apply_ts"]
         fight_p2_group: dict[int, str] = rec["fight_p2_group"]
 
         def _count_deaths_before(ts_now: int) -> int:
@@ -2075,13 +2077,29 @@ def _build_group_soak_analysis(
             return any(dts <= ts_now for dts in deaths_by_player.get(pid, []))
 
         def _active_boss_tank_at(ts_now: int) -> int | None:
+            # Primary: closest Ula'tek Melee around soak (-12s..+5s, handles Brewmaster dodges & boss casts)
+            for back_ms, fwd_ms in ((12_000, 5_000), (25_000, 10_000)):
+                best_tk = None
+                best_dist = 10**9
+                best_ts = -1
+                for tk in tank_ids:
+                    for bts in boss_melee_ts.get(tk, []):
+                        if ts_now - back_ms <= bts <= ts_now + fwd_ms:
+                            dist = abs(bts - ts_now)
+                            if dist < best_dist or (dist == best_dist and bts > best_ts):
+                                best_dist = dist
+                                best_ts = bts
+                                best_tk = tk
+                if best_tk is not None:
+                    return best_tk
+            # Rare fallback: Stone Venom debuff application only (never DoT ticks on off-tank!)
             best_tk = None
             best_ts = -1
             for tk in tank_ids:
-                recent = [bts for bts in boss_tank_ts.get(tk, []) if ts_now - 8000 <= bts <= ts_now]
-                if recent and max(recent) > best_ts:
-                    best_ts = max(recent)
-                    best_tk = tk
+                for sts in stone_venom_apply_ts.get(tk, []):
+                    if ts_now - 10_000 <= sts <= ts_now and sts > best_ts:
+                        best_ts = sts
+                        best_tk = tk
             return best_tk
 
         for phase_key, clusters, label_a, class_a, label_b, class_b in (
@@ -2114,10 +2132,12 @@ def _build_group_soak_analysis(
                 exp_class = class_a if exp_key == "A" else class_b
 
                 expected_pids = {p for p in fight_players if _grp_of(p) == exp_key}
+                boss_tank_exempt_ref = None
                 if phase_key == "p1":
                     active_bt = _active_boss_tank_at(cts)
-                    if active_bt is not None and active_bt not in cpids:
+                    if active_bt is not None and active_bt not in cpids and active_bt in expected_pids:
                         expected_pids.discard(active_bt)
+                        boss_tank_exempt_ref = _pref(active_bt)
 
                 soakers_pids = sorted(
                     [p for p in cpids if _grp_of(p) != oth_key],
@@ -2164,6 +2184,7 @@ def _build_group_soak_analysis(
                         "missed_alive": [_pref(p) for p in missed_alive_pids],
                         "wrong_group": wrong_refs,
                         "dead_expected": [_pref(p) for p in dead_expected_pids],
+                        "boss_tank_exempt": boss_tank_exempt_ref,
                         "events_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}&type=auras&ability={SPELL_SOUL_CONSTRICTOR}&view=events&start={max(f_start, cts - 2000)}&end={min(f_end, cts + 4000)}",
                         "replay_url": build_replay_url(report_code, fid, rel_ms),
                     }

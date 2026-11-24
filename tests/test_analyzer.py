@@ -1207,6 +1207,65 @@ def test_group_soaks_shattering_p2_groups_and_p1_alternation():
     assert all(p["player"] != "Betøng" for p in p1[0]["missed_alive"])
 
 
+def test_p1_group_soak_exempts_active_boss_tank_even_with_offtank_stone_venom_dot_and_dodges():
+    """Off-tank Stone Venom DoT ticks & Brewmaster dodges before soak must NEVER blame the active Boss-Tank."""
+    meta = {"title": "Boss Tank Exempt Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "Betøng", "type": "Player", "subType": "Monk"},
+        2: {"id": 2, "name": "Barrumir", "type": "Player", "subType": "DeathKnight"},
+        3: {"id": 3, "name": "Alveria", "type": "Player", "subType": "Rogue"},
+        4: {"id": 4, "name": "Narande", "type": "Player", "subType": "Warlock"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {
+        1: "Melee",
+        1300685: "Soul Constrictor",
+        1298417: "Stone Venom",
+        1298418: "Stone Venom",
+    }
+    fights = [
+        {
+            "id": 91,
+            "name": "Ula'tek",
+            "startTime": 100_000,
+            "endTime": 260_000,
+            "bossPercentage": 70.0,
+            "kill": False,
+            "friendlyPlayers": [1, 2, 3, 4],
+            "phaseTransitions": [{"id": 1, "startTime": 100_000}],
+        }
+    ]
+    events = [
+        # Pull opener: Betøng & Barrumir identified as tanks
+        {"timestamp": 110_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 91},
+        {"timestamp": 112_000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 91},
+        # Soak #1 (140s): Betøng & Alveria soak (puts Betøng into P1 Soak-Gruppe 1!)
+        {"timestamp": 138_000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1, "amount": 200_000, "fight": 91},
+        {"timestamp": 140_000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1300685, "fight": 91},
+        {"timestamp": 140_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 91},
+        # Soak #2 (143s): Narande + Barrumir (Group 2)
+        {"timestamp": 143_000, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 91},
+        {"timestamp": 143_050, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 91},
+        # Soak #3 (234s): NOW Betøng is tanking Ula'tek (dodged earlier melees, hit right after at +1092ms!),
+        # while OFF-TANK Barrumir still has Stone Venom DoT ticking at -70ms!
+        {"timestamp": 233_930, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 130_000, "fight": 91},
+        {"timestamp": 234_000, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 91},
+        {"timestamp": 234_050, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 91},
+        {"timestamp": 235_092, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 300_000, "fight": 91},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {91: events}, "TESTBTEXEMPT1234")
+    p1 = [s for s in rep["group_soaks"] if s["phase"] == "p1"]
+    assert len(p1) == 3
+    s3 = p1[2]
+    assert s3["soak_num"] == 3
+    # Betøng was actively tanking Ula'tek (+1092ms melee) -> MUST be exempted and NOT in missed_alive!
+    assert all(p["player"] != "Betøng" for p in s3["missed_alive"])
+    assert s3["boss_tank_exempt"] is not None
+    assert s3["boss_tank_exempt"]["player"] == "Betøng"
+
+
+
 
 
 
