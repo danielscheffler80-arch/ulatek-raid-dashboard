@@ -103,6 +103,26 @@ export interface PlayerSummary {
   pulls_present: number
 }
 
+export interface PullPhaseTransition {
+  id: number
+  start_time: number
+}
+
+export type BossPhaseKey = 'p1' | 'p2' | 'intermission' | 'p3'
+
+export type OberTabKey = 'general' | 'p1' | 'p2' | 'intermission' | 'p3'
+
+export type PhaseViewKey =
+  | 'p1_soaks'
+  | 'p2_overlaps'
+  | 'p2_kicks'
+  | 'p2_warden'
+  | 'p2_avoidables'
+  | 'intermission_soaks'
+  | 'p3_burn'
+  | 'p3_kicks'
+  | 'p3_avoidables'
+
 export interface PullData {
   pull_num: number
   fight_id: number
@@ -112,6 +132,7 @@ export interface PullData {
   start_time: number
   end_time: number
   deaths_total: number
+  phase_transitions?: PullPhaseTransition[]
   report_url: string
 }
 

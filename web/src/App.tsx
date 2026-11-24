@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Link2, Menu, Radio, RefreshCw } from 'lucide-react'
-import type { ReportData, ReportsStore, TabKey } from './types'
+import type { BossPhaseKey, OberTabKey, PhaseViewKey, ReportData, ReportsStore } from './types'
 import { getReportDisplayName } from './lib/stats'
 import type { PullRange } from './lib/stats'
 import {
@@ -23,18 +23,28 @@ import { HealersTab } from './components/HealersTab'
 import { HeartPhaseTab } from './components/HeartPhaseTab'
 import { PhasesTab } from './components/PhasesTab'
 import { PullsTab } from './components/PullsTab'
+import { PhaseNavBar } from './components/PhaseNavBar'
 import { Pill } from './components/ui'
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'egg', label: 'Egg Fails' },
-  { key: 'wave', label: 'Wave Fails' },
-  { key: 'tank', label: 'Tank Fails' },
-  { key: 'defensives', label: 'Def CD / Pot / HS' },
-  { key: 'healers', label: 'Heiler' },
-  { key: 'heart', label: 'Herzphase' },
-  { key: 'phases', label: 'P2 / P3 & Kicks' },
-  { key: 'pulls', label: 'Try-Übersicht' },
-]
+const DEFAULT_SUB_BY_OBER: Record<OberTabKey, string> = {
+  general: 'pulls',
+  p1: 'egg',
+  p2: 'p2_overlaps',
+  intermission: 'intermission_soaks',
+  p3: 'p3_burn',
+}
+
+const PHASE_VIEW_IDS = new Set<string>([
+  'p1_soaks',
+  'p2_overlaps',
+  'p2_kicks',
+  'p2_warden',
+  'p2_avoidables',
+  'intermission_soaks',
+  'p3_burn',
+  'p3_kicks',
+  'p3_avoidables',
+])
 
 type LiveViewMode = 'latest' | 'all' | 'custom'
 
@@ -42,7 +52,8 @@ export default function App() {
   const [store, setStore] = useState<ReportsStore | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedCode, setSelectedCode] = useState<string>('all')
-  const [activeTab, setActiveTab] = useState<TabKey>('egg')
+  const [activeOber, setActiveOber] = useState<OberTabKey>('p1')
+  const [subByOber, setSubByOber] = useState<Record<OberTabKey, string>>(DEFAULT_SUB_BY_OBER)
 
   // Live-Log State
   const [liveReport, setLiveReport] = useState<ReportData | null>(null)
@@ -54,17 +65,8 @@ export default function App() {
   const [copiedLiveLink, setCopiedLiveLink] = useState(false)
   const lastCacheVersionRef = useRef<string>('')
 
-  // Standardmäßig nach 4 Toden filtern (je Tab individuell anpassbar über den Stepper in der Sidebar)
-  const [maxDeathsByTab, setMaxDeathsByTab] = useState<Record<TabKey, number>>({
-    egg: 4,
-    wave: 4,
-    tank: 4,
-    defensives: 4,
-    healers: 4,
-    heart: 4,
-    phases: 4,
-    pulls: 4,
-  })
+  // Standardmäßig nach 4 Toden filtern (je Ansicht individuell anpassbar über den Stepper in der Sidebar)
+  const [maxDeathsByView, setMaxDeathsByView] = useState<Record<string, number>>({})
   const [pullRange, setPullRange] = useState<PullRange>({ from: 1, to: 40 })
   const [searchQuery, setSearchQuery] = useState('')
   const [importOpen, setImportOpen] = useState(false)
@@ -287,9 +289,22 @@ export default function App() {
         ? getReportDisplayName(activeReports[0])
         : '—'
 
-  const currentMaxDeaths = maxDeathsByTab[activeTab]
+  const activeSub = subByOber[activeOber] ?? DEFAULT_SUB_BY_OBER[activeOber]
+  const activeViewKey = `${activeOber}:${activeSub}`
+  const activePhaseFilter: BossPhaseKey | null = activeOber === 'general' ? null : activeOber
+
+  const currentMaxDeaths = maxDeathsByView[activeViewKey] ?? 4
   const setCurrentMaxDeaths = (val: number) =>
-    setMaxDeathsByTab((prev) => ({ ...prev, [activeTab]: val }))
+    setMaxDeathsByView((prev) => ({ ...prev, [activeViewKey]: val }))
+
+  const handleSelectOber = (ober: OberTabKey) => {
+    setActiveOber(ober)
+  }
+
+  const handleSelectSub = (ober: OberTabKey, subId: string) => {
+    setActiveOber(ober)
+    setSubByOber((prev) => ({ ...prev, [ober]: subId }))
+  }
 
   return (
     <div className="relative flex min-h-screen bg-[#050911] text-white">
@@ -318,9 +333,8 @@ export default function App() {
       />
 
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
-        {/* Obsidian Mint Top Header Bar */}
-        <header className="obsidian-topbar flex min-h-[58px] flex-wrap items-center justify-between gap-2.5 px-4 py-2">
-          {/* Left: Breadcrumb + Pull Badge */}
+        {/* Top Breadcrumb Bar */}
+        <header className="obsidian-topbar flex min-h-[48px] flex-wrap items-center justify-between gap-2.5 px-4 py-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
@@ -333,7 +347,7 @@ export default function App() {
             <div className="flex items-center gap-1.5 text-[13px] min-w-0">
               <span className="text-[#8b96a9] shrink-0">Ula&apos;tek Mythic</span>
               <span className="text-[#8b96a9]" aria-hidden="true">/</span>
-              <span className="truncate font-semibold text-white max-w-[160px] sm:max-w-[240px]">
+              <span className="truncate font-semibold text-white max-w-[180px] sm:max-w-[340px]">
                 {breadcrumbLabel}
               </span>
             </div>
@@ -346,29 +360,15 @@ export default function App() {
               </Pill>
             )}
           </div>
-
-          {/* Right: Obsidian Segmented Tabs */}
-          <nav
-            className="obsidian-tabs flex items-center overflow-x-auto"
-            aria-label="Analyse-Tabs"
-          >
-            {TABS.map((t) => {
-              const active = activeTab === t.key
-              return (
-                <button
-                  key={t.key}
-                  type="button"
-                  onClick={() => setActiveTab(t.key)}
-                  className={`obsidian-tab whitespace-nowrap px-3 py-1 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 ${
-                    active ? 'active' : ''
-                  }`}
-                >
-                  {t.label}
-                </button>
-              )
-            })}
-          </nav>
         </header>
+
+        {/* Centered Full-Width Inline-Accordion Phase Navigation (Ansatz A) */}
+        <PhaseNavBar
+          activeOber={activeOber}
+          activeSub={activeSub}
+          onSelectOber={handleSelectOber}
+          onSelectSub={handleSelectSub}
+        />
 
         {/* Live-Log Status- & Try-Umschalt-Leiste */}
         {isViewingLive && liveReport && liveStatus && (
@@ -482,7 +482,7 @@ export default function App() {
                   Live-Sync Hinweis: {liveError}
                 </div>
               )}
-              {activeTab === 'egg' && (
+              {activeSub === 'egg' && (
                 <EggFailsTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
@@ -491,7 +491,7 @@ export default function App() {
                   pullRange={pullRange}
                 />
               )}
-              {activeTab === 'wave' && (
+              {activeSub === 'wave' && (
                 <WaveFailsTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
@@ -500,7 +500,7 @@ export default function App() {
                   pullRange={pullRange}
                 />
               )}
-              {activeTab === 'tank' && (
+              {activeSub === 'tank' && (
                 <TankFailsTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
@@ -509,25 +509,27 @@ export default function App() {
                   pullRange={pullRange}
                 />
               )}
-              {activeTab === 'defensives' && (
+              {activeSub === 'defensives' && (
                 <DefensivesTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
                   pullRange={pullRange}
+                  phaseFilter={activePhaseFilter}
                 />
               )}
-              {activeTab === 'healers' && (
+              {activeSub === 'healers' && (
                 <HealersTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
                   pullRange={pullRange}
+                  phaseFilter={activePhaseFilter}
                 />
               )}
-              {activeTab === 'heart' && (
+              {activeSub === 'heart' && (
                 <HeartPhaseTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
@@ -536,16 +538,17 @@ export default function App() {
                   pullRange={pullRange}
                 />
               )}
-              {activeTab === 'phases' && (
+              {PHASE_VIEW_IDS.has(activeSub) && (
                 <PhasesTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}
                   maxDeaths={currentMaxDeaths}
                   pullRange={pullRange}
+                  view={activeSub as PhaseViewKey}
                 />
               )}
-              {activeTab === 'pulls' && (
+              {activeSub === 'pulls' && (
                 <PullsTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}

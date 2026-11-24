@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight, FlaskConical, Shield, ShieldCheck } from 'lucide-react'
-import type { ReportData } from '../types'
-import { aggregateDefensives, WOW_CLASS_COLORS } from '../lib/stats'
+import type { BossPhaseKey, ReportData } from '../types'
+import { aggregateDefensives, BOSS_PHASE_LABELS, WOW_CLASS_COLORS } from '../lib/stats'
 import type { DefensivePlayerRow, PullRange } from '../lib/stats'
 import {
   Card,
@@ -19,19 +19,21 @@ export function DefensivesTab({
   searchQuery,
   maxDeaths,
   pullRange,
+  phaseFilter = null,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
   pullRange: PullRange
+  phaseFilter?: BossPhaseKey | null
 }) {
   const [eventFilter, setEventFilter] = useState<'missed_ready' | 'used' | 'all'>('missed_ready')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   const stats = useMemo(
-    () => aggregateDefensives(reports, maxDeaths, pullRange),
-    [reports, maxDeaths, pullRange],
+    () => aggregateDefensives(reports, maxDeaths, pullRange, phaseFilter),
+    [reports, maxDeaths, pullRange, phaseFilter],
   )
 
   const q = searchQuery.trim().toLowerCase()
@@ -86,9 +88,12 @@ export function DefensivesTab({
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
           <div>
-            <h2 className="text-[14px] font-semibold text-white">
-              Def-CD, Healing Potion &amp; Gesu — nur bei Drops &lt; 35 % HP &amp; Toden
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[14px] font-semibold text-white">
+                Def-CD, Healing Potion &amp; Gesu — nur bei Drops &lt; 35 % HP &amp; Toden
+              </h2>
+              {phaseFilter && <Pill variant="info">Nur {BOSS_PHASE_LABELS[phaseFilter]}</Pill>}
+            </div>
             <p className="text-[12px] text-[#8b96a9]">
               Wertet ausschließlich <strong className="text-white">unvermeidbare</strong> Drops &lt; 35 % HP (Mephitic Thrash, Spectral Coils, Putrid Membrane, Necrotic Vapors, Rage of the Shackled, Blight Vein) &amp; Tode aus:
               hat der Spieler einen wirksamen <strong className="text-[#34f5c5]">Def-CD, Healing Potion oder Gesu</strong> genutzt — oder <strong className="text-[#f87171]">nichts genutzt, obwohl eins davon rdy war</strong>? (Normale Trys ohne &lt; 35 %-Drop werden nicht gezählt.)

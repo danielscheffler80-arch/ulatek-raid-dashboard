@@ -12,10 +12,11 @@ import {
   Shield,
   Zap,
 } from 'lucide-react'
-import type { ReportData } from '../types'
+import type { BossPhaseKey, ReportData } from '../types'
 import {
   aggregateHealerEmergency,
   aggregateHealerTankSoaks,
+  BOSS_PHASE_LABELS,
   WOW_CLASS_COLORS,
 } from '../lib/stats'
 import type {
@@ -53,12 +54,14 @@ export function HealersTab({
   searchQuery,
   maxDeaths,
   pullRange,
+  phaseFilter = null,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
   pullRange: PullRange
+  phaseFilter?: BossPhaseKey | null
 }) {
   const [viewMode, setViewMode] = useState<'emergency' | 'tank_soak'>('emergency')
   const [emFilter, setEmFilter] = useState<'missed_rdy' | 'died' | 'all'>('missed_rdy')
@@ -89,12 +92,13 @@ export function HealersTab({
         pullRange,
         minInstantAliveSec,
         minCastAliveSec,
+        phaseFilter,
       ),
-    [reports, maxDeaths, pullRange, minInstantAliveSec, minCastAliveSec],
+    [reports, maxDeaths, pullRange, minInstantAliveSec, minCastAliveSec, phaseFilter],
   )
   const tankSoaks = useMemo(
-    () => aggregateHealerTankSoaks(reports, maxDeaths, pullRange),
-    [reports, maxDeaths, pullRange],
+    () => aggregateHealerTankSoaks(reports, maxDeaths, pullRange, phaseFilter),
+    [reports, maxDeaths, pullRange, phaseFilter],
   )
 
   const q = searchQuery.trim().toLowerCase()
@@ -168,6 +172,10 @@ export function HealersTab({
             </span>
           </button>
         </div>
+
+        {phaseFilter && (
+          <Pill variant="info">Nur {BOSS_PHASE_LABELS[phaseFilter]}</Pill>
+        )}
 
         {viewMode === 'emergency' ? (
           <div className="flex flex-wrap items-center gap-2">

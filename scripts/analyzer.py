@@ -1763,6 +1763,14 @@ def analyze_report_events(
                 }
             )
 
+        phase_transitions_out = sorted(
+            [
+                {"id": int(pt.get("id", 0)), "start_time": int(pt.get("startTime", f_start))}
+                for pt in (fight.get("phaseTransitions") or [])
+                if pt.get("id") is not None
+            ],
+            key=lambda x: (x["start_time"], x["id"]),
+        )
         pulls_out.append(
             {
                 "pull_num": pull_idx,
@@ -1773,6 +1781,7 @@ def analyze_report_events(
                 "start_time": f_start,
                 "end_time": f_end,
                 "deaths_total": len(player_deaths),
+                "phase_transitions": phase_transitions_out,
                 "report_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}",
             }
         )

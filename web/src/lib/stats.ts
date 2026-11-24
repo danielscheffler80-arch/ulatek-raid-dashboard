@@ -1,4 +1,5 @@
 import type {
+  BossPhaseKey,
   DefensiveEvent,
   EggCarrierEvent,
   EggFail,
@@ -10,12 +11,45 @@ import type {
   HeartPhaseWindow,
   P3PullSummary,
   PhaseEvent,
+  PullData,
   ReportData,
   SoakGroupDefinition,
   TankFail,
   WardenPullSummary,
   WaveFail,
 } from '../types'
+
+export const BOSS_PHASE_LABELS: Record<BossPhaseKey, string> = {
+  p1: 'Phase 1',
+  p2: 'Phase 2',
+  intermission: 'Intermission: The Shattering',
+  p3: 'Phase 3',
+}
+
+export function getEventBossPhase(pull: PullData | undefined, timestamp: number): BossPhaseKey {
+  const pts = pull?.phase_transitions
+  if (!pts || pts.length === 0) return 'p1'
+  let phaseId = 1
+  for (let i = 0; i < pts.length; i++) {
+    if (pts[i].start_time <= timestamp) {
+      phaseId = pts[i].id
+    } else {
+      break
+    }
+  }
+  if (phaseId === 2) return 'p2'
+  if (phaseId === 3) return 'intermission'
+  if (phaseId >= 4) return 'p3'
+  return 'p1'
+}
+
+export function pullReachedBossPhase(pull: PullData | undefined, phase: BossPhaseKey): boolean {
+  if (phase === 'p1') return true
+  const pts = pull?.phase_transitions
+  if (!pts || pts.length === 0) return false
+  const targetId = phase === 'p2' ? 2 : phase === 'intermission' ? 3 : 4
+  return pts.some((pt) => pt.id === targetId)
+}
 
 export type WithReport<T> = T & {
   reportCode: string
@@ -767,6 +801,7 @@ export function aggregateDefensives(
   reports: ReportData[],
   maxDeaths: number | null,
   pullRange?: PullRange | null,
+  phaseFilter?: BossPhaseKey | null,
 ) {
   const byPlayer = new Map<string, DefensivePlayerRow>()
 
@@ -829,7 +864,12 @@ export function aggregateDefensives(
   const seenDefIds = new Set<string>()
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
+    const pullByFightId = new Map<number, PullData>()
+    for (const p of rep.pulls) pullByFightId.set(p.fight_id, p)
     for (const u of filterByPullRange(rep.consumable_usage, pullRange)) {
+      if (phaseFilter && !pullReachedBossPhase(pullByFightId.get(u.fight_id), phaseFilter)) {
+        continue
+      }
       const row = ensure(u.player, u.class)
       row.pullsPresent++
       if (u.used_health_pot) row.potPulls++
@@ -837,6 +877,9 @@ export function aggregateDefensives(
       row.defCdCasts += u.def_cd_casts
     }
     for (const ev of filterByPullRange(filterByMaxDeaths(rep.defensive_events, maxDeaths), pullRange)) {
+      if (phaseFilter && getEventBossPhase(pullByFightId.get(ev.fight_id), ev.timestamp) !== phaseFilter) {
+        continue
+      }
       const dedupKey = `${rep.code}:${ev.id}`
       if (seenDefIds.has(dedupKey)) continue
       seenDefIds.add(dedupKey)
@@ -1479,6 +1522,7 @@ export function aggregateHealerEmergency(
   pullRange?: PullRange | null,
   minInstantAliveSec = 0.5,
   minCastAliveSec = 1.7,
+  phaseFilter?: BossPhaseKey | null,
 ) {
   const safeMinAliveMs = Math.max(0, Math.round(minInstantAliveSec * 1000))
   const safeMinCastMs = Math.max(safeMinAliveMs, Math.round(minCastAliveSec * 1000))
@@ -1486,7 +1530,12 @@ export function aggregateHealerEmergency(
   const raw: WithReport<HealerEmergencyEvent>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
+    const pullByFightId = new Map<number, PullData>()
+    for (const p of rep.pulls) pullByFightId.set(p.fight_id, p)
     for (const ev of rep.healer_emergency_events ?? []) {
+      if (phaseFilter && getEventBossPhase(pullByFightId.get(ev.fight_id), ev.timestamp) !== phaseFilter) {
+        continue
+      }
       raw.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }
   }
@@ -1650,11 +1699,17 @@ export function aggregateHealerTankSoaks(
   reports: ReportData[],
   maxDeaths: number | null,
   pullRange?: PullRange | null,
+  phaseFilter?: BossPhaseKey | null,
 ) {
   const raw: WithReport<HealerTankSoakEvent>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
+    const pullByFightId = new Map<number, PullData>()
+    for (const p of rep.pulls) pullByFightId.set(p.fight_id, p)
     for (const ev of rep.healer_tank_soak_events ?? []) {
+      if (phaseFilter && getEventBossPhase(pullByFightId.get(ev.fight_id), ev.timestamp) !== phaseFilter) {
+        continue
+      }
       raw.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }
   }

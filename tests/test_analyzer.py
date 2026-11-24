@@ -1205,6 +1205,12 @@ def test_group_soaks_shattering_p2_groups_and_p1_alternation():
 
     # P1 active boss tank Betøng must NOT be flagged as missed_alive in P1 Soak #1
     assert all(p["player"] != "Betøng" for p in p1[0]["missed_alive"])
+    # Pull stores sorted WCL phase_transitions for client-side phase filtering
+    assert rep["pulls"][0]["phase_transitions"] == [
+        {"id": 1, "start_time": 100_000},
+        {"id": 2, "start_time": 270_000},
+        {"id": 3, "start_time": 330_000},
+    ]
 
 
 def test_p1_group_soak_exempts_active_boss_tank_even_with_offtank_stone_venom_dot_and_dodges():

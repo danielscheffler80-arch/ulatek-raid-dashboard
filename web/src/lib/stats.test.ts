@@ -13,6 +13,7 @@ import {
   aggregateWaveFails,
   computePhaseBuckets,
   filterByMaxDeaths,
+  getEventBossPhase,
 } from './stats'
 
 const mockReport: ReportData = {
@@ -721,5 +722,92 @@ describe('stats aggregation and maxDeaths filtering', () => {
 
     const all = aggregateGroupSoaks([repWithSoaks], 4, { from: 1, to: 2 }, 'all')
     expect(all.totalSoaks).toBe(3)
+  })
+
+  it('classifies events into BossPhaseKey and filters defensives & healers cleanly by phaseFilter', () => {
+    const pullWithPhases = {
+      ...mockReport.pulls[0],
+      fight_id: 10,
+      start_time: 1000,
+      end_time: 260_000,
+      phase_transitions: [
+        { id: 1, start_time: 1000 },
+        { id: 2, start_time: 150_000 },
+        { id: 3, start_time: 200_000 },
+        { id: 4, start_time: 235_000 },
+      ],
+    }
+    expect(getEventBossPhase(pullWithPhases, 80_000)).toBe('p1')
+    expect(getEventBossPhase(pullWithPhases, 165_000)).toBe('p2')
+    expect(getEventBossPhase(pullWithPhases, 210_000)).toBe('intermission')
+    expect(getEventBossPhase(pullWithPhases, 240_000)).toBe('p3')
+    expect(getEventBossPhase(undefined, 80_000)).toBe('p1')
+
+    const repPhased: ReportData = {
+      ...mockReport,
+      pulls: [
+        pullWithPhases,
+        {
+          ...mockReport.pulls[1],
+          fight_id: 11,
+          phase_transitions: [{ id: 1, start_time: 200_000 }], // Pull 2 never reached P2!
+        },
+      ],
+      defensive_events: [
+        {
+          id: 'def-p1', kind: 'low_hp_spike', player: 'Narande', class: 'Warlock', target_id: 3,
+          pull_num: 1, fight_id: 10, is_kill: false, rel_time: '01:00.000', rel_ms: 59_000, timestamp: 60_000,
+          deaths_before: 0, trigger_ability: 'Putrid Membrane', hp_pct: 25, had_def_cd: false, active_defs: [],
+          ready_defs: ['Unending Resolve'], pot_used_in_pull: false, hs_used_in_pull: false,
+          events_url: 'https://wcl/dp1', replay_url: 'https://wcl/rdp1',
+        },
+        {
+          id: 'def-p2', kind: 'death', player: 'Betøng', class: 'Monk', target_id: 1,
+          pull_num: 1, fight_id: 10, is_kill: false, rel_time: '02:45.000', rel_ms: 164_000, timestamp: 165_000,
+          deaths_before: 0, trigger_ability: 'Blight Vein', hp_pct: 0, had_def_cd: true, active_defs: ['Fortifying Brew'],
+          ready_defs: [], pot_used_in_pull: true, hs_used_in_pull: true,
+          events_url: 'https://wcl/dp2', replay_url: 'https://wcl/rdp2',
+        },
+      ],
+      healer_emergency_events: [
+        {
+          id: 'hem-p1', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '01:00.000', rel_ms: 59_000, timestamp: 60_000,
+          deaths_before: 0, victim: 'Narande', victim_class: 'Warlock', victim_id: 3,
+          trigger_ability: 'Putrid Membrane', hp_pct: 25, concurrent_low_count: 1, target_died: false, time_to_death_ms: null,
+          fastest_reaction_ms: 400, fastest_healer: 'Valysa', fastest_healer_class: 'Priest',
+          reactions: [{ healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5, status: 'instant_used', reaction_ms: 400, spell: 'Holy Word: Serenity', is_external: false, instant_was_ready: true, ready_instants: ['Holy Word: Serenity'], covered_fast_by_other: false }],
+          events_url: 'https://wcl/hp1', replay_url: 'https://wcl/rhp1',
+        },
+        {
+          id: 'hem-p2', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '02:45.000', rel_ms: 164_000, timestamp: 165_000,
+          deaths_before: 0, victim: 'Betøng', victim_class: 'Monk', victim_id: 1,
+          trigger_ability: 'Blight Vein', hp_pct: 20, concurrent_low_count: 1, target_died: false, time_to_death_ms: null,
+          fastest_reaction_ms: 600, fastest_healer: 'Valysa', fastest_healer_class: 'Priest',
+          reactions: [{ healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5, status: 'instant_used', reaction_ms: 600, spell: 'Holy Word: Serenity', is_external: false, instant_was_ready: true, ready_instants: ['Holy Word: Serenity'], covered_fast_by_other: false }],
+          events_url: 'https://wcl/hp2', replay_url: 'https://wcl/rhp2',
+        },
+      ],
+    }
+
+    const defAll = aggregateDefensives([repPhased], 4, { from: 1, to: 2 })
+    expect(defAll.totalCritical).toBe(2)
+    const defP1 = aggregateDefensives([repPhased], 4, { from: 1, to: 2 }, 'p1')
+    expect(defP1.totalCritical).toBe(1)
+    expect(defP1.players.find((p) => p.player === 'Narande')?.criticalEvents).toBe(1)
+    const defP2 = aggregateDefensives([repPhased], 4, { from: 1, to: 2 }, 'p2')
+    expect(defP2.totalCritical).toBe(1)
+    expect(defP2.players.find((p) => p.player === 'Betøng')?.criticalEvents).toBe(1)
+    expect(defP2.players.find((p) => p.player === 'Narande')?.pullsPresent).toBe(1) // only Pull 1 reached P2!
+    const defP3 = aggregateDefensives([repPhased], 4, { from: 1, to: 2 }, 'p3')
+    expect(defP3.totalCritical).toBe(0)
+
+    const emP1 = aggregateHealerEmergency([repPhased], 4, { from: 1, to: 2 }, 0.5, 1.7, 'p1')
+    expect(emP1.totalEvents).toBe(1)
+    expect(emP1.avgFastestMs).toBe(400)
+    const emP2 = aggregateHealerEmergency([repPhased], 4, { from: 1, to: 2 }, 0.5, 1.7, 'p2')
+    expect(emP2.totalEvents).toBe(1)
+    expect(emP2.avgFastestMs).toBe(600)
+    const emInter = aggregateHealerEmergency([repPhased], 4, { from: 1, to: 2 }, 0.5, 1.7, 'intermission')
+    expect(emInter.totalEvents).toBe(0)
   })
 })

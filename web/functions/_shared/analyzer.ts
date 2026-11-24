@@ -1802,6 +1802,10 @@ export function analyzeReportEventsTS(
       })
     }
 
+    const phaseTransitionsOut = (fight.phaseTransitions ?? [])
+      .map((pt) => ({ id: Number(pt.id), start_time: Number(pt.startTime ?? fStart) }))
+      .sort((a, b) => a.start_time - b.start_time || a.id - b.id)
+
     pullsOut.push({
       pull_num: pullNum,
       fight_id: fid,
@@ -1811,6 +1815,7 @@ export function analyzeReportEventsTS(
       start_time: fStart,
       end_time: fEnd,
       deaths_total: playerDeaths.length,
+      phase_transitions: phaseTransitionsOut,
       report_url: `https://www.warcraftlogs.com/reports/${reportCode}?fight=${fid}`,
     })
   })

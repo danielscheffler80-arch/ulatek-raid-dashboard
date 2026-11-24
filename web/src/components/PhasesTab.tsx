@@ -10,7 +10,7 @@ import {
   Users,
   Zap,
 } from 'lucide-react'
-import type { ReportData, SoakGroupDefinition } from '../types'
+import type { PhaseViewKey, ReportData, SoakGroupDefinition } from '../types'
 import {
   aggregateGroupSoaks,
   aggregatePhaseAnalysis,
@@ -18,18 +18,60 @@ import {
   getLatestP2Groups,
   WOW_CLASS_COLORS,
 } from '../lib/stats'
-import type { GroupSoakPhaseFilter, PullRange } from '../lib/stats'
+import type { PullRange } from '../lib/stats'
 import {
   Card,
   ClassDot,
   EmptyState,
   KpiCard,
   Pill,
-  SubFilterPills,
   WclActionLinks,
 } from './ui'
 
-type PhaseSubTab = 'soaks' | 'overlaps' | 'kicks' | 'warden' | 'avoidables' | 'p3'
+const VIEW_META: Record<PhaseViewKey, { title: string; subtitle: string }> = {
+  p1_soaks: {
+    title: 'Phase 1 — Alternierende Gruppen-Soaks',
+    subtitle:
+      'Soul Constrictor / Spectral Coils in Phase 1 im 2er-Gruppen-Wechsel. Der aktive Boss-Tank wird automatisch ausgenommen.',
+  },
+  intermission_soaks: {
+    title: 'Intermission: The Shattering — Gruppen-Soaks',
+    subtitle:
+      'Die 6 alternierenden Spectral-Coils-Soaks (#1/#3/#5 vs. #2/#4/#6) mit exakt den beiden P2-Warden-Gruppen. Tote Spieler zählen nie als Fail.',
+  },
+  p2_overlaps: {
+    title: 'Phase 2 — Blight Vein Overlaps',
+    subtitle:
+      'Grasping Fangs, die ≤ 2,5 s nach einem anderen Spieler gebrochen wurden — aufgeteilt in beide P2-Gruppen.',
+  },
+  p2_kicks: {
+    title: 'Phase 2 — Malice Kicks & verpasste Casts',
+    subtitle:
+      'Ausgeführte Malice-Kicks und bereite Kicks bei durchgegangenen Casts — getrennt nach Barrumir- und Betøng-Seite.',
+  },
+  p2_warden: {
+    title: 'Phase 2 — Doomscale Warden Fokus-DPS & Kill-Sync',
+    subtitle:
+      'Warden-Schaden pro Seite/Gruppe im direkten Vergleich sowie Kill-Sync-Abstand beider Wardens pro P2-Try.',
+  },
+  p2_avoidables: {
+    title: 'Phase 2 — Vermeidbare Treffer',
+    subtitle:
+      'Acidic Burst, Acidic Expulsion, Petrifying Sting & Virulent Spit — aufgeteilt nach P2-Gruppen.',
+  },
+  p3_burn: {
+    title: 'Phase 3 — Boss-Burn & Execute-Schaden',
+    subtitle: "Schaden auf Ula'tek in Phase 3 (Stage Three: Ula'tek's Ascension) pro Spieler und P3-Try.",
+  },
+  p3_kicks: {
+    title: 'Phase 3 — Vicious Echoes Kicks & Misses',
+    subtitle: 'Ausgeführte Kicks auf Vicious Echoes sowie bereite Kicks bei durchgegangenen Raid-Stuns.',
+  },
+  p3_avoidables: {
+    title: 'Phase 3 — Vermeidbare Treffer',
+    subtitle: "Treffer durch Serpent's Bite und Volatile Purge in Phase 3.",
+  },
+}
 
 export function PhasesTab({
   reports,
@@ -37,15 +79,15 @@ export function PhasesTab({
   searchQuery,
   maxDeaths,
   pullRange,
+  view,
 }: {
   reports: ReportData[]
   isMultiReport: boolean
   searchQuery: string
   maxDeaths: number
   pullRange: PullRange
+  view: PhaseViewKey
 }) {
-  const [subTab, setSubTab] = useState<PhaseSubTab>('soaks')
-  const [soakPhaseSelection, setSoakPhaseSelection] = useState<GroupSoakPhaseFilter | 'auto'>('auto')
   const [onlyErrorSoaks, setOnlyErrorSoaks] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
@@ -56,33 +98,48 @@ export function PhasesTab({
 
   const p2Groups = useMemo(() => getLatestP2Groups(reports), [reports])
 
-  const soakCounts = useMemo(
-    () => aggregateGroupSoaks(reports, maxDeaths, pullRange, 'all'),
-    [reports, maxDeaths, pullRange],
-  )
-
-  const activeSoakPhase: GroupSoakPhaseFilter =
-    soakPhaseSelection === 'auto'
-      ? soakCounts.shatteringCount > 0
-        ? 'shattering'
-        : 'p1'
-      : soakPhaseSelection
-
+  const activeSoakPhase = view === 'intermission_soaks' ? 'shattering' : 'p1'
   const soakStats = useMemo(
-    () =>
-      activeSoakPhase === 'all'
-        ? soakCounts
-        : aggregateGroupSoaks(reports, maxDeaths, pullRange, activeSoakPhase),
-    [reports, maxDeaths, pullRange, activeSoakPhase, soakCounts],
+    () => aggregateGroupSoaks(reports, maxDeaths, pullRange, activeSoakPhase),
+    [reports, maxDeaths, pullRange, activeSoakPhase],
   )
 
   const q = searchQuery.trim().toLowerCase()
   const matchName = (name: string) => !q || name.toLowerCase().includes(q)
   const toggle = (k: string) => setExpanded((prev) => ({ ...prev, [k]: !prev[k] }))
 
-  const totalAvoidables = stats.p2Avoidables.length + stats.p3Avoidables.length
-  const totalMissedKicks = stats.maliceMissed.length + stats.viciousMissed.length
-  const totalKicks = stats.maliceKicks.length + stats.viciousKicks.length
+  const isSoakView = view === 'p1_soaks' || view === 'intermission_soaks'
+  const isP2View =
+    view === 'p2_overlaps' ||
+    view === 'p2_kicks' ||
+    view === 'p2_warden' ||
+    view === 'p2_avoidables'
+  const isP3View = view === 'p3_burn' || view === 'p3_kicks' || view === 'p3_avoidables'
+
+  const scopedKicks = view === 'p3_kicks' ? stats.viciousKicks : stats.maliceKicks
+  const scopedMissed = view === 'p3_kicks' ? stats.viciousMissed : stats.maliceMissed
+  const scopedKickGroups = useMemo(() => {
+    if (view === 'p3_kicks') return stats.kickGroups.filter((g) => g.side === 'Phase 3')
+    return stats.kickGroups.filter((g) => g.side !== 'Phase 3')
+  }, [stats.kickGroups, view])
+
+  const scopedAvoidablePlayers = useMemo(() => {
+    const targetPhase = view === 'p3_avoidables' ? 'p3' : 'p2'
+    return stats.avoidablePlayers
+      .map((row) => {
+        const items = row.items.filter((it) => it.phase === targetPhase)
+        return {
+          ...row,
+          items,
+          count: items.length,
+          lethalCount: items.filter((it) => it.lethal).length,
+          totalDamage: items.reduce((s, it) => s + it.damage, 0),
+        }
+      })
+      .filter((r) => r.count > 0)
+      .sort((a, b) => b.count - a.count || b.totalDamage - a.totalDamage || a.player.localeCompare(b.player))
+  }, [stats.avoidablePlayers, view])
+
   const totalSoakErrors = soakStats.missedAliveTotal + soakStats.wrongGroupTotal
   const visibleSoaks = useMemo(() => {
     return soakStats.soaks.filter((s) => {
@@ -98,104 +155,142 @@ export function PhasesTab({
     })
   }, [soakStats.soaks, onlyErrorSoaks, q])
 
+  const meta = VIEW_META[view]
+
   return (
     <div className="space-y-4">
-      <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard
-          label="Blight Vein Overlaps (P2)"
-          value={stats.blightOverlaps.length}
-          subtext="Grasping Fangs ≤ 2,5 s nacheinander gebrochen"
-          icon={<AlertTriangle className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.blightOverlaps.length > 0 ? 'destructive' : 'success'}
-        />
-        <KpiCard
-          label="Kicks vs. Durchgekommen"
-          value={`${totalKicks} / ${totalMissedKicks}`}
-          subtext={`Malice: ${stats.maliceKicks.length} gekickt, ${stats.maliceMissed.length} durch`}
-          icon={<Zap className="h-4 w-4" strokeWidth={1.75} />}
-          tone={totalMissedKicks > 0 ? 'destructive' : 'success'}
-        />
-        <KpiCard
-          label="P2 / P3 Avoidable Hits"
-          value={totalAvoidables}
-          subtext="Acidic Burst/Expulsion, Petrifying Sting, Spit, P3"
-          icon={<ShieldAlert className="h-4 w-4" strokeWidth={1.75} />}
-          tone={totalAvoidables > 0 ? 'warning' : 'success'}
-        />
-        <KpiCard
-          label="P2 Warden / P3 Trys"
-          value={`${stats.wardenPulls.length} / ${stats.p3Pulls.length}`}
-          subtext={`Try ${pullRange.from}–${pullRange.to} · max. ${maxDeaths} Tode`}
-          icon={<Swords className="h-4 w-4" strokeWidth={1.75} />}
-          tone="default"
-        />
-      </div>
+      {/* Phase-specific KPI Row */}
+      {isSoakView && (
+        <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label={view === 'intermission_soaks' ? 'Shattering Soaks' : 'Phase-1 Soaks'}
+            value={soakStats.totalSoaks}
+            subtext={
+              totalSoakErrors === 0
+                ? 'Alle Wechsel fehlerfrei'
+                : `${totalSoakErrors} Abweichungen gesamt`
+            }
+            icon={<Users className="h-4 w-4" strokeWidth={1.75} />}
+            tone="default"
+          />
+          <KpiCard
+            label="Saubere Soaks"
+            value={`${soakStats.cleanRatePct}%`}
+            subtext={`${soakStats.cleanSoaks} / ${soakStats.totalSoaks} ohne Fehler`}
+            icon={<CheckCircle2 className="h-4 w-4" strokeWidth={1.75} />}
+            tone={soakStats.cleanRatePct === 100 ? 'success' : soakStats.cleanRatePct >= 80 ? 'warning' : 'destructive'}
+          />
+          <KpiCard
+            label="Verpasst (lebte!)"
+            value={soakStats.missedAliveTotal}
+            subtext={
+              view === 'p1_soaks' && soakStats.bossTankExemptTotal > 0
+                ? `Tote & ${soakStats.bossTankExemptTotal}× Boss-Tank ausgenommen`
+                : 'Tote Spieler nie mitgezählt'
+            }
+            icon={<AlertTriangle className="h-4 w-4" strokeWidth={1.75} />}
+            tone={soakStats.missedAliveTotal > 0 ? 'destructive' : 'success'}
+          />
+          <KpiCard
+            label="Falscher Soak"
+            value={soakStats.wrongGroupTotal}
+            subtext={`davon ${soakStats.doubleSoakTotal}× Doppel-Soak`}
+            icon={<ShieldAlert className="h-4 w-4" strokeWidth={1.75} />}
+            tone={soakStats.wrongGroupTotal > 0 ? 'warning' : 'success'}
+          />
+        </div>
+      )}
+
+      {isP2View && (
+        <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label="Blight Vein Overlaps (P2)"
+            value={stats.blightOverlaps.length}
+            subtext="Grasping Fangs ≤ 2,5 s nacheinander gebrochen"
+            icon={<AlertTriangle className="h-4 w-4" strokeWidth={1.75} />}
+            tone={stats.blightOverlaps.length > 0 ? 'destructive' : 'success'}
+          />
+          <KpiCard
+            label="Malice Kicks vs. Durch"
+            value={`${stats.maliceKicks.length} / ${stats.maliceMissed.length}`}
+            subtext="Nur ausgeführte Kicks & verpasste Casts"
+            icon={<Zap className="h-4 w-4" strokeWidth={1.75} />}
+            tone={stats.maliceMissed.length > 0 ? 'destructive' : 'success'}
+          />
+          <KpiCard
+            label="P2 Avoidable Hits"
+            value={stats.p2Avoidables.length}
+            subtext="Acidic Burst/Expulsion, Petrifying Sting, Spit"
+            icon={<ShieldAlert className="h-4 w-4" strokeWidth={1.75} />}
+            tone={stats.p2Avoidables.length > 0 ? 'warning' : 'success'}
+          />
+          <KpiCard
+            label="Phase-2 Warden-Trys"
+            value={stats.wardenPulls.length}
+            subtext={`Try ${pullRange.from}–${pullRange.to} · max. ${maxDeaths} Tode`}
+            icon={<Swords className="h-4 w-4" strokeWidth={1.75} />}
+            tone="default"
+          />
+        </div>
+      )}
+
+      {isP3View && (
+        <div className="kpi-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label="Phase-3 Trys"
+            value={stats.p3Pulls.length}
+            subtext={`Try ${pullRange.from}–${pullRange.to} · max. ${maxDeaths} Tode`}
+            icon={<Flame className="h-4 w-4" strokeWidth={1.75} />}
+            tone="default"
+          />
+          <KpiCard
+            label="Vicious Echoes Kicks"
+            value={`${stats.viciousKicks.length} / ${stats.viciousMissed.length}`}
+            subtext="Gekickt vs. durchgekommene Raid-Stuns"
+            icon={<Zap className="h-4 w-4" strokeWidth={1.75} />}
+            tone={stats.viciousMissed.length > 0 ? 'destructive' : 'success'}
+          />
+          <KpiCard
+            label="P3 Avoidable Hits"
+            value={stats.p3Avoidables.length}
+            subtext="Serpent's Bite & Volatile Purge"
+            icon={<ShieldAlert className="h-4 w-4" strokeWidth={1.75} />}
+            tone={stats.p3Avoidables.length > 0 ? 'warning' : 'success'}
+          />
+          <KpiCard
+            label="P3 Boss-Schaden gesamt"
+            value={formatDamage(stats.p3Pulls.reduce((s, p) => s + p.total_boss_dmg, 0))}
+            subtext="Stage Three: Ula'tek's Ascension"
+            icon={<Swords className="h-4 w-4" strokeWidth={1.75} />}
+            tone="default"
+          />
+        </div>
+      )}
 
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
           <div>
-            <h2 className="text-[14px] font-semibold text-white">
-              Gruppen-Soaks, Phase 2, Phase 3 &amp; Kick-Forensik
-            </h2>
-            <p className="text-[12px] text-[#8b96a9]">
-              Alternierende Gruppen-Soaks (Intermission: The Shattering &amp; Phase 1), Blight-Vein-Overlaps, Malice-/Vicious-Kicks, Warden DPS &amp; P3-Burn.
-            </p>
+            <h2 className="text-[14px] font-semibold text-white">{meta.title}</h2>
+            <p className="text-[12px] text-[#8b96a9]">{meta.subtitle}</p>
           </div>
-          <SubFilterPills
-            value={subTab}
-            onChange={setSubTab}
-            options={[
-              { value: 'soaks', label: 'Gruppen-Soaks', count: soakCounts.totalSoaks },
-              { value: 'overlaps', label: 'Blight Vein Overlaps', count: stats.blightOverlaps.length },
-              { value: 'kicks', label: 'Kicks & Misses', count: totalKicks + totalMissedKicks },
-              { value: 'warden', label: 'Warden DPS & Sync', count: stats.wardenPulls.length },
-              { value: 'avoidables', label: 'Avoidables', count: totalAvoidables },
-              { value: 'p3', label: 'Phase 3 Burn', count: stats.p3Pulls.length },
-            ]}
-          />
+          {isSoakView && soakStats.totalSoaks > 0 && (
+            <button
+              type="button"
+              onClick={() => setOnlyErrorSoaks((v) => !v)}
+              className={`rounded-[8px] border px-2.5 py-1.5 text-[11.5px] font-medium transition-[background-color,border-color,color,transform] active:scale-[0.96] ${
+                onlyErrorSoaks
+                  ? 'border-[rgba(239,68,68,0.45)] bg-[rgba(239,68,68,0.14)] text-[#f87171]'
+                  : 'border-[rgba(255,255,255,0.1)] bg-[rgba(10,14,22,0.7)] text-[#c5cdd9] hover:border-[rgba(255,255,255,0.2)] hover:text-white'
+              }`}
+            >
+              Nur Soaks mit Fehlern ({soakStats.totalSoaks - soakStats.cleanSoaks})
+            </button>
+          )}
         </div>
 
-        {/* 0. GRUPPEN-SOAKS (INTERMISSION: THE SHATTERING & PHASE 1) */}
-        {subTab === 'soaks' && (
+        {/* 0. GRUPPEN-SOAKS (P1 SOAKS ODER INTERMISSION: THE SHATTERING) */}
+        {isSoakView && (
           <div className="p-4 space-y-5">
-            {/* Phase Switcher & Error Filter */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-[13px] font-semibold text-white">
-                  Alternierende Gruppen-Soaks (Soul Constrictor / Spectral Coils)
-                </h3>
-                <p className="text-[12px] text-[#8b96a9]">
-                  {activeSoakPhase === 'shattering'
-                    ? 'Intermission: The Shattering — exakt die beiden P2-Warden-Gruppen im strengen Wechsel (#1/#3/#5 vs. #2/#4/#6). Tote Spieler zählen nie als Fail.'
-                    : activeSoakPhase === 'p1'
-                      ? 'Phase 1 — alternierende 2er-Soak-Gruppen vor Phase 2 (aktiver Boss-Tank wird automatisch aus Verpasst ausgeschlossen).'
-                      : 'Alle erkannten Gruppen-Soaks aus Intermission: The Shattering und Phase 1 kombiniert.'}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <SubFilterPills
-                  value={activeSoakPhase}
-                  onChange={(v) => setSoakPhaseSelection(v)}
-                  options={[
-                    { value: 'shattering', label: 'Intermission: The Shattering', count: soakCounts.shatteringCount },
-                    { value: 'p1', label: 'Phase 1', count: soakCounts.p1Count },
-                    { value: 'all', label: 'Alle', count: soakCounts.totalSoaks },
-                  ]}
-                />
-                <button
-                  type="button"
-                  onClick={() => setOnlyErrorSoaks((v) => !v)}
-                  className={`rounded-[8px] border px-2.5 py-1.5 text-[11.5px] font-medium transition-colors active:scale-[0.97] ${
-                    onlyErrorSoaks
-                      ? 'border-[rgba(239,68,68,0.45)] bg-[rgba(239,68,68,0.14)] text-[#f87171]'
-                      : 'border-[rgba(255,255,255,0.1)] bg-[rgba(10,14,22,0.7)] text-[#c5cdd9] hover:border-[rgba(255,255,255,0.2)] hover:text-white'
-                  }`}
-                >
-                  Nur mit Fehlern ({soakStats.totalSoaks - soakStats.cleanSoaks})
-                </button>
-              </div>
-            </div>
-
             {/* 2-Column Group Roster Banner (shown when 0 soaks exist so P2 groups are immediately visible) */}
             {soakStats.totalSoaks === 0 &&
               soakStats.groups &&
@@ -246,68 +341,16 @@ export function PhasesTab({
                 <div className="font-semibold text-white">
                   {activeSoakPhase === 'shattering'
                     ? 'Noch keine „Intermission: The Shattering“-Soaks im gewählten Filter'
-                    : 'Keine Gruppen-Soaks im gewählten Filter gefunden'}
+                    : 'Keine Phase-1-Gruppen-Soaks im gewählten Filter gefunden'}
                 </div>
                 <p className="text-[12px] text-[#8b96a9]">
                   {activeSoakPhase === 'shattering'
-                    ? 'Kein Try im ausgewählten Zeitraum hat Phase 3 (Intermission: The Shattering) erreicht. Die beiden P2-Warden-Gruppen oben sind bereits hinterlegt und werden automatisch ausgewertet, sobald ein Live- oder Archiv-Log The Shattering erreicht. Über den Schalter „Phase 1“ kannst du bereits die Phase-1-Soaks prüfen.'
+                    ? 'Kein Try im ausgewählten Zeitraum hat Phase 3 (Intermission: The Shattering) erreicht. Die beiden P2-Warden-Gruppen oben sind bereits hinterlegt und werden automatisch ausgewertet, sobald ein Live- oder Archiv-Log The Shattering erreicht.'
                     : 'Erhöhe ggf. den Filter „Max. Tode“ oder wähle einen größeren Try-Bereich.'}
                 </p>
               </div>
             ) : (
               <>
-                {/* 4 Compact Summary Metrics */}
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                  <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)] p-3">
-                    <div className="text-[11px] uppercase tracking-wider text-[#8b96a9]">Soaks ausgewertet</div>
-                    <div className="mt-1 font-mono-num text-[22px] font-bold text-white">{soakStats.totalSoaks}</div>
-                    <div className="text-[11px] text-[#8b96a9]">
-                      {totalSoakErrors === 0 ? 'Alle Wechsel fehlerfrei' : `${totalSoakErrors} Abweichungen gesamt`}
-                    </div>
-                  </div>
-                  <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)] p-3">
-                    <div className="text-[11px] uppercase tracking-wider text-[#8b96a9]">Saubere Soaks</div>
-                    <div
-                      className={`mt-1 font-mono-num text-[22px] font-bold ${
-                        soakStats.cleanRatePct === 100
-                          ? 'text-[#34f5c5]'
-                          : soakStats.cleanRatePct >= 80
-                            ? 'text-[#fbbf24]'
-                            : 'text-[#f87171]'
-                      }`}
-                    >
-                      {soakStats.cleanRatePct}%
-                    </div>
-                    <div className="text-[11px] text-[#8b96a9] font-mono-num">
-                      {soakStats.cleanSoaks} / {soakStats.totalSoaks} ohne Fehler
-                    </div>
-                  </div>
-                  <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)] p-3">
-                    <div className="text-[11px] uppercase tracking-wider text-[#8b96a9]">Verpasst (lebte!)</div>
-                    <div
-                      className={`mt-1 font-mono-num text-[22px] font-bold ${
-                        soakStats.missedAliveTotal > 0 ? 'text-[#f87171]' : 'text-[#34f5c5]'
-                      }`}
-                    >
-                      {soakStats.missedAliveTotal}
-                    </div>
-                    <div className="text-[11px] text-[#8b96a9]">Tote nicht mitgezählt</div>
-                  </div>
-                  <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)] p-3">
-                    <div className="text-[11px] uppercase tracking-wider text-[#8b96a9]">Falscher Soak</div>
-                    <div
-                      className={`mt-1 font-mono-num text-[22px] font-bold ${
-                        soakStats.wrongGroupTotal > 0 ? 'text-[#fbbf24]' : 'text-[#34f5c5]'
-                      }`}
-                    >
-                      {soakStats.wrongGroupTotal}
-                    </div>
-                    <div className="text-[11px] text-[#8b96a9] font-mono-num">
-                      davon {soakStats.doubleSoakTotal}× Doppel-Soak
-                    </div>
-                  </div>
-                </div>
-
                 {/* Per-Group Split Player Summary Tables (each group gets its own table) */}
                 <div>
                   <h4 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wider text-[#34f5c5]">
@@ -618,7 +661,7 @@ export function PhasesTab({
         )}
 
         {/* 1. BLIGHT VEIN OVERLAPS (NACH P2-GRUPPEN GESPLITTET) */}
-        {subTab === 'overlaps' && (
+        {view === 'p2_overlaps' && (
           stats.blightOverlapPlayers.filter((r) => matchName(r.player)).length === 0 ? (
             <EmptyState
               title="Keine Blight-Vein-Overlaps im aktuellen Filter"
@@ -735,21 +778,23 @@ export function PhasesTab({
           )
         )}
 
-        {/* 2. KICKS & MISSED CASTS (NACH GRUPPEN/SEITEN AUFGETEILT — NUR KICKS & RDY BEI DURCHGEGANGENEM CAST) */}
-        {subTab === 'kicks' && (
+        {/* 2. KICKS & MISSED CASTS (P2 MALICE ODER P3 VICIOUS ECHOES) */}
+        {(view === 'p2_kicks' || view === 'p3_kicks') && (
           <div className="p-4 space-y-5">
-            {/* Grouped Kick Statistics by Side (Barrumir Seite vs. Betøng Seite) */}
+            {/* Grouped Kick Statistics by Side */}
             <div>
               <h3 className="mb-2.5 text-[12.5px] font-semibold uppercase tracking-wider text-[#34f5c5]">
-                Kicks nach Gruppe / Seite ({totalKicks} Kicks · {totalMissedKicks} durch)
+                {view === 'p3_kicks' ? 'Vicious Echoes Kicks (Phase 3)' : 'Malice Kicks nach Gruppe / Seite'} ({scopedKicks.length} Kicks · {scopedMissed.length} durch)
               </h3>
-              {stats.kickGroups.length === 0 ? (
+              {scopedKickGroups.length === 0 ? (
                 <div className="text-[12px] text-[#8b96a9]">
-                  Keine Malice-/Vicious-Echoes-Kicks im gewählten Filter.
+                  {view === 'p3_kicks'
+                    ? 'Noch keine Phase-3-Trys / Vicious-Echoes-Kicks im gewählten Filter.'
+                    : 'Keine Malice-Kicks im gewählten Filter.'}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                  {stats.kickGroups.map((grp) => {
+                <div className={`grid grid-cols-1 gap-4 ${view === 'p3_kicks' ? '' : 'lg:grid-cols-2'}`}>
+                  {scopedKickGroups.map((grp) => {
                     const visiblePlayers = grp.players.filter((p) => matchName(p.player))
                     return (
                       <div
@@ -837,13 +882,13 @@ export function PhasesTab({
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-[12.5px] font-semibold uppercase tracking-wider text-[#f87171]">
-                  Durchgekommene Casts &amp; wer seinen Kick rdy hatte ({totalMissedKicks})
+                  Durchgekommene Casts &amp; wer seinen Kick rdy hatte ({scopedMissed.length})
                 </h3>
               </div>
-              {totalMissedKicks === 0 ? (
+              {scopedMissed.length === 0 ? (
                 <div className="rounded-[10px] border border-[rgba(52,245,197,0.25)] bg-[rgba(52,245,197,0.06)] px-3.5 py-2.5 text-[12px] text-[#34f5c5]">
-                  Kein Malice- oder Vicious-Echoes-Cast bei ≤ {maxDeaths} Toden durchgekommen.
-                  {stats.unfilteredMissedInRange > 0 && (
+                  Kein {view === 'p3_kicks' ? 'Vicious-Echoes' : 'Malice'}-Cast bei ≤ {maxDeaths} Toden durchgekommen.
+                  {view === 'p2_kicks' && stats.unfilteredMissedInRange > 0 && (
                     <span className="ml-1.5 text-[#c5cdd9]">
                       (Hinweis: Im gewählten Try-Bereich gibt es <strong className="text-white">{stats.unfilteredMissedInRange}</strong> durchgekommene Casts bei &gt; {maxDeaths} Toden — erhöhe „Max. Tode“ in der Sidebar, um sie anzuzeigen.)
                     </span>
@@ -851,7 +896,7 @@ export function PhasesTab({
                 </div>
               ) : (
                 <div className="space-y-2.5">
-                  {[...stats.maliceMissed, ...stats.viciousMissed].map((item) => {
+                  {scopedMissed.map((item) => {
                     const rdy = item.ready_kickers ?? []
                     const onCd = item.on_cd_kickers ?? []
                     return (
@@ -933,12 +978,12 @@ export function PhasesTab({
             </div>
 
             {/* Chronological successful kicks (clean — no unused-ready noise) */}
-            {totalKicks > 0 && (
+            {scopedKicks.length > 0 && (
               <div className="space-y-2">
                 <div className="text-[11.5px] font-semibold uppercase tracking-wider text-[#8b96a9]">
-                  Einzelne Kicks ({totalKicks})
+                  Einzelne Kicks ({scopedKicks.length})
                 </div>
-                {[...stats.maliceKicks, ...stats.viciousKicks].map((item) => (
+                {scopedKicks.map((item) => (
                   <div
                     key={item.id}
                     className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
@@ -979,7 +1024,7 @@ export function PhasesTab({
         )}
 
         {/* 3. WARDEN DPS & KILL-SYNC (P2) */}
-        {subTab === 'warden' && (
+        {view === 'p2_warden' && (
           stats.wardenPulls.length === 0 ? (
             <EmptyState
               title="Keine Phase-2-Trys im aktuellen Filter"
@@ -1083,19 +1128,30 @@ export function PhasesTab({
           )
         )}
 
-        {/* 4. AVOIDABLE P2/P3 HITS (NACH P2-GRUPPEN GESPLITTET) */}
-        {subTab === 'avoidables' && (
-          stats.avoidablePlayers.filter((r) => matchName(r.player)).length === 0 ? (
+        {/* 4. AVOIDABLE P2/P3 HITS (P2 NACH GRUPPEN GESPLITTET, P3 GESAMT) */}
+        {(view === 'p2_avoidables' || view === 'p3_avoidables') && (
+          scopedAvoidablePlayers.filter((r) => matchName(r.player)).length === 0 ? (
             <EmptyState
-              title="Keine vermeidbaren P2-/P3-Treffer im Filter"
-              description="Keine Treffer durch Acidic Burst, Acidic Expulsion, Petrifying Sting, Virulent Spit oder P3-Mechaniken."
+              title={
+                view === 'p3_avoidables'
+                  ? 'Keine vermeidbaren Phase-3-Treffer im Filter'
+                  : 'Keine vermeidbaren Phase-2-Treffer im Filter'
+              }
+              description={
+                view === 'p3_avoidables'
+                  ? "Keine Treffer durch Serpent's Bite oder Volatile Purge im aktuellen Filter (oder kein Try erreichte Phase 3)."
+                  : 'Keine Treffer durch Acidic Burst, Acidic Expulsion, Petrifying Sting oder Virulent Spit.'
+              }
             />
           ) : (
             <div className="p-4">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {splitRowsByP2Group(
-                  stats.avoidablePlayers.filter((r) => matchName(r.player)),
-                  p2Groups,
+              <div className={`grid grid-cols-1 gap-4 ${view === 'p3_avoidables' ? '' : 'lg:grid-cols-2'}`}>
+                {(view === 'p3_avoidables'
+                  ? [{ label: 'Phase 3 (Gesamt-Raid)', tankClass: '', rows: scopedAvoidablePlayers.filter((r) => matchName(r.player)) }]
+                  : splitRowsByP2Group(
+                      scopedAvoidablePlayers.filter((r) => matchName(r.player)),
+                      p2Groups,
+                    )
                 ).map((grp) => {
                   const grpHits = grp.rows.reduce((s, r) => s + r.count, 0)
                   const grpLethal = grp.rows.reduce((s, r) => s + r.lethalCount, 0)
@@ -1211,7 +1267,7 @@ export function PhasesTab({
         )}
 
         {/* 5. PHASE 3 BURN (AUTO-ACTIVATES ON FIRST P3 LOG) */}
-        {subTab === 'p3' && (
+        {view === 'p3_burn' && (
           stats.p3Pulls.length === 0 ? (
             <EmptyState
               title="Noch kein Phase-3-Try im importierten Log"

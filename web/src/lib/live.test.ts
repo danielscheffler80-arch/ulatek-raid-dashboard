@@ -306,6 +306,11 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
       player: 'Alveria',
       double_soak: true,
     })
+    expect((res.pulls as Array<Record<string, unknown>>)[0].phase_transitions).toEqual([
+      { id: 1, start_time: 100_000 },
+      { id: 2, start_time: 270_000 },
+      { id: 3, start_time: 330_000 },
+    ])
   })
 
   it('exempts active P1 Boss-Tank in TS analyzer even when off-tank has Stone Venom DoT ticks and boss tank dodged prior melees', () => {
