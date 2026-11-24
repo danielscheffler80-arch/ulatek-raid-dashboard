@@ -85,7 +85,7 @@ export function DefensivesTab({
               Def-CD, Healing Potion & Healthstone pro Spieler (inkl. Cooldown-Ready-Check)
             </h2>
             <p className="text-[12px] text-[#8b96a9]">
-              Prüft bei Damage-Spitzen (&lt; 35 % HP) &amp; Toden schadensart-genau (Physisch vs. Magie/Nature), ob ein wirksamer Def-CD, Healing Potion (5 min CD) oder Healthstone bereit (rdy) war — physische CDs (z. B. Evasion, BoP, DRW) zählen nur bei Melee, Magie-CDs (z. B. AMS, Cloak, Diffuse Magic, AMZ, Spell Reflection) nur bei Magie.
+              Prüft ausschließlich bei <strong className="text-white">unvermeidbaren</strong> Raid-Damage-Spitzen (&lt; 35 % HP: Mephitic Thrash, Spectral Coils, Putrid Membrane, Necrotic Vapors, Rage of the Shackled, Blight Vein) &amp; Toden schadensart-genau, ob ein wirksamer Def-CD, Healing Potion (5 min CD) oder Healthstone bereit (rdy) war — vermeidbare Treffer wie Caustic Waves werden hier bewusst ausgeblendet.
             </p>
           </div>
           <SubFilterPills

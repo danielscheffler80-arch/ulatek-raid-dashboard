@@ -459,9 +459,11 @@ def test_defensive_school_matching_and_removed_non_defs():
         {"timestamp": 111000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 30},
         {"timestamp": 112000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 120000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
         {"timestamp": 115000, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 30},
-        # Rogue has Evasion (Physical only!) active when hit by Caustic Waves (Nature/Magic) < 35% -> NOT protected! And Evasion must NOT appear in ready_defs, only Cloak of Shadows!
+        # Rogue has Evasion (Physical only!) active when hit by unavoidable Mephitic Thrash (Nature/Magic) < 35% -> NOT protected!
         {"timestamp": 120000, "type": "applybuff", "sourceID": 6, "targetID": 6, "abilityGameID": 5277, "fight": 30},
-        {"timestamp": 121000, "type": "damage", "sourceID": 152, "targetID": 6, "abilityGameID": 1292403, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
+        {"timestamp": 121000, "type": "damage", "sourceID": 152, "targetID": 6, "abilityGameID": 1296301, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
+        # Avoidable Caustic Waves hit on Narande (3) < 35% -> MUST NOT create a Def-CD low_hp_spike!
+        {"timestamp": 122000, "type": "damage", "sourceID": 152, "targetID": 3, "abilityGameID": 1292403, "amount": 450000, "hitPoints": 180000, "maxHitPoints": 1000000, "fight": 30},
         {"timestamp": 125000, "type": "removebuff", "sourceID": 6, "targetID": 6, "abilityGameID": 5277, "fight": 30},
         # Rogue dies to Physical Melee (1) -> Evasion (if ready) or no Cloak of Shadows (Magic only!) in ready_defs!
         {"timestamp": 130000, "type": "death", "targetID": 6, "killerID": 176, "killingAbilityGameID": 1, "fight": 30},
@@ -487,6 +489,12 @@ def test_defensive_school_matching_and_removed_non_defs():
     assert rogue_spike["had_def_cd"] is False
     assert "Cloak of Shadows" in rogue_spike["ready_defs"]
     assert "Evasion" not in rogue_spike["ready_defs"]
+
+    # Avoidable Caustic Waves hit must NOT show up as a Def-CD low_hp_spike
+    assert not any(
+        e["player"] == "Narande" and e["kind"] == "low_hp_spike"
+        for e in rep["defensive_events"]
+    )
 
     rogue_death = next(e for e in rep["defensive_events"] if e["player"] == "Schurke" and e["kind"] == "death")
     assert "Cloak of Shadows" not in rogue_death["ready_defs"]

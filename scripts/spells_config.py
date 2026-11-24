@@ -55,12 +55,12 @@ P2_AVOIDABLE_IDS = {
 P3_KICK_SPELL_NAMES = ("vicious echoes",)
 P3_AVOIDABLE_SPELL_NAMES = ("serpent's bite", "volatile purge")
 
-# Major raid damage spike abilities for Def CD / Pot / HS evaluation
+# Unavoidable major raid damage spike abilities for Def CD / Pot / HS evaluation
+# (Avoidable mechanics like Caustic Waves, Falling Debris, Rattler Slam, P2/P3 avoidables are excluded!)
 RAID_SPIKE_ABILITY_IDS = {
     SPELL_MEPHITIC_THRASH,
     SPELL_SPECTRAL_COILS_DMG,
     SPELL_PUTRID_MEMBRANE_DMG,
-    SPELL_CAUSTIC_WAVES,
     SPELL_NECROTIC_VAPORS,
     SPELL_RAGE_OF_THE_SHACKLED_DMG,
     SPELL_BLIGHT_VEIN_DMG,

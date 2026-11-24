@@ -82,11 +82,11 @@ export const CORE_MECHANIC_IDS = [
   SPELL_VIRULENT_SPIT,
 ]
 
+// Unavoidable major raid damage spikes only (avoidables like Caustic Waves are tracked separately)
 export const RAID_SPIKE_ABILITY_IDS = new Set([
   SPELL_MEPHITIC_THRASH,
   SPELL_SPECTRAL_COILS_DMG,
   SPELL_PUTRID_MEMBRANE_DMG,
-  SPELL_CAUSTIC_WAVES,
   SPELL_NECROTIC_VAPORS,
   SPELL_RAGE_OF_THE_SHACKLED_DMG,
   SPELL_BLIGHT_VEIN_DMG,

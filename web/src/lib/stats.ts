@@ -780,6 +780,18 @@ export function aggregateDefensives(
     return row
   }
 
+  const AVOIDABLE_SPIKE_NAMES = new Set([
+    'caustic waves',
+    'falling debris',
+    'rattler slam',
+    'acidic burst',
+    'acidic expulsion',
+    'petrifying sting',
+    'virulent spit',
+    "serpent's bite",
+    'volatile purge',
+  ])
+
   const allEvents: WithReport<DefensiveEvent>[] = []
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
@@ -791,6 +803,12 @@ export function aggregateDefensives(
       row.defCdCasts += u.def_cd_casts
     }
     for (const ev of filterByPullRange(filterByMaxDeaths(rep.defensive_events, maxDeaths), pullRange)) {
+      if (
+        ev.kind === 'low_hp_spike' &&
+        AVOIDABLE_SPIKE_NAMES.has((ev.trigger_ability ?? '').trim().toLowerCase())
+      ) {
+        continue
+      }
       const enriched: WithReport<DefensiveEvent> = {
         ...ev,
         reportCode: rep.code,

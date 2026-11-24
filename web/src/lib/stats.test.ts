@@ -188,6 +188,22 @@ describe('stats aggregation and maxDeaths filtering', () => {
 
     const defMax2 = aggregateDefensives([mockReport], 2)
     expect(defMax2.players.find((p) => p.player === 'Narande')!.deaths).toBe(0)
+
+    // Avoidable Caustic Waves low_hp_spike must be ignored in aggregateDefensives
+    const withAvoidableSpike: ReportData = {
+      ...mockReport,
+      defensive_events: [
+        ...mockReport.defensive_events,
+        {
+          id: 'd-avoid', kind: 'low_hp_spike', player: 'Narande', class: 'Warlock', target_id: 3, pull_num: 1, fight_id: 10, is_kill: false,
+          rel_time: '01:05.000', rel_ms: 65000, timestamp: 66000, deaths_before: 0, trigger_ability: 'Caustic Waves', hp_pct: 18.0,
+          had_def_cd: false, active_defs: [], ready_defs: ['Unending Resolve'], pot_used_in_pull: false, hs_used_in_pull: false,
+          events_url: 'https://wcl/da', replay_url: 'https://wcl/rda',
+        },
+      ],
+    }
+    const defFiltered = aggregateDefensives([withAvoidableSpike], null)
+    expect(defFiltered.players.find((p) => p.player === 'Narande')!.lowSpikes).toBe(1)
   })
 
   it('computes phase buckets cleanly on empty and populated arrays', () => {
