@@ -594,13 +594,20 @@ def test_p2_malice_side_attribution_and_ready_kickers():
     rep = analyze_report_events(meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7")
     kicks = [e for e in rep["phase_events"] if e["kind"] == "malice_kick"]
     assert len(kicks) == 2
-    assert next(k for k in kicks if k["player"] == "Betøng")["side"] == "Seite Betøng"
-    assert next(k for k in kicks if k["player"] == "Schurke")["side"] == "Seite Barrumir"
+    betong_kick = next(k for k in kicks if k["player"] == "Betøng")
+    assert betong_kick["side"] == "Betøng Seite"
+    assert betong_kick["side_tank_class"] == "Monk"
+    # Other alive players on Betøng Seite who also had kick ready when Betøng kicked
+    assert {x["player"] for x in betong_kick["ready_kickers"]} == {"Narande", "Näxxs"}
+
+    schurke_kick = next(k for k in kicks if k["player"] == "Schurke")
+    assert schurke_kick["side"] == "Barrumir Seite"
+    assert schurke_kick["side_tank_class"] == "DeathKnight"
 
     missed = [e for e in rep["phase_events"] if e["kind"] == "malice_missed"]
     assert len(missed) == 2
 
-    miss_barrumir = next(m for m in missed if m["side"] == "Seite Barrumir")
+    miss_barrumir = next(m for m in missed if m["side"] == "Barrumir Seite")
     rdy_names_b = [x["player"] for x in miss_barrumir["ready_kickers"]]
     cd_names_b = [x["player"] for x in miss_barrumir["on_cd_kickers"]]
     assert "Barrumir" in rdy_names_b
@@ -609,7 +616,7 @@ def test_p2_malice_side_attribution_and_ready_kickers():
     assert "Betøng" not in rdy_names_b
     assert "Narande" not in rdy_names_b
 
-    miss_betong = next(m for m in missed if m["side"] == "Seite Betøng")
+    miss_betong = next(m for m in missed if m["side"] == "Betøng Seite")
     rdy_names_m = [x["player"] for x in miss_betong["ready_kickers"]]
     cd_names_m = [x["player"] for x in miss_betong["on_cd_kickers"]]
     assert "Narande" in rdy_names_m

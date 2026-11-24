@@ -197,6 +197,7 @@ export interface PhaseEvent {
   kind: PhaseEventKind
   phase: 'heart' | 'p2' | 'p3'
   side?: string | null
+  side_tank_class?: string
   player: string
   class: string
   target_id: number

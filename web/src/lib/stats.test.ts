@@ -218,13 +218,16 @@ describe('stats aggregation and maxDeaths filtering', () => {
           deaths_before: 2, events_url: 'https://wcl/pe1', replay_url: 'https://wcl/rpe1',
         },
         {
-          id: 'pe2', kind: 'malice_kick', phase: 'p2', side: 'Seite Betøng', player: 'Betøng', class: 'Monk', target_id: 1,
-          ability: 'Malice', detail: 'Spear Hand Strike', gap_ms: null, damage: 0, lethal: false,
+          id: 'pe2', kind: 'malice_kick', phase: 'p2', side: 'Betøng Seite', side_tank_class: 'Monk', player: 'Betøng', class: 'Monk', target_id: 1,
+          ability: 'Malice', detail: 'Spear Hand Strike',
+          ready_kickers: [{ player: 'Narande', class: 'Warlock', spell: 'Spell Lock' }],
+          on_cd_kickers: [],
+          gap_ms: null, damage: 0, lethal: false,
           pull_num: 2, fight_id: 11, is_kill: false, rel_time: '03:05.000', rel_ms: 185000, timestamp: 385000,
           deaths_before: 1, events_url: 'https://wcl/pe2', replay_url: 'https://wcl/rpe2',
         },
         {
-          id: 'pe3', kind: 'malice_missed', phase: 'p2', side: 'Seite Barrumir', player: 'Seite Barrumir (nicht gekickt)', class: '', target_id: 0,
+          id: 'pe3', kind: 'malice_missed', phase: 'p2', side: 'Barrumir Seite', side_tank_class: 'DeathKnight', player: 'Barrumir Seite (nicht gekickt)', class: '', target_id: 0,
           ability: 'Malice', detail: 'Cast durchgekommen',
           ready_kickers: [{ player: 'Barrumir', class: 'DeathKnight', spell: 'Mind Freeze' }],
           on_cd_kickers: [],
@@ -248,13 +251,17 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(res.blightOverlaps).toHaveLength(1)
     expect(res.maliceKicks).toHaveLength(1)
     expect(res.maliceMissed).toHaveLength(1)
-    expect(res.kickSides).toEqual(['Seite Barrumir', 'Seite Betøng'])
+    expect(res.kickSides).toEqual(['Barrumir Seite', 'Betøng Seite'])
+    expect(res.kickSideTankClass['Betøng Seite']).toBe('Monk')
     const betongK = res.kickPlayers.find((p) => p.player === 'Betøng')!
     expect(betongK.totalKicks).toBe(1)
-    expect(betongK.kicksBySide['Seite Betøng']).toBe(1)
+    expect(betongK.kicksBySide['Betøng Seite']).toBe(1)
+    const narandeK = res.kickPlayers.find((p) => p.player === 'Narande')!
+    expect(narandeK.unusedReadyCount).toBe(1)
+    expect(narandeK.unusedReadyBySide['Betøng Seite']).toBe(1)
     const barrumirK = res.kickPlayers.find((p) => p.player === 'Barrumir')!
     expect(barrumirK.missedReadyCount).toBe(1)
-    expect(barrumirK.missedBySide['Seite Barrumir']).toBe(1)
+    expect(barrumirK.missedBySide['Barrumir Seite']).toBe(1)
     expect(res.wardenPlayers[0].player).toBe('Narande')
     expect(res.wardenPlayers[0].totalDamage).toBe(25_000_000)
     expect(res.wardenPulls[0].kill_sync_delta_ms).toBe(3500)

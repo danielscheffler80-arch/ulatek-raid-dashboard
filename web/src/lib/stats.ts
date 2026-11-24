@@ -593,6 +593,8 @@ export interface KickPlayerRow {
   kicksBySide: Record<string, number>
   missedReadyCount: number
   missedBySide: Record<string, number>
+  unusedReadyCount: number
+  unusedReadyBySide: Record<string, number>
   pulls: number[]
 }
 
@@ -680,7 +682,11 @@ export function aggregatePhaseAnalysis(
 
   const allKicks = [...maliceKicks, ...viciousKicks]
   const allMissed = [...maliceMissed, ...viciousMissed]
+  const unfilteredMissedInRange = filterByPullRange(rawEvents, pullRange).filter(
+    (e) => e.kind === 'malice_missed' || e.kind === 'vicious_echoes_missed',
+  ).length
   const sideSet = new Set<string>()
+  const kickSideTankClass: Record<string, string> = {}
   const kickPlayerMap = new Map<string, KickPlayerRow & { pullSet: Set<number> }>()
 
   const ensureKickPlayer = (player: string, className: string) => {
@@ -693,6 +699,8 @@ export function aggregatePhaseAnalysis(
         kicksBySide: {},
         missedReadyCount: 0,
         missedBySide: {},
+        unusedReadyCount: 0,
+        unusedReadyBySide: {},
         pulls: [],
         pullSet: new Set<number>(),
       }
@@ -706,15 +714,23 @@ export function aggregatePhaseAnalysis(
   for (const k of allKicks) {
     const side = k.side || 'Unbekannt'
     sideSet.add(side)
+    if (k.side_tank_class) kickSideTankClass[side] = k.side_tank_class
     const row = ensureKickPlayer(k.player, k.class)
     row.totalKicks++
     row.kicksBySide[side] = (row.kicksBySide[side] ?? 0) + 1
     row.pullSet.add(k.pull_num)
+    for (const rk of k.ready_kickers ?? []) {
+      const other = ensureKickPlayer(rk.player, rk.class)
+      other.unusedReadyCount++
+      other.unusedReadyBySide[side] = (other.unusedReadyBySide[side] ?? 0) + 1
+      other.pullSet.add(k.pull_num)
+    }
   }
 
   for (const m of allMissed) {
     const side = m.side || 'Unbekannt'
     sideSet.add(side)
+    if (m.side_tank_class) kickSideTankClass[side] = m.side_tank_class
     for (const rk of m.ready_kickers ?? []) {
       const row = ensureKickPlayer(rk.player, rk.class)
       row.missedReadyCount++
@@ -733,6 +749,7 @@ export function aggregatePhaseAnalysis(
       (a, b) =>
         b.missedReadyCount - a.missedReadyCount ||
         b.totalKicks - a.totalKicks ||
+        b.unusedReadyCount - a.unusedReadyCount ||
         a.player.localeCompare(b.player),
     )
 
@@ -745,7 +762,9 @@ export function aggregatePhaseAnalysis(
     viciousKicks,
     viciousKickPlayers: groupPhaseEventsByPlayer(viciousKicks),
     viciousMissed,
+    unfilteredMissedInRange,
     kickSides,
+    kickSideTankClass,
     kickPlayers,
     p2Avoidables,
     p3Avoidables,

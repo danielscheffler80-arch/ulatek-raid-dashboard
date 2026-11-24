@@ -350,12 +350,15 @@ def analyze_report_events(
                 side_players[best_inst].add(pid)
 
         inst_to_side: dict[int, str] = {}
+        inst_to_side_tank_class: dict[int, str] = {}
         for inst in sorted(warden_dmg_by_inst.keys()):
             side_tanks = [tk for tk in tank_ids if tk in side_players[inst]]
             if side_tanks:
-                inst_to_side[inst] = f"Seite {actors[side_tanks[0]]['name']}"
+                inst_to_side[inst] = f"{actors[side_tanks[0]]['name']} Seite"
+                inst_to_side_tank_class[inst] = actors[side_tanks[0]].get("subType", "")
             else:
                 inst_to_side[inst] = f"Warden #{inst}"
+                inst_to_side_tank_class[inst] = ""
 
         def compute_kick_readiness(
             candidate_pids: set[int], ts_now: int
@@ -604,17 +607,23 @@ def analyze_report_events(
                     rel_ms = ts - f_start
                     t_inst = int(ev.get("targetInstance") or 1)
                     side_label = inst_to_side.get(t_inst, f"Warden #{t_inst}")
+                    side_t_cls = inst_to_side_tank_class.get(t_inst, "")
+                    other_side_pids = {p for p in side_players.get(t_inst, set()) if p != src_id}
+                    rdy_other, cd_other = compute_kick_readiness(other_side_pids, ts)
                     phase_events.append(
                         {
                             "id": f"{report_code}-{fid}-{src_id}-{ts}-mkick",
                             "kind": "malice_kick",
                             "phase": "p2",
                             "side": side_label,
+                            "side_tank_class": side_t_cls,
                             "player": actors[src_id]["name"],
                             "class": actors[src_id].get("subType", ""),
                             "target_id": src_id,
                             "ability": ex_name or "Malice",
                             "detail": ab_name or "Interrupt",
+                            "ready_kickers": rdy_other,
+                            "on_cd_kickers": cd_other,
                             "gap_ms": None,
                             "damage": 0,
                             "lethal": False,
@@ -631,17 +640,22 @@ def analyze_report_events(
                     )
                 elif any(s in ex_low for s in P3_KICK_SPELL_NAMES):
                     rel_ms = ts - f_start
+                    other_pids = {p for p in fight_players if p != src_id}
+                    rdy_other, cd_other = compute_kick_readiness(other_pids, ts)
                     phase_events.append(
                         {
                             "id": f"{report_code}-{fid}-{src_id}-{ts}-vkick",
                             "kind": "vicious_echoes_kick",
                             "phase": "p3",
                             "side": "Phase 3",
+                            "side_tank_class": "",
                             "player": actors[src_id]["name"],
                             "class": actors[src_id].get("subType", ""),
                             "target_id": src_id,
                             "ability": ex_name or "Vicious Echoes",
                             "detail": ab_name or "Interrupt",
+                            "ready_kickers": rdy_other,
+                            "on_cd_kickers": cd_other,
                             "gap_ms": None,
                             "damage": 0,
                             "lethal": False,
@@ -957,6 +971,7 @@ def analyze_report_events(
                     "kind": "malice_missed",
                     "phase": "p2",
                     "side": side_label,
+                    "side_tank_class": inst_to_side_tank_class.get(s_inst, ""),
                     "player": f"{side_label} (nicht gekickt)",
                     "class": "",
                     "target_id": 0,
