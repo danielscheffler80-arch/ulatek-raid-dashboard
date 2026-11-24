@@ -1,5 +1,6 @@
 import type {
   DefensiveEvent,
+  EggCarrierEvent,
   EggFail,
   HeartPhaseWindow,
   P3PullSummary,
@@ -287,6 +288,246 @@ export function aggregateEggFails(
     playerClassMap,
     items: filtered,
     players,
+  }
+}
+
+export interface EvaluatedEggCarrierEvent extends WithReport<EggCarrierEvent> {
+  earlyMs: number
+  unnecessaryMs: number
+  earlyDmg: number
+  unnecessaryDmg: number
+  isTooEarly: boolean
+  isLateFail: boolean
+}
+
+export interface EggCarrierPlayerRow {
+  player: string
+  className: string
+  isRegular: boolean
+  pickups: number
+  totalHoldMs: number
+  uptimePct: number
+  avgHoldSec: number
+  maxHoldSec: number
+  unnecessaryMs: number
+  avgUnnecessarySec: number
+  totalShellDmg: number
+  unnecessaryDmg: number
+  unnecessaryDmgPct: number
+  tooEarlyCount: number
+  missedBreakCount: number
+  lateHitCount: number
+  missedAliveCount: number
+  missedDeadCount: number
+  items: EvaluatedEggCarrierEvent[]
+}
+
+export function aggregateEggCarriers(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+  minSec = 5,
+  maxSec = 12,
+) {
+  const safeMinSec = Math.max(0, Math.floor(minSec))
+  const safeMaxSec = Math.max(safeMinSec, Math.floor(maxSec))
+  const minMs = safeMinSec * 1000
+  const maxMs = safeMaxSec * 1000
+
+  const rawEvents: WithReport<EggCarrierEvent>[] = []
+  const regularSet = new Set<string>()
+  let totalCombatMsInRange = 0
+
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    for (const rc of rep.egg_regular_carriers ?? []) regularSet.add(rc)
+    const pullsInRange = filterByPullRange(rep.pulls ?? [], pullRange)
+    for (const p of pullsInRange) {
+      totalCombatMsInRange += Math.max(0, p.duration_ms ?? 0)
+    }
+    for (const ev of rep.egg_carrier_events ?? []) {
+      rawEvents.push({
+        ...ev,
+        reportCode: rep.code,
+        reportLabel: label,
+        reportDate: rep.date_iso,
+      })
+    }
+  }
+
+  const filtered = filterByPullRange(filterByMaxDeaths(rawEvents, maxDeaths), pullRange)
+
+  const byPlayer = new Map<
+    string,
+    {
+      player: string
+      className: string
+      isRegular: boolean
+      pickups: number
+      totalHoldMs: number
+      maxHoldMs: number
+      unnecessaryMs: number
+      totalShellDmg: number
+      unnecessaryDmg: number
+      tooEarlyCount: number
+      missedBreakCount: number
+      lateHitCount: number
+      missedAliveCount: number
+      missedDeadCount: number
+      items: EvaluatedEggCarrierEvent[]
+    }
+  >()
+
+  const evaluatedAll: EvaluatedEggCarrierEvent[] = []
+
+  for (const ev of filtered) {
+    const isPickup = ev.status !== 'missed_alive' && ev.status !== 'missed_dead'
+    const hasBreakRef = isPickup && ev.status !== 'wiped_before_break' && ev.held_before_break_ms > 0
+
+    const earlyMs = hasBreakRef ? Math.max(0, ev.held_before_break_ms - maxMs) : 0
+    const postMs = isPickup ? Math.max(0, ev.post_break_ms) : 0
+    const unnecessaryMs = earlyMs + postMs
+
+    let earlyDmg = 0
+    if (hasBreakRef && Array.isArray(ev.pre_dmg_sec)) {
+      for (let s = safeMaxSec; s < ev.pre_dmg_sec.length; s++) {
+        earlyDmg += ev.pre_dmg_sec[s] ?? 0
+      }
+    }
+    const postDmg = isPickup ? Math.max(0, ev.post_break_dmg ?? 0) : 0
+    const unnecessaryDmg = earlyDmg + postDmg
+
+    const isTooEarly = earlyMs > 0
+    const isLateHit =
+      ev.status === 'hit_fail' && ev.held_before_break_ms > 0 && ev.held_before_break_ms < minMs
+    const isLateFail = ev.status === 'missed_break' || isLateHit
+
+    const evaluated: EvaluatedEggCarrierEvent = {
+      ...ev,
+      earlyMs,
+      unnecessaryMs,
+      earlyDmg,
+      unnecessaryDmg,
+      isTooEarly,
+      isLateFail,
+    }
+    evaluatedAll.push(evaluated)
+
+    let row = byPlayer.get(ev.player)
+    if (!row) {
+      row = {
+        player: ev.player,
+        className: ev.class,
+        isRegular: ev.is_regular || regularSet.has(ev.player),
+        pickups: 0,
+        totalHoldMs: 0,
+        maxHoldMs: 0,
+        unnecessaryMs: 0,
+        totalShellDmg: 0,
+        unnecessaryDmg: 0,
+        tooEarlyCount: 0,
+        missedBreakCount: 0,
+        lateHitCount: 0,
+        missedAliveCount: 0,
+        missedDeadCount: 0,
+        items: [],
+      }
+      byPlayer.set(ev.player, row)
+    }
+
+    if (ev.is_regular || regularSet.has(ev.player)) row.isRegular = true
+    if (isPickup) {
+      row.pickups++
+      row.totalHoldMs += ev.duration_ms
+      if (ev.duration_ms > row.maxHoldMs) row.maxHoldMs = ev.duration_ms
+      row.unnecessaryMs += unnecessaryMs
+      row.totalShellDmg += ev.total_shell_dmg
+      row.unnecessaryDmg += unnecessaryDmg
+      if (isTooEarly) row.tooEarlyCount++
+      if (ev.status === 'missed_break') row.missedBreakCount++
+      if (isLateHit) row.lateHitCount++
+    } else if (ev.status === 'missed_alive') {
+      row.missedAliveCount++
+    } else if (ev.status === 'missed_dead') {
+      row.missedDeadCount++
+    }
+    row.items.push(evaluated)
+  }
+
+  const players: EggCarrierPlayerRow[] = Array.from(byPlayer.values())
+    .map((r) => {
+      r.items.sort(
+        (a, b) =>
+          b.reportDate.localeCompare(a.reportDate) ||
+          a.pull_num - b.pull_num ||
+          a.round_num - b.round_num ||
+          a.timestamp - b.timestamp,
+      )
+      const avgHoldSec = r.pickups > 0 ? Math.round((r.totalHoldMs / r.pickups / 1000) * 10) / 10 : 0
+      const maxHoldSec = Math.round((r.maxHoldMs / 1000) * 10) / 10
+      const avgUnnecessarySec =
+        r.pickups > 0 ? Math.round((r.unnecessaryMs / r.pickups / 1000) * 10) / 10 : 0
+      const uptimePct =
+        totalCombatMsInRange > 0
+          ? Math.round((r.totalHoldMs / totalCombatMsInRange) * 1000) / 10
+          : 0
+      const unnecessaryDmgPct =
+        r.totalShellDmg > 0 ? Math.round((r.unnecessaryDmg / r.totalShellDmg) * 1000) / 10 : 0
+
+      return {
+        player: r.player,
+        className: r.className,
+        isRegular: r.isRegular,
+        pickups: r.pickups,
+        totalHoldMs: r.totalHoldMs,
+        uptimePct,
+        avgHoldSec,
+        maxHoldSec,
+        unnecessaryMs: r.unnecessaryMs,
+        avgUnnecessarySec,
+        totalShellDmg: r.totalShellDmg,
+        unnecessaryDmg: r.unnecessaryDmg,
+        unnecessaryDmgPct,
+        tooEarlyCount: r.tooEarlyCount,
+        missedBreakCount: r.missedBreakCount,
+        lateHitCount: r.lateHitCount,
+        missedAliveCount: r.missedAliveCount,
+        missedDeadCount: r.missedDeadCount,
+        items: r.items,
+      }
+    })
+    .sort(
+      (a, b) =>
+        Number(b.isRegular) - Number(a.isRegular) ||
+        b.unnecessaryDmg - a.unnecessaryDmg ||
+        b.totalShellDmg - a.totalShellDmg ||
+        a.player.localeCompare(b.player),
+    )
+
+  const totalPickups = players.reduce((s, p) => s + p.pickups, 0)
+  const totalHoldMs = players.reduce((s, p) => s + p.totalHoldMs, 0)
+  const totalUnnecessaryMs = players.reduce((s, p) => s + p.unnecessaryMs, 0)
+  const totalShellDmg = players.reduce((s, p) => s + p.totalShellDmg, 0)
+  const totalUnnecessaryDmg = players.reduce((s, p) => s + p.unnecessaryDmg, 0)
+
+  return {
+    minSec: safeMinSec,
+    maxSec: safeMaxSec,
+    hasData: rawEvents.length > 0,
+    regularCount: players.filter((p) => p.isRegular).length,
+    totalPickups,
+    avgHoldSec: totalPickups > 0 ? Math.round((totalHoldMs / totalPickups / 1000) * 10) / 10 : 0,
+    totalUnnecessarySec: Math.round(totalUnnecessaryMs / 1000),
+    totalShellDmg,
+    totalUnnecessaryDmg,
+    unnecessaryDmgPct:
+      totalShellDmg > 0 ? Math.round((totalUnnecessaryDmg / totalShellDmg) * 1000) / 10 : 0,
+    missedBreakTotal: players.reduce((s, p) => s + p.missedBreakCount, 0),
+    lateHitTotal: players.reduce((s, p) => s + p.lateHitCount, 0),
+    missedAliveTotal: players.reduce((s, p) => s + p.missedAliveCount, 0),
+    missedDeadTotal: players.reduce((s, p) => s + p.missedDeadCount, 0),
+    players,
+    events: evaluatedAll,
   }
 }
 

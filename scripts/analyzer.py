@@ -26,6 +26,7 @@ from scripts.spells_config import (
     SPELL_MELEE,
     SPELL_MOTHERS_WRATH_DMG,
     SPELL_NOXIOUS_SHELL_DEBUFF,
+    SPELL_NOXIOUS_SHELL_DMG,
     SPELL_NOXIOUS_SPLASH,
     SPELL_PUTRID_MEMBRANE_DEBUFF,
     SPELL_RANCID_YOLK,
@@ -208,6 +209,291 @@ def _build_player_interrupts(
             if is_interrupt_spell(ab_name):
                 kit[src] = (ab_name, get_interrupt_cooldown_ms(ab_name))
     return kit
+
+
+def _build_egg_carrier_analysis(
+    sorted_fights: list[dict[str, Any]],
+    actors: dict[int, dict[str, Any]],
+    events_by_fight: dict[int, list[dict[str, Any]]],
+    egg_fails: list[dict[str, Any]],
+    report_code: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Build per-round egg carrier uptime, Noxious Shell (1307617) DoT damage, and missed-pickup events."""
+    # Pre-index egg fails (wave hits & 2-carrier collisions) by (fight_id, target_id)
+    fail_by_fp: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for ef in egg_fails:
+        if ef.get("kind") in ("caustic_waves", "egg_collision"):
+            fail_by_fp[(int(ef["fight_id"]), int(ef["target_id"]))].append(ef)
+
+    # First pass: collect Spectral Coils rounds and carrier pull presence to auto-detect regular carriers
+    fight_rounds: dict[int, list[list[int]]] = {}
+    carrier_pull_counts: Counter[int] = Counter()
+    pulls_with_rounds = 0
+
+    for fight in sorted_fights:
+        fid = int(fight["id"])
+        fevs = sorted(events_by_fight.get(fid, []), key=lambda e: int(e["timestamp"]))
+        coil_casts = [
+            int(ev["timestamp"])
+            for ev in fevs
+            if ev.get("abilityGameID") == SPELL_SPECTRAL_COILS_CAST and ev.get("type") == "cast"
+        ]
+        rounds: list[list[int]] = []
+        for ts in coil_casts:
+            if not rounds or ts - rounds[-1][-1] > 20000:
+                rounds.append([ts])
+            else:
+                rounds[-1].append(ts)
+        fight_rounds[fid] = rounds
+        if rounds:
+            pulls_with_rounds += 1
+            seen_in_fight: set[int] = set()
+            for ev in fevs:
+                if ev.get("abilityGameID") == SPELL_NOXIOUS_SHELL_DEBUFF and ev.get("type") == "applydebuff":
+                    tid = ev.get("targetID")
+                    if tid in actors and actors[tid].get("type") == "Player":
+                        seen_in_fight.add(int(tid))
+            for pid in seen_in_fight:
+                carrier_pull_counts[pid] += 1
+
+    if pulls_with_rounds <= 1:
+        min_regular_pulls = 1
+    else:
+        min_regular_pulls = max(2, int(round(pulls_with_rounds * 0.4)))
+
+    regular_carrier_ids = sorted(
+        (pid for pid, cnt in carrier_pull_counts.items() if cnt >= min_regular_pulls),
+        key=lambda pid: (-carrier_pull_counts[pid], actors[pid]["name"]),
+    )
+    regular_carrier_set = set(regular_carrier_ids)
+    regular_carrier_names = [actors[pid]["name"] for pid in regular_carrier_ids]
+
+    carrier_events: list[dict[str, Any]] = []
+
+    for pull_idx, fight in enumerate(sorted_fights, start=1):
+        fid = int(fight["id"])
+        f_start = int(fight["startTime"])
+        f_end = int(fight["endTime"])
+        is_kill = bool(fight.get("kill", False))
+        rounds = fight_rounds.get(fid, [])
+        fevs = sorted(events_by_fight.get(fid, []), key=lambda e: int(e["timestamp"]))
+
+        # Track player deaths for deaths_before and dead-check on missed pickups
+        all_death_ts: list[int] = []
+        deaths_by_player: dict[int, list[int]] = defaultdict(list)
+        shell_dmg_by_player: dict[int, list[tuple[int, int]]] = defaultdict(list)
+
+        for ev in fevs:
+            t = ev.get("type")
+            ts = int(ev["timestamp"])
+            tid = ev.get("targetID")
+            if t == "death" and tid in actors and actors[tid].get("type") == "Player":
+                all_death_ts.append(ts)
+                deaths_by_player[int(tid)].append(ts)
+            elif t == "damage" and ev.get("abilityGameID") == SPELL_NOXIOUS_SHELL_DMG and tid in actors:
+                amt = int(ev.get("amount", 0) or 0)
+                if amt > 0:
+                    shell_dmg_by_player[int(tid)].append((ts, amt))
+
+        all_death_ts.sort()
+
+        def _count_deaths_before(ts: int) -> int:
+            return sum(1 for dts in all_death_ts if dts < ts)
+
+        # Extract Noxious Shell (1307612) hold intervals per player
+        active_start: dict[int, int] = {}
+        intervals: list[tuple[int, int, int, bool]] = []  # (pid, start_ts, end_ts, ended_at_wipe)
+        for ev in fevs:
+            if ev.get("abilityGameID") != SPELL_NOXIOUS_SHELL_DEBUFF:
+                continue
+            tid = ev.get("targetID")
+            if tid not in actors or actors[tid].get("type") != "Player":
+                continue
+            pid = int(tid)
+            ts = int(ev["timestamp"])
+            t = ev.get("type")
+            if t == "applydebuff":
+                if pid not in active_start:
+                    active_start[pid] = ts
+            elif t == "removedebuff":
+                st = active_start.pop(pid, None)
+                if st is not None:
+                    intervals.append((pid, st, ts, False))
+        for pid, st in active_start.items():
+            intervals.append((pid, st, f_end, True))
+
+        # Track which regular carriers participated in each round
+        carried_in_round: dict[int, set[int]] = defaultdict(set)
+
+        for iv_idx, (pid, st, en, ended_at_wipe) in enumerate(intervals):
+            duration_ms = max(0, en - st)
+            # Assign to the first round whose last_coil >= st - 2000
+            target_round_idx: int | None = None
+            for r_i, r_coils in enumerate(rounds):
+                if r_coils[-1] >= st - 2000:
+                    target_round_idx = r_i
+                    break
+
+            player_name = actors[pid]["name"]
+            player_class = actors[pid].get("subType", "")
+            p_dmg_ticks = [
+                (dts, amt)
+                for dts, amt in shell_dmg_by_player.get(pid, [])
+                if st - 200 <= dts <= en + 200
+            ]
+            total_shell_dmg = sum(amt for _, amt in p_dmg_ticks)
+
+            # Check whether this interval ended in a wave hit or 2-carrier egg collision
+            matched_fail = next(
+                (
+                    ef
+                    for ef in fail_by_fp.get((fid, pid), [])
+                    if abs(int(ef["timestamp"]) - en) <= 150
+                ),
+                None,
+            )
+
+            pre_dmg_sec: list[int] = []
+            post_break_dmg = 0
+            post_break_ms = 0
+            held_before_break_ms = duration_ms
+            ref_break_ts = en
+
+            if target_round_idx is not None:
+                r_num = target_round_idx + 1
+                r_coils = rounds[target_round_idx]
+                carried_in_round[r_num].add(pid)
+                matched_coil = next((c for c in r_coils if abs(en - c) <= 1500), None)
+                ref_break_ts = matched_coil if matched_coil is not None else r_coils[0]
+                held_before_break_ms = max(0, min(en, ref_break_ts) - st)
+                missed_break = (matched_fail is None) and (en > r_coils[-1] + 2000)
+
+                if matched_fail is not None:
+                    status = "hit_fail"
+                    break_reason = str(matched_fail["kind"])
+                elif missed_break:
+                    status = "missed_break"
+                    break_reason = "missed_break"
+                    post_break_ms = max(0, en - (r_coils[-1] + 1500))
+                elif matched_coil is not None:
+                    status = "ok"
+                    break_reason = "spectral_coils"
+                elif any(abs(dts - en) <= 1500 for dts in deaths_by_player.get(pid, [])):
+                    status = "player_death"
+                    break_reason = "player_death"
+                elif ended_at_wipe:
+                    status = "wiped_before_break"
+                    break_reason = "wiped_before_break"
+                else:
+                    status = "ok"
+                    break_reason = "other"
+
+                # Bucket pre-break damage ticks by integer second before ref_break_ts
+                max_sec_needed = max(0, int(held_before_break_ms // 1000)) + 2
+                buckets = [0] * min(125, max(1, max_sec_needed))
+                for dts, amt in p_dmg_ticks:
+                    if missed_break and dts > r_coils[-1] + 1500:
+                        post_break_dmg += amt
+                    elif dts <= ref_break_ts + 200:
+                        sec_before = max(0, int((ref_break_ts - dts) // 1000))
+                        if sec_before < len(buckets):
+                            buckets[sec_before] += amt
+                        else:
+                            buckets[-1] += amt
+                # Trim trailing zeros to keep JSON compact
+                while len(buckets) > 1 and buckets[-1] == 0:
+                    buckets.pop()
+                pre_dmg_sec = buckets if any(buckets) else []
+            else:
+                r_num = len(rounds) + 1
+                status = "hit_fail" if matched_fail is not None else "wiped_before_break"
+                break_reason = str(matched_fail["kind"]) if matched_fail is not None else "wiped_before_break"
+                held_before_break_ms = 0
+
+            pickup_rel_ms = max(0, st - f_start)
+            end_rel_ms = max(0, en - f_start)
+            carrier_events.append(
+                {
+                    "id": f"{report_code}-{fid}-{pid}-{st}-{iv_idx}-ec",
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "round_num": r_num,
+                    "player": player_name,
+                    "class": player_class,
+                    "target_id": pid,
+                    "is_regular": pid in regular_carrier_set,
+                    "status": status,
+                    "break_reason": break_reason,
+                    "player_was_dead": False,
+                    "pickup_rel_time": format_rel_time(pickup_rel_ms),
+                    "pickup_rel_ms": pickup_rel_ms,
+                    "end_rel_time": format_rel_time(end_rel_ms),
+                    "end_rel_ms": end_rel_ms,
+                    "break_rel_time": format_rel_time(max(0, ref_break_ts - f_start)),
+                    "timestamp": st,
+                    "duration_ms": duration_ms,
+                    "held_before_break_ms": held_before_break_ms,
+                    "post_break_ms": post_break_ms,
+                    "total_shell_dmg": total_shell_dmg,
+                    "pre_dmg_sec": pre_dmg_sec,
+                    "post_break_dmg": post_break_dmg,
+                    "deaths_before": _count_deaths_before(st),
+                    "events_url": build_events_url(report_code, fid, pid, st, f_start, f_end, window_ms=max(3000, duration_ms)),
+                    "replay_url": build_replay_url(report_code, fid, pickup_rel_ms),
+                }
+            )
+
+        # Check missed pickups for regular carriers on every completed Spectral Coils round
+        friendly_ids = {int(x) for x in (fight.get("friendlyPlayers") or []) if int(x) in actors}
+        for r_i, r_coils in enumerate(rounds):
+            r_num = r_i + 1
+            first_coil = r_coils[0]
+            check_ts = max(f_start, first_coil - 3000)
+            deaths_at_round = _count_deaths_before(max(f_start, first_coil - 5000))
+            for pid in regular_carrier_ids:
+                if friendly_ids and pid not in friendly_ids:
+                    continue
+                if pid in carried_in_round.get(r_num, set()):
+                    continue
+                # Was player already dead before this egg round's pickup window closed?
+                p_deaths = deaths_by_player.get(pid, [])
+                was_dead = any(dts < check_ts for dts in p_deaths)
+                rel_ms = max(0, first_coil - f_start)
+                carrier_events.append(
+                    {
+                        "id": f"{report_code}-{fid}-{pid}-r{r_num}-miss",
+                        "pull_num": pull_idx,
+                        "fight_id": fid,
+                        "is_kill": is_kill,
+                        "round_num": r_num,
+                        "player": actors[pid]["name"],
+                        "class": actors[pid].get("subType", ""),
+                        "target_id": pid,
+                        "is_regular": True,
+                        "status": "missed_dead" if was_dead else "missed_alive",
+                        "break_reason": "missed_dead" if was_dead else "missed_alive",
+                        "player_was_dead": was_dead,
+                        "pickup_rel_time": "—",
+                        "pickup_rel_ms": rel_ms,
+                        "end_rel_time": "—",
+                        "end_rel_ms": rel_ms,
+                        "break_rel_time": format_rel_time(rel_ms),
+                        "timestamp": first_coil,
+                        "duration_ms": 0,
+                        "held_before_break_ms": 0,
+                        "post_break_ms": 0,
+                        "total_shell_dmg": 0,
+                        "pre_dmg_sec": [],
+                        "post_break_dmg": 0,
+                        "deaths_before": deaths_at_round,
+                        "events_url": build_events_url(report_code, fid, pid, first_coil, f_start, f_end, window_ms=8000),
+                        "replay_url": build_replay_url(report_code, fid, max(0, rel_ms - 8000)),
+                    }
+                )
+
+    carrier_events.sort(key=lambda x: (x["pull_num"], x["round_num"], x["timestamp"], x["player"]))
+    return regular_carrier_names, carrier_events
 
 
 def analyze_report_events(
@@ -1356,6 +1642,10 @@ def analyze_report_events(
         else start_epoch
     )
 
+    egg_regular_carriers, egg_carrier_events = _build_egg_carrier_analysis(
+        sorted_fights, actors, events_by_fight, egg_fails, report_code
+    )
+
     return {
         "code": report_code,
         "title": meta.get("title", report_code),
@@ -1375,6 +1665,7 @@ def analyze_report_events(
             for tid in tank_ids
         ],
         "players": players_out,
+        "egg_regular_carriers": egg_regular_carriers,
         "removal_summary": {
             "spectral_coils": removal_summary["spectral_coils"],
             "caustic_waves": removal_summary["caustic_waves"],
@@ -1385,6 +1676,7 @@ def analyze_report_events(
         },
         "pulls": pulls_out,
         "egg_fails": sorted(egg_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
+        "egg_carrier_events": egg_carrier_events,
         "wave_fails": sorted(wave_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
         "tank_fails": sorted(tank_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
         "defensive_events": sorted(defensive_events, key=lambda x: (x["pull_num"], x["timestamp"])),

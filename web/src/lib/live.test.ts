@@ -94,4 +94,72 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
     expect(collisions.find((c) => c.player === 'Beta')?.collision_partners).toEqual(['Alpha'])
     expect(res.last_pull_end_epoch_ms).toBe(1795450000000 + 130_000)
   })
+
+  it('computes egg carrier uptime, shell damage buckets, and alive vs dead missed pickups in TS analyzer', () => {
+    const actors = {
+      1: { id: 1, name: 'Alice', type: 'Player', subType: 'Mage' },
+      2: { id: 2, name: 'Bob', type: 'Player', subType: 'Warlock' },
+      10: { id: 10, name: 'Spectral Coil', type: 'NPC', subType: 'NPC' },
+    }
+    const abilities = {
+      1307612: 'Noxious Shell',
+      1307617: 'Noxious Shell',
+      1299010: 'Spectral Coils',
+    }
+    const fights = [
+      { id: 1, name: "Ula'tek", startTime: 0, endTime: 60_000, bossPercentage: 70, kill: false, friendlyPlayers: [1, 2] },
+      { id: 2, name: "Ula'tek", startTime: 100_000, endTime: 170_000, bossPercentage: 60, kill: false, friendlyPlayers: [1, 2] },
+      { id: 3, name: "Ula'tek", startTime: 200_000, endTime: 260_000, bossPercentage: 50, kill: false, friendlyPlayers: [1, 2] },
+      { id: 4, name: "Ula'tek", startTime: 300_000, endTime: 360_000, bossPercentage: 45, kill: false, friendlyPlayers: [1, 2] },
+    ]
+    const eventsByFight = {
+      1: [
+        { timestamp: 20_000, type: 'applydebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 25_000, type: 'damage', targetID: 1, abilityGameID: 1307617, amount: 60_000 },
+        { timestamp: 30_000, type: 'applydebuff', targetID: 2, abilityGameID: 1307612 },
+        { timestamp: 35_000, type: 'damage', targetID: 1, abilityGameID: 1307617, amount: 90_000 },
+        { timestamp: 40_000, type: 'cast', sourceID: 10, abilityGameID: 1299010 },
+        { timestamp: 40_000, type: 'removedebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 40_000, type: 'removedebuff', targetID: 2, abilityGameID: 1307612 },
+      ],
+      2: [
+        { timestamp: 125_000, type: 'applydebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 140_000, type: 'cast', sourceID: 10, abilityGameID: 1299010 },
+        { timestamp: 150_000, type: 'damage', targetID: 1, abilityGameID: 1307617, amount: 200_000 },
+        { timestamp: 155_000, type: 'removedebuff', targetID: 1, abilityGameID: 1307612 },
+      ],
+      3: [
+        { timestamp: 210_000, type: 'death', targetID: 2, killerID: 10, killingAbilityGameID: 1 },
+        { timestamp: 232_000, type: 'applydebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 240_000, type: 'cast', sourceID: 10, abilityGameID: 1299010 },
+        { timestamp: 240_000, type: 'removedebuff', targetID: 1, abilityGameID: 1307612 },
+      ],
+      4: [
+        { timestamp: 330_000, type: 'applydebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 331_000, type: 'applydebuff', targetID: 2, abilityGameID: 1307612 },
+        { timestamp: 340_000, type: 'cast', sourceID: 10, abilityGameID: 1299010 },
+        { timestamp: 340_000, type: 'removedebuff', targetID: 1, abilityGameID: 1307612 },
+        { timestamp: 340_000, type: 'removedebuff', targetID: 2, abilityGameID: 1307612 },
+      ],
+    }
+
+    const res = analyzeReportEventsTS(
+      { title: 'Carrier Test', startTime: 1795450000000 },
+      fights,
+      actors,
+      abilities,
+      eventsByFight,
+      'TESTCARRIER12345',
+    )
+
+    expect([...res.egg_regular_carriers].sort()).toEqual(['Alice', 'Bob'])
+    const evs = res.egg_carrier_events as Array<Record<string, unknown>>
+    const a1 = evs.find((e) => e.player === 'Alice' && e.pull_num === 1)!
+    expect(a1.total_shell_dmg).toBe(150_000)
+    expect((a1.pre_dmg_sec as number[])[15]).toBe(60_000)
+    expect((a1.pre_dmg_sec as number[])[5]).toBe(90_000)
+    expect(evs.find((e) => e.player === 'Alice' && e.pull_num === 2)?.status).toBe('missed_break')
+    expect(evs.find((e) => e.player === 'Bob' && e.pull_num === 2)?.status).toBe('missed_alive')
+    expect(evs.find((e) => e.player === 'Bob' && e.pull_num === 3)?.status).toBe('missed_dead')
+  })
 })

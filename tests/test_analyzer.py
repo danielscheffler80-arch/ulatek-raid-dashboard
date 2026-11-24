@@ -660,3 +660,90 @@ def test_egg_collision_two_carriers_vs_single_bump():
     assert singles[0]["player"] == "Valysa"
     assert rep["removal_summary"]["egg_collision"] == 2
     assert rep["removal_summary"]["noxious_splash"] == 1
+
+
+def test_egg_carrier_uptime_shell_dmg_and_missed_alive_vs_dead():
+    meta = {"title": "Egg Uptime Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "Alice", "type": "Player", "subType": "Mage"},
+        2: {"id": 2, "name": "Bob", "type": "Player", "subType": "Warlock"},
+        3: {"id": 3, "name": "Carol", "type": "Player", "subType": "Priest"},
+        10: {"id": 10, "name": "Spectral Coil", "type": "NPC", "subType": "NPC"},
+    }
+    abilities = {
+        1307612: "Noxious Shell",
+        1307617: "Noxious Shell",
+        1299010: "Spectral Coils",
+    }
+    fights = [
+        {"id": 1, "name": "Ula'tek", "startTime": 0, "endTime": 60000, "bossPercentage": 70.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+        {"id": 2, "name": "Ula'tek", "startTime": 100000, "endTime": 170000, "bossPercentage": 60.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+        {"id": 3, "name": "Ula'tek", "startTime": 200000, "endTime": 260000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+        {"id": 4, "name": "Ula'tek", "startTime": 300000, "endTime": 360000, "bossPercentage": 45.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+    ]
+    events_by_fight = {
+        1: [
+            # Pull 1: Spectral Coils break at 40s. Alice picks up at 20s (20s hold), Bob at 30s (10s hold)
+            {"timestamp": 20000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 25000, "type": "damage", "targetID": 1, "abilityGameID": 1307617, "amount": 60000, "fight": 1},
+            {"timestamp": 30000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 35000, "type": "damage", "targetID": 1, "abilityGameID": 1307617, "amount": 90000, "fight": 1},
+            {"timestamp": 35000, "type": "damage", "targetID": 2, "abilityGameID": 1307617, "amount": 50000, "fight": 1},
+            {"timestamp": 40000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 1},
+            {"timestamp": 40000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 40000, "type": "removedebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 1},
+        ],
+        2: [
+            # Pull 2: Spectral Coils at 140s. Alice misses break & holds to 155s. Bob alive but doesn't pick up!
+            {"timestamp": 125000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 2},
+            {"timestamp": 130000, "type": "damage", "targetID": 1, "abilityGameID": 1307617, "amount": 70000, "fight": 2},
+            {"timestamp": 140000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 2},
+            {"timestamp": 150000, "type": "damage", "targetID": 1, "abilityGameID": 1307617, "amount": 200000, "fight": 2},
+            {"timestamp": 155000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 2},
+        ],
+        3: [
+            # Pull 3: Spectral Coils at 240s. Alice picks up at 232s. Bob dies at 210s -> missed_dead (excused)!
+            {"timestamp": 210000, "type": "death", "targetID": 2, "killerID": 10, "killingAbilityGameID": 1, "fight": 3},
+            {"timestamp": 232000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 3},
+            {"timestamp": 240000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 3},
+            {"timestamp": 240000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 3},
+        ],
+        4: [
+            # Pull 4: Both Alice & Bob pick up so Bob reaches 2/4 (50%) -> regular carrier
+            {"timestamp": 330000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 4},
+            {"timestamp": 331000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 4},
+            {"timestamp": 340000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 4},
+            {"timestamp": 340000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 4},
+            {"timestamp": 340000, "type": "removedebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 4},
+        ],
+    }
+
+    rep = analyze_report_events(meta, fights, actors, abilities, events_by_fight, "TESTEGGUPTIME123")
+    assert sorted(rep["egg_regular_carriers"]) == ["Alice", "Bob"]
+    assert "Carol" not in rep["egg_regular_carriers"]
+
+    evs = rep["egg_carrier_events"]
+    a_p1 = next(e for e in evs if e["player"] == "Alice" and e["pull_num"] == 1)
+    assert a_p1["status"] == "ok"
+    assert a_p1["duration_ms"] == 20000
+    assert a_p1["held_before_break_ms"] == 20000
+    assert a_p1["total_shell_dmg"] == 150000
+    assert a_p1["pre_dmg_sec"][15] == 60000
+    assert a_p1["pre_dmg_sec"][5] == 90000
+
+    a_p2 = next(e for e in evs if e["player"] == "Alice" and e["pull_num"] == 2)
+    assert a_p2["status"] == "missed_break"
+    assert a_p2["post_break_dmg"] == 200000
+    assert a_p2["post_break_ms"] == 13500
+
+    b_p2 = next(e for e in evs if e["player"] == "Bob" and e["pull_num"] == 2)
+    assert b_p2["status"] == "missed_alive"
+    assert b_p2["player_was_dead"] is False
+
+    b_p3 = next(e for e in evs if e["player"] == "Bob" and e["pull_num"] == 3)
+    assert b_p3["status"] == "missed_dead"
+    assert b_p3["player_was_dead"] is True
+
+    # Carol is not a regular carrier -> never flagged with missed_alive
+    assert not any(e["player"] == "Carol" for e in evs)
+

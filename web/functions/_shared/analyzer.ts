@@ -19,6 +19,7 @@ import {
   SPELL_MELEE,
   SPELL_MOTHERS_WRATH_DMG,
   SPELL_NOXIOUS_SHELL_DEBUFF,
+  SPELL_NOXIOUS_SHELL_DMG,
   SPELL_NOXIOUS_SPLASH,
   SPELL_PUTRID_MEMBRANE_DEBUFF,
   SPELL_RANCID_YOLK,
@@ -145,6 +146,314 @@ function buildReplayUrl(code: string, fid: number, relMs: number, leadMs = 3000)
 
 function buildDamageWindowUrl(code: string, fid: number, s: number, e: number): string {
   return `https://www.warcraftlogs.com/reports/${code}?fight=${fid}&type=damage-done&start=${Math.floor(s)}&end=${Math.floor(e)}`
+}
+
+function buildEggCarrierAnalysis(
+  sortedFights: WclFight[],
+  actors: Record<number, WclActor>,
+  eventsByFight: Record<number, WclEvent[]>,
+  eggFails: Record<string, unknown>[],
+  reportCode: string,
+) {
+  const failByFp = new Map<string, Record<string, unknown>[]>()
+  for (const ef of eggFails) {
+    if (ef.kind === 'caustic_waves' || ef.kind === 'egg_collision') {
+      const key = `${ef.fight_id}:${ef.target_id}`
+      const list = failByFp.get(key)
+      if (list) list.push(ef)
+      else failByFp.set(key, [ef])
+    }
+  }
+
+  const fightRounds = new Map<number, number[][]>()
+  const carrierPullCounts = new Map<number, number>()
+  let pullsWithRounds = 0
+
+  for (const fight of sortedFights) {
+    const fid = Number(fight.id)
+    const fevs = [...(eventsByFight[fid] ?? [])].sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
+    const coilCasts = fevs
+      .filter((ev) => ev.abilityGameID === SPELL_SPECTRAL_COILS_CAST && ev.type === 'cast')
+      .map((ev) => Number(ev.timestamp))
+
+    const rounds: number[][] = []
+    for (const ts of coilCasts) {
+      if (rounds.length === 0 || ts - rounds[rounds.length - 1][rounds[rounds.length - 1].length - 1] > 20_000) {
+        rounds.push([ts])
+      } else {
+        rounds[rounds.length - 1].push(ts)
+      }
+    }
+    fightRounds.set(fid, rounds)
+
+    if (rounds.length > 0) {
+      pullsWithRounds++
+      const seen = new Set<number>()
+      for (const ev of fevs) {
+        if (ev.abilityGameID === SPELL_NOXIOUS_SHELL_DEBUFF && ev.type === 'applydebuff') {
+          const tid = ev.targetID
+          if (tid !== undefined && actors[tid]?.type === 'Player') {
+            seen.add(Number(tid))
+          }
+        }
+      }
+      for (const pid of seen) {
+        carrierPullCounts.set(pid, (carrierPullCounts.get(pid) ?? 0) + 1)
+      }
+    }
+  }
+
+  const minRegularPulls = pullsWithRounds <= 1 ? 1 : Math.max(2, Math.round(pullsWithRounds * 0.4))
+  const regularCarrierIds = Array.from(carrierPullCounts.entries())
+    .filter(([, cnt]) => cnt >= minRegularPulls)
+    .sort((a, b) => b[1] - a[1] || actors[a[0]].name.localeCompare(actors[b[0]].name))
+    .map(([pid]) => pid)
+  const regularCarrierSet = new Set(regularCarrierIds)
+  const regularCarrierNames = regularCarrierIds.map((pid) => actors[pid].name)
+
+  const carrierEvents: Record<string, unknown>[] = []
+
+  sortedFights.forEach((fight, idx) => {
+    const pullNum = idx + 1
+    const fid = Number(fight.id)
+    const fStart = Number(fight.startTime)
+    const fEnd = Number(fight.endTime)
+    const isKill = Boolean(fight.kill)
+    const rounds = fightRounds.get(fid) ?? []
+    const fevs = [...(eventsByFight[fid] ?? [])].sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
+
+    const allDeathTs: number[] = []
+    const deathsByPlayer = new Map<number, number[]>()
+    const shellDmgByPlayer = new Map<number, [number, number][]>()
+
+    for (const ev of fevs) {
+      const ts = Number(ev.timestamp)
+      const tid = ev.targetID
+      if (ev.type === 'death' && tid !== undefined && actors[tid]?.type === 'Player') {
+        allDeathTs.push(ts)
+        const list = deathsByPlayer.get(tid) ?? []
+        list.push(ts)
+        deathsByPlayer.set(tid, list)
+      } else if (
+        ev.type === 'damage' &&
+        ev.abilityGameID === SPELL_NOXIOUS_SHELL_DMG &&
+        tid !== undefined &&
+        actors[tid]
+      ) {
+        const amt = Math.round(Number(ev.amount ?? 0))
+        if (amt > 0) {
+          const list = shellDmgByPlayer.get(tid) ?? []
+          list.push([ts, amt])
+          shellDmgByPlayer.set(tid, list)
+        }
+      }
+    }
+    allDeathTs.sort((a, b) => a - b)
+
+    const countDeathsBefore = (ts: number) => {
+      let c = 0
+      for (const dts of allDeathTs) {
+        if (dts < ts) c++
+        else break
+      }
+      return c
+    }
+
+    const activeStart = new Map<number, number>()
+    const intervals: [number, number, number, boolean][] = []
+    for (const ev of fevs) {
+      if (ev.abilityGameID !== SPELL_NOXIOUS_SHELL_DEBUFF) continue
+      const tid = ev.targetID
+      if (tid === undefined || actors[tid]?.type !== 'Player') continue
+      const pid = Number(tid)
+      const ts = Number(ev.timestamp)
+      if (ev.type === 'applydebuff') {
+        if (!activeStart.has(pid)) activeStart.set(pid, ts)
+      } else if (ev.type === 'removedebuff') {
+        const st = activeStart.get(pid)
+        if (st !== undefined) {
+          activeStart.delete(pid)
+          intervals.push([pid, st, ts, false])
+        }
+      }
+    }
+    for (const [pid, st] of activeStart.entries()) {
+      intervals.push([pid, st, fEnd, true])
+    }
+
+    const carriedInRound = new Map<number, Set<number>>()
+
+    intervals.forEach(([pid, st, en, endedAtWipe], ivIdx) => {
+      const durationMs = Math.max(0, en - st)
+      let targetRoundIdx: number | null = null
+      for (let rI = 0; rI < rounds.length; rI++) {
+        if (rounds[rI][rounds[rI].length - 1] >= st - 2000) {
+          targetRoundIdx = rI
+          break
+        }
+      }
+
+      const playerName = actors[pid].name
+      const playerClass = actors[pid].subType ?? ''
+      const pDmgTicks = (shellDmgByPlayer.get(pid) ?? []).filter(([dts]) => dts >= st - 200 && dts <= en + 200)
+      const totalShellDmg = pDmgTicks.reduce((s, [, amt]) => s + amt, 0)
+
+      const matchedFail = (failByFp.get(`${fid}:${pid}`) ?? []).find(
+        (ef) => Math.abs(Number(ef.timestamp) - en) <= 150,
+      )
+
+      let preDmgSec: number[] = []
+      let postBreakDmg = 0
+      let postBreakMs = 0
+      let heldBeforeBreakMs = durationMs
+      let refBreakTs = en
+      let rNum = rounds.length + 1
+      let status = 'wiped_before_break'
+      let breakReason = 'wiped_before_break'
+
+      if (targetRoundIdx !== null) {
+        rNum = targetRoundIdx + 1
+        const rCoils = rounds[targetRoundIdx]
+        const set = carriedInRound.get(rNum) ?? new Set<number>()
+        set.add(pid)
+        carriedInRound.set(rNum, set)
+
+        const matchedCoil = rCoils.find((c) => Math.abs(en - c) <= 1500)
+        refBreakTs = matchedCoil !== undefined ? matchedCoil : rCoils[0]
+        heldBeforeBreakMs = Math.max(0, Math.min(en, refBreakTs) - st)
+        const lastCoil = rCoils[rCoils.length - 1]
+        const missedBreak = !matchedFail && en > lastCoil + 2000
+
+        if (matchedFail) {
+          status = 'hit_fail'
+          breakReason = String(matchedFail.kind)
+        } else if (missedBreak) {
+          status = 'missed_break'
+          breakReason = 'missed_break'
+          postBreakMs = Math.max(0, en - (lastCoil + 1500))
+        } else if (matchedCoil !== undefined) {
+          status = 'ok'
+          breakReason = 'spectral_coils'
+        } else if ((deathsByPlayer.get(pid) ?? []).some((dts) => Math.abs(dts - en) <= 1500)) {
+          status = 'player_death'
+          breakReason = 'player_death'
+        } else if (endedAtWipe) {
+          status = 'wiped_before_break'
+          breakReason = 'wiped_before_break'
+        } else {
+          status = 'ok'
+          breakReason = 'other'
+        }
+
+        const maxSecNeeded = Math.max(0, Math.floor(heldBeforeBreakMs / 1000)) + 2
+        const buckets = new Array<number>(Math.min(125, Math.max(1, maxSecNeeded))).fill(0)
+        for (const [dts, amt] of pDmgTicks) {
+          if (missedBreak && dts > lastCoil + 1500) {
+            postBreakDmg += amt
+          } else if (dts <= refBreakTs + 200) {
+            const secBefore = Math.max(0, Math.floor((refBreakTs - dts) / 1000))
+            if (secBefore < buckets.length) buckets[secBefore] += amt
+            else buckets[buckets.length - 1] += amt
+          }
+        }
+        while (buckets.length > 1 && buckets[buckets.length - 1] === 0) {
+          buckets.pop()
+        }
+        preDmgSec = buckets.some((v) => v > 0) ? buckets : []
+      } else {
+        status = matchedFail ? 'hit_fail' : 'wiped_before_break'
+        breakReason = matchedFail ? String(matchedFail.kind) : 'wiped_before_break'
+        heldBeforeBreakMs = 0
+      }
+
+      const pickupRelMs = Math.max(0, st - fStart)
+      const endRelMs = Math.max(0, en - fStart)
+      carrierEvents.push({
+        id: `${reportCode}-${fid}-${pid}-${st}-${ivIdx}-ec`,
+        pull_num: pullNum,
+        fight_id: fid,
+        is_kill: isKill,
+        round_num: rNum,
+        player: playerName,
+        class: playerClass,
+        target_id: pid,
+        is_regular: regularCarrierSet.has(pid),
+        status,
+        break_reason: breakReason,
+        player_was_dead: false,
+        pickup_rel_time: formatRelTime(pickupRelMs),
+        pickup_rel_ms: pickupRelMs,
+        end_rel_time: formatRelTime(endRelMs),
+        end_rel_ms: endRelMs,
+        break_rel_time: formatRelTime(Math.max(0, refBreakTs - fStart)),
+        timestamp: st,
+        duration_ms: durationMs,
+        held_before_break_ms: heldBeforeBreakMs,
+        post_break_ms: postBreakMs,
+        total_shell_dmg: totalShellDmg,
+        pre_dmg_sec: preDmgSec,
+        post_break_dmg: postBreakDmg,
+        deaths_before: countDeathsBefore(st),
+        events_url: buildEventsUrl(reportCode, fid, pid, st, fStart, fEnd, Math.max(3000, durationMs)),
+        replay_url: buildReplayUrl(reportCode, fid, pickupRelMs),
+      })
+    })
+
+    const friendlyIds = new Set((fight.friendlyPlayers ?? []).map(Number).filter((id) => Boolean(actors[id])))
+    rounds.forEach((rCoils, rI) => {
+      const rNum = rI + 1
+      const firstCoil = rCoils[0]
+      const checkTs = Math.max(fStart, firstCoil - 3000)
+      const deathsAtRound = countDeathsBefore(Math.max(fStart, firstCoil - 5000))
+      const carriedSet = carriedInRound.get(rNum) ?? new Set<number>()
+
+      for (const pid of regularCarrierIds) {
+        if (friendlyIds.size > 0 && !friendlyIds.has(pid)) continue
+        if (carriedSet.has(pid)) continue
+        const wasDead = (deathsByPlayer.get(pid) ?? []).some((dts) => dts < checkTs)
+        const relMs = Math.max(0, firstCoil - fStart)
+        carrierEvents.push({
+          id: `${reportCode}-${fid}-${pid}-r${rNum}-miss`,
+          pull_num: pullNum,
+          fight_id: fid,
+          is_kill: isKill,
+          round_num: rNum,
+          player: actors[pid].name,
+          class: actors[pid].subType ?? '',
+          target_id: pid,
+          is_regular: true,
+          status: wasDead ? 'missed_dead' : 'missed_alive',
+          break_reason: wasDead ? 'missed_dead' : 'missed_alive',
+          player_was_dead: wasDead,
+          pickup_rel_time: '—',
+          pickup_rel_ms: relMs,
+          end_rel_time: '—',
+          end_rel_ms: relMs,
+          break_rel_time: formatRelTime(relMs),
+          timestamp: firstCoil,
+          duration_ms: 0,
+          held_before_break_ms: 0,
+          post_break_ms: 0,
+          total_shell_dmg: 0,
+          pre_dmg_sec: [],
+          post_break_dmg: 0,
+          deaths_before: deathsAtRound,
+          events_url: buildEventsUrl(reportCode, fid, pid, firstCoil, fStart, fEnd, 8000),
+          replay_url: buildReplayUrl(reportCode, fid, Math.max(0, relMs - 8000)),
+        })
+      }
+    })
+  })
+
+  carrierEvents.sort(
+    (a, b) =>
+      (a.pull_num as number) - (b.pull_num as number) ||
+      (a.round_num as number) - (b.round_num as number) ||
+      (a.timestamp as number) - (b.timestamp as number) ||
+      String(a.player).localeCompare(String(b.player)),
+  )
+
+  return { regularCarrierNames, carrierEvents }
 }
 
 function detectTanks(actors: Record<number, WclActor>, eventsByFight: Record<number, WclEvent[]>): number[] {
@@ -1342,6 +1651,13 @@ export function analyzeReportEventsTS(
       : startEpoch
 
   const killsCount = pullsOut.filter((p) => p.is_kill).length
+  const { regularCarrierNames, carrierEvents } = buildEggCarrierAnalysis(
+    sortedFights,
+    actors,
+    eventsByFight,
+    eggFails,
+    reportCode,
+  )
 
   return {
     code: reportCode,
@@ -1367,9 +1683,11 @@ export function analyzeReportEventsTS(
         pulls_present,
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
+    egg_regular_carriers: regularCarrierNames,
     removal_summary: removalSummary,
     pulls: pullsOut,
     egg_fails: eggFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
+    egg_carrier_events: carrierEvents,
     wave_fails: waveFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     tank_fails: tankFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     defensive_events: defensiveEvents.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),

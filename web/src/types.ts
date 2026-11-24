@@ -55,6 +55,45 @@ export interface EggFail {
   replay_url: string
 }
 
+export type EggCarrierStatus =
+  | 'ok'
+  | 'missed_break'
+  | 'hit_fail'
+  | 'player_death'
+  | 'wiped_before_break'
+  | 'missed_alive'
+  | 'missed_dead'
+
+export interface EggCarrierEvent {
+  id: string
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  round_num: number
+  player: string
+  class: string
+  target_id: number
+  is_regular: boolean
+  status: EggCarrierStatus
+  break_reason: string
+  player_was_dead: boolean
+  pickup_rel_time: string
+  pickup_rel_ms: number
+  end_rel_time: string
+  end_rel_ms: number
+  break_rel_time: string
+  timestamp: number
+  duration_ms: number
+  held_before_break_ms: number
+  post_break_ms: number
+  total_shell_dmg: number
+  pre_dmg_sec: number[]
+  post_break_dmg: number
+  deaths_before: number
+  events_url: string
+  replay_url: string
+}
+
 export interface WaveFail {
   id: string
   player: string
@@ -270,6 +309,7 @@ export interface ReportData {
   kills_count: number
   tanks: TankActor[]
   players: PlayerSummary[]
+  egg_regular_carriers?: string[]
   removal_summary: {
     spectral_coils: number
     caustic_waves: number
@@ -280,6 +320,7 @@ export interface ReportData {
   }
   pulls: PullData[]
   egg_fails: EggFail[]
+  egg_carrier_events?: EggCarrierEvent[]
   wave_fails: WaveFail[]
   tank_fails: TankFail[]
   defensive_events: DefensiveEvent[]

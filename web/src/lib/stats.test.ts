@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReportData } from '../types'
 import {
   aggregateDefensives,
+  aggregateEggCarriers,
   aggregateEggFails,
   aggregateHeartPhases,
   aggregatePhaseAnalysis,
@@ -300,5 +301,75 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(res.wardenPlayers[0].player).toBe('Narande')
     expect(res.wardenPlayers[0].totalDamage).toBe(25_000_000)
     expect(res.wardenPulls[0].kill_sync_delta_ms).toBe(3500)
+  })
+
+  it('aggregates egg carrier uptime, dynamic min-max tolerance unnecessary shell damage, and alive vs dead misses', () => {
+    const preBuckets = new Array<number>(21).fill(0)
+    preBuckets[5] = 90_000
+    preBuckets[14] = 80_000
+    preBuckets[18] = 70_000
+
+    const repWithCarriers: ReportData = {
+      ...mockReport,
+      egg_regular_carriers: ['Narande', 'Betøng'],
+      egg_carrier_events: [
+        {
+          id: 'ec1', pull_num: 1, fight_id: 10, is_kill: false, round_num: 1,
+          player: 'Narande', class: 'Warlock', target_id: 3, is_regular: true,
+          status: 'ok', break_reason: 'spectral_coils', player_was_dead: false,
+          pickup_rel_time: '00:20.000', pickup_rel_ms: 20_000, end_rel_time: '00:40.000', end_rel_ms: 40_000,
+          break_rel_time: '00:40.000', timestamp: 21_000, duration_ms: 20_000,
+          held_before_break_ms: 20_000, post_break_ms: 0,
+          total_shell_dmg: 240_000, pre_dmg_sec: preBuckets, post_break_dmg: 0,
+          deaths_before: 0, events_url: 'https://wcl/ec1', replay_url: 'https://wcl/rec1',
+        },
+        {
+          id: 'ec2', pull_num: 1, fight_id: 10, is_kill: false, round_num: 1,
+          player: 'Betøng', class: 'Monk', target_id: 1, is_regular: true,
+          status: 'missed_alive', break_reason: 'missed_alive', player_was_dead: false,
+          pickup_rel_time: '—', pickup_rel_ms: 40_000, end_rel_time: '—', end_rel_ms: 40_000,
+          break_rel_time: '00:40.000', timestamp: 41_000, duration_ms: 0,
+          held_before_break_ms: 0, post_break_ms: 0,
+          total_shell_dmg: 0, pre_dmg_sec: [], post_break_dmg: 0,
+          deaths_before: 0, events_url: 'https://wcl/ec2', replay_url: 'https://wcl/rec2',
+        },
+        {
+          id: 'ec3', pull_num: 2, fight_id: 11, is_kill: false, round_num: 1,
+          player: 'Betøng', class: 'Monk', target_id: 1, is_regular: true,
+          status: 'missed_dead', break_reason: 'missed_dead', player_was_dead: true,
+          pickup_rel_time: '—', pickup_rel_ms: 40_000, end_rel_time: '—', end_rel_ms: 40_000,
+          break_rel_time: '00:40.000', timestamp: 240_000, duration_ms: 0,
+          held_before_break_ms: 0, post_break_ms: 0,
+          total_shell_dmg: 0, pre_dmg_sec: [], post_break_dmg: 0,
+          deaths_before: 1, events_url: 'https://wcl/ec3', replay_url: 'https://wcl/rec3',
+        },
+        {
+          id: 'ec4', pull_num: 2, fight_id: 11, is_kill: false, round_num: 1,
+          player: 'Narande', class: 'Warlock', target_id: 3, is_regular: true,
+          status: 'hit_fail', break_reason: 'caustic_waves', player_was_dead: false,
+          pickup_rel_time: '00:37.000', pickup_rel_ms: 37_000, end_rel_time: '00:40.000', end_rel_ms: 40_000,
+          break_rel_time: '00:40.000', timestamp: 237_000, duration_ms: 3_000,
+          held_before_break_ms: 3_000, post_break_ms: 0,
+          total_shell_dmg: 30_000, pre_dmg_sec: [10_000, 10_000, 10_000], post_break_dmg: 0,
+          deaths_before: 1, events_url: 'https://wcl/ec4', replay_url: 'https://wcl/rec4',
+        },
+      ],
+    }
+
+    // Default 5-12s tolerance: buckets 14 (80k) + 18 (70k) = 150k unnecessary dmg; ec4 (3s < 5s + hit_fail) = lateHit
+    const res12 = aggregateEggCarriers([repWithCarriers], 4, { from: 1, to: 2 }, 5, 12)
+    expect(res12.totalShellDmg).toBe(270_000)
+    expect(res12.totalUnnecessaryDmg).toBe(150_000)
+    expect(res12.missedAliveTotal).toBe(1)
+    expect(res12.missedDeadTotal).toBe(1)
+    expect(res12.lateHitTotal).toBe(1)
+    const nar = res12.players.find((p) => p.player === 'Narande')!
+    expect(nar.unnecessaryMs).toBe(8_000) // 20s - 12s
+    expect(nar.lateHitCount).toBe(1)
+
+    // Raised tolerance 5-16s: only bucket 18 (70k) is unnecessary!
+    const res16 = aggregateEggCarriers([repWithCarriers], 4, { from: 1, to: 2 }, 5, 16)
+    expect(res16.totalUnnecessaryDmg).toBe(70_000)
+    expect(res16.players.find((p) => p.player === 'Narande')!.unnecessaryMs).toBe(4_000)
   })
 })
