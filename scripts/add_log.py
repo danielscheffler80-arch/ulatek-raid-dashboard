@@ -69,9 +69,11 @@ def run_import(
         cid, csec = resolve_credentials()
         client = WCLClient(cid, csec)
 
-    meta, fights, actors, abilities, events_by_fight = client.fetch_report_bundle(
+    bundle = client.fetch_report_bundle(
         code=code, encounter_id=encounter_id, difficulty=difficulty
     )
+    meta, fights, actors, abilities, events_by_fight = bundle[:5]
+    extra_tables = bundle[5] if len(bundle) > 5 else None
     report = analyze_report_events(
         meta=meta,
         fights=fights,
@@ -82,6 +84,7 @@ def run_import(
         label=label,
         encounter_id=encounter_id,
         difficulty=difficulty,
+        extra_tables=extra_tables,
     )
 
     existing_store = None
@@ -143,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Wave Fails:     {len(report['wave_fails'])} direkte Treffer")
     print(f"  Tank Fails:     {len(report['tank_fails'])} ({ta_fails} Tentakel-Aggro, {sv_fails} Stone Venom <30% ohne Def)")
     print(f"  Def-Events:     {len(report['defensive_events'])} (Low-HP-Spikes & Tode)")
+    print(f"  Herzphasen:     {len(report.get('heart_phases', []))} Fenster")
+    print(f"  P2/P3-Events:   {len(report.get('phase_events', []))} (Overlaps, Kicks, Avoidables), {len(report.get('warden_summaries', []))} P2-Trys, {len(report.get('p3_summaries', []))} P3-Trys")
     print(f"  Gespeichert in: {args.output}")
 
     if args.push:

@@ -21,6 +21,38 @@ SPELL_MEPHITIC_THRASH = 1296301
 SPELL_RATTLER_SLAM = 1299206
 SPELL_NECROTIC_VAPORS = 1286835
 
+# Heart Phase, Phase 2 & Phase 3 mechanic IDs
+SPELL_VENOMOUS_HEART_BUFF = 1299526
+SPELL_RAGE_OF_THE_SHACKLED_BUFF = 1286860
+SPELL_RAGE_OF_THE_SHACKLED_DMG = 1307367
+SPELL_FALLING_DEBRIS = 1286885
+
+SPELL_GRASPING_FANGS_DEBUFF = 1311611
+SPELL_GRASPING_FANGS_DMG = 1311612
+SPELL_BLIGHT_VEIN_DEBUFF = 1311609
+SPELL_BLIGHT_VEIN_DMG = 1317955
+SPELL_MALICE_CAST = 1290779
+SPELL_MALICE_DMG = 1290991
+SPELL_ACIDIC_BURST = 1301800
+SPELL_ACIDIC_EXPULSION = 1313531
+SPELL_PETRIFYING_STING = 1303414
+SPELL_VIRULENT_SPIT = 1302982
+
+NPC_ULATEK_GAME_ID = 257758
+NPC_VENOMOUS_HEART_GAME_ID = 267460
+NPC_DOOMSCALE_WARDEN_GAME_ID = 264045
+
+P2_AVOIDABLE_IDS = {
+    SPELL_ACIDIC_BURST,
+    SPELL_ACIDIC_EXPULSION,
+    SPELL_PETRIFYING_STING,
+    SPELL_VIRULENT_SPIT,
+}
+
+# Dynamic name matching for Phase 3 abilities (auto-activates once logs reach P3)
+P3_KICK_SPELL_NAMES = ("vicious echoes",)
+P3_AVOIDABLE_SPELL_NAMES = ("serpent's bite", "volatile purge")
+
 # Major raid damage spike abilities for Def CD / Pot / HS evaluation
 RAID_SPIKE_ABILITY_IDS = {
     SPELL_MEPHITIC_THRASH,
@@ -28,6 +60,8 @@ RAID_SPIKE_ABILITY_IDS = {
     SPELL_PUTRID_MEMBRANE_DMG,
     SPELL_CAUSTIC_WAVES,
     SPELL_NECROTIC_VAPORS,
+    SPELL_RAGE_OF_THE_SHACKLED_DMG,
+    SPELL_BLIGHT_VEIN_DMG,
 }
 
 # Health Potions (Midnight + TWW + generic name matching)
@@ -176,6 +210,133 @@ ALL_DEFENSIVE_BUFF_NAMES = EXTERNAL_DEF_NAMES | PERSONAL_DEF_NAMES
 
 # Tank-specific Stone Venom check excludes ultra-high-uptime rotational buffs like Ironfur/Bone Shield/Stagger
 TANK_DEF_OR_EXTERNAL_NAMES = (ALL_DEFENSIVE_BUFF_NAMES - {"bear form", "ignore pain", "blood shield"})
+
+# Consumable cooldowns (seconds)
+HEALTH_POTION_CD_SEC = 300
+DEMONIC_HEALTHSTONE_ID = 452930
+DEMONIC_HEALTHSTONE_CD_SEC = 60
+
+# Rotational / passive / non-cooldown buffs excluded from "was a Def-CD ready?" checks
+EXCLUDED_FROM_READY_CHECK = {
+    "bear form",
+    "ignore pain",
+    "blood shield",
+    "defensive stance",
+    "demon spikes",
+    "cheat death",
+    "cheating death",
+    "purgatory",
+    "feint",
+    "blazing barrier",
+    "prismatic barrier",
+    "ice barrier",
+    "crimson vial",
+    "fade",
+    "translucent image",
+    "frenzied regeneration",
+}
+
+# Standard baseline cooldowns (in seconds) for personal Defensive CDs across all 13 classes
+DEFENSIVE_COOLDOWNS_SEC: dict[str, int] = {
+    # Death Knight
+    "icebound fortitude": 120,
+    "vampiric blood": 90,
+    "anti-magic shell": 45,
+    "dancing rune weapon": 120,
+    "rune tap": 25,
+    "lichborne": 120,
+    "tombstone": 60,
+    # Monk
+    "fortifying brew": 120,
+    "celestial infusion": 60,
+    "celestial brew": 60,
+    "invoke niuzao, the black ox": 120,
+    "dampen harm": 120,
+    "diffuse magic": 90,
+    "zen meditation": 180,
+    "exploding keg": 60,
+    "touch of karma": 90,
+    # Paladin
+    "divine shield": 300,
+    "divine protection": 60,
+    "ardent defender": 90,
+    "guardian of ancient kings": 180,
+    "shield of vengeance": 90,
+    "lay on hands": 420,
+    # Warrior
+    "shield wall": 210,
+    "last stand": 180,
+    "spell reflection": 25,
+    "die by the sword": 120,
+    "enraged regeneration": 120,
+    "demoralizing shout": 45,
+    # Druid
+    "barkskin": 60,
+    "survival instincts": 180,
+    "incarnation: guardian of ursoc": 180,
+    # Demon Hunter
+    "blur": 60,
+    "netherwalk": 180,
+    "metamorphosis": 180,
+    "fiery brand": 60,
+    "fel devastation": 40,
+    # Mage
+    "ice block": 240,
+    "ice cold": 240,
+    "greater invisibility": 120,
+    "alter time": 50,
+    "mirror image": 120,
+    "mass barrier": 120,
+    # Warlock
+    "unending resolve": 180,
+    "dark pact": 60,
+    # Hunter
+    "aspect of the turtle": 180,
+    "survival of the fittest": 90,
+    "exhilaration": 120,
+    "fortitude of the bear": 120,
+    # Shaman
+    "astral shift": 90,
+    "stone bulwark totem": 180,
+    "earth elemental": 300,
+    # Evoker
+    "obsidian scales": 90,
+    "renewing blaze": 60,
+    # Priest
+    "dispersion": 90,
+    "desperate prayer": 90,
+    "vampiric embrace": 120,
+    # Rogue
+    "cloak of shadows": 120,
+    "evasion": 120,
+}
+
+# Guaranteed baseline personal defensives per WoW class (WCL Actor subType)
+CLASS_BASELINE_DEFS: dict[str, tuple[str, ...]] = {
+    "DeathKnight": ("Icebound Fortitude", "Anti-Magic Shell"),
+    "DemonHunter": ("Blur",),
+    "Druid": ("Barkskin",),
+    "Evoker": ("Obsidian Scales",),
+    "Hunter": ("Aspect of the Turtle", "Exhilaration"),
+    "Mage": ("Alter Time",),
+    "Monk": ("Fortifying Brew",),
+    "Paladin": ("Divine Shield", "Divine Protection"),
+    "Priest": ("Desperate Prayer",),
+    "Rogue": ("Cloak of Shadows", "Evasion"),
+    "Shaman": ("Astral Shift",),
+    "Warlock": ("Unending Resolve",),
+    "Warrior": ("Spell Reflection",),
+}
+
+
+def get_defensive_cooldown_ms(ability_name: str) -> int:
+    low = (ability_name or "").strip().lower()
+    return DEFENSIVE_COOLDOWNS_SEC.get(low, 120) * 1000
+
+
+def is_trackable_personal_def(ability_name: str) -> bool:
+    low = (ability_name or "").strip().lower()
+    return low in PERSONAL_DEF_NAMES and low not in EXCLUDED_FROM_READY_CHECK
 
 
 def is_health_potion(ability_id: int | None, ability_name: str) -> bool:

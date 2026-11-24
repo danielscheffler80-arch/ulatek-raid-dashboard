@@ -3,6 +3,8 @@ import type { ReportData } from '../types'
 import {
   aggregateDefensives,
   aggregateEggFails,
+  aggregateHeartPhases,
+  aggregatePhaseAnalysis,
   aggregateTankFails,
   aggregateWaveFails,
   computePhaseBuckets,
@@ -162,5 +164,89 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(b[0].count).toBe(1)
     expect(b[1].count).toBe(2)
     expect(b[2].count).toBe(0)
+  })
+
+  it('aggregates heart phases across windows and ranks players by total boss damage', () => {
+    const repWithHeart: ReportData = {
+      ...mockReport,
+      heart_phases: [
+        {
+          id: 'hw1',
+          pull_num: 1,
+          fight_id: 10,
+          is_kill: false,
+          window_num: 1,
+          start_rel_time: '02:25.550',
+          start_rel_ms: 145550,
+          duration_ms: 20005,
+          deaths_before: 1,
+          total_heart_dmg: 32_000_000,
+          total_boss_dmg: 12_000_000,
+          total_effective_dmg: 44_000_000,
+          total_other_dmg: 500_000,
+          debris_hits_total: 1,
+          players: [
+            { player: 'Narande', class: 'Warlock', player_id: 3, heart_dmg: 20_000_000, heart_raw_dmg: 10_000_000, boss_dmg: 4_000_000, total_boss_dmg: 24_000_000, other_dmg: 500_000, heart_share_pct: 83.3, debris_hits: 0 },
+            { player: 'Betøng', class: 'Monk', player_id: 1, heart_dmg: 12_000_000, heart_raw_dmg: 6_000_000, boss_dmg: 8_000_000, total_boss_dmg: 20_000_000, other_dmg: 0, heart_share_pct: 60.0, debris_hits: 1 },
+          ],
+          events_url: 'https://wcl/hw1',
+          replay_url: 'https://wcl/rhw1',
+        },
+      ],
+    }
+
+    const res = aggregateHeartPhases([repWithHeart], 4, { from: 1, to: 2 })
+    expect(res.windowCount).toBe(1)
+    expect(res.totalEffectiveDmg).toBe(44_000_000)
+    expect(res.players[0].player).toBe('Narande')
+    expect(res.players[0].totalBossDmg).toBe(24_000_000)
+    expect(res.players[0].heartSharePct).toBe(83.3)
+    expect(res.players[1].debrisHits).toBe(1)
+
+    // maxDeaths = 0 excludes window with deaths_before=1
+    expect(aggregateHeartPhases([repWithHeart], 0, { from: 1, to: 2 }).windowCount).toBe(0)
+  })
+
+  it('aggregates P2/P3 events, kicks, blight vein overlaps, and warden focus damage', () => {
+    const repWithP2: ReportData = {
+      ...mockReport,
+      phase_events: [
+        {
+          id: 'pe1', kind: 'blight_vein_overlap', phase: 'p2', player: 'Narande', class: 'Warlock', target_id: 3,
+          ability: 'Blight Vein Overlap', detail: 'Betøng', gap_ms: 1100, damage: 0, lethal: false,
+          pull_num: 2, fight_id: 11, is_kill: false, rel_time: '03:10.000', rel_ms: 190000, timestamp: 390000,
+          deaths_before: 2, events_url: 'https://wcl/pe1', replay_url: 'https://wcl/rpe1',
+        },
+        {
+          id: 'pe2', kind: 'malice_kick', phase: 'p2', player: 'Betøng', class: 'Monk', target_id: 1,
+          ability: 'Malice', detail: 'Spear Hand Strike', gap_ms: null, damage: 0, lethal: false,
+          pull_num: 2, fight_id: 11, is_kill: false, rel_time: '03:05.000', rel_ms: 185000, timestamp: 385000,
+          deaths_before: 1, events_url: 'https://wcl/pe2', replay_url: 'https://wcl/rpe2',
+        },
+        {
+          id: 'pe3', kind: 'malice_missed', phase: 'p2', player: 'Raid (nicht gekickt)', class: '', target_id: 0,
+          ability: 'Malice', detail: 'Cast durchgekommen', gap_ms: null, damage: 3_150_000, lethal: false,
+          pull_num: 2, fight_id: 11, is_kill: false, rel_time: '03:20.000', rel_ms: 200000, timestamp: 400000,
+          deaths_before: 2, events_url: 'https://wcl/pe3', replay_url: 'https://wcl/rpe3',
+        },
+      ],
+      warden_summaries: [
+        {
+          pull_num: 2, fight_id: 11, is_kill: false, p2_start_rel_time: '02:54.000', deaths_at_p2_start: 1,
+          warden_kills: 2, kill_sync_delta_ms: 3500, total_warden_dmg: 25_000_000,
+          players: [{ player: 'Narande', class: 'Warlock', player_id: 3, damage: 25_000_000 }],
+          events_url: 'https://wcl/w2', replay_url: 'https://wcl/rw2',
+        },
+      ],
+      p3_summaries: [],
+    }
+
+    const res = aggregatePhaseAnalysis([repWithP2], 4, { from: 1, to: 2 })
+    expect(res.blightOverlaps).toHaveLength(1)
+    expect(res.maliceKicks).toHaveLength(1)
+    expect(res.maliceMissed).toHaveLength(1)
+    expect(res.wardenPlayers[0].player).toBe('Narande')
+    expect(res.wardenPlayers[0].totalDamage).toBe(25_000_000)
+    expect(res.wardenPulls[0].kill_sync_delta_ms).toBe(3500)
   })
 })

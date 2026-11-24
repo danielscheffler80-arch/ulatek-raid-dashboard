@@ -9,13 +9,26 @@ from collections import defaultdict
 from typing import Any
 
 from scripts.spells_config import (
+    NPC_DOOMSCALE_WARDEN_GAME_ID,
+    NPC_ULATEK_GAME_ID,
+    NPC_VENOMOUS_HEART_GAME_ID,
+    P2_AVOIDABLE_IDS,
+    P3_AVOIDABLE_SPELL_NAMES,
+    P3_KICK_SPELL_NAMES,
+    SPELL_BLIGHT_VEIN_DMG,
     SPELL_CAUSTIC_WAVES,
+    SPELL_FALLING_DEBRIS,
+    SPELL_GRASPING_FANGS_DEBUFF,
+    SPELL_MALICE_CAST,
+    SPELL_MALICE_DMG,
     SPELL_MEPHITIC_THRASH,
     SPELL_NECROTIC_VAPORS,
     SPELL_NOXIOUS_SHELL_DEBUFF,
     SPELL_NOXIOUS_SPLASH,
     SPELL_PUTRID_MEMBRANE_DEBUFF,
     SPELL_PUTRID_MEMBRANE_DMG,
+    SPELL_RAGE_OF_THE_SHACKLED_BUFF,
+    SPELL_RAGE_OF_THE_SHACKLED_DMG,
     SPELL_RANCID_YOLK,
     SPELL_RATTLER_SLAM,
     SPELL_SOUL_CONSTRICTOR,
@@ -23,6 +36,7 @@ from scripts.spells_config import (
     SPELL_SPECTRAL_COILS_DMG,
     SPELL_STONE_VENOM_DEBUFF,
     SPELL_STONE_VENOM_DMG,
+    SPELL_VENOMOUS_HEART_BUFF,
     is_defensive_buff,
     is_health_potion,
     is_healthstone,
@@ -43,6 +57,15 @@ CORE_MECHANIC_IDS = (
     SPELL_MEPHITIC_THRASH,
     SPELL_RATTLER_SLAM,
     SPELL_NECROTIC_VAPORS,
+    SPELL_VENOMOUS_HEART_BUFF,
+    SPELL_RAGE_OF_THE_SHACKLED_BUFF,
+    SPELL_RAGE_OF_THE_SHACKLED_DMG,
+    SPELL_FALLING_DEBRIS,
+    SPELL_GRASPING_FANGS_DEBUFF,
+    SPELL_BLIGHT_VEIN_DMG,
+    SPELL_MALICE_CAST,
+    SPELL_MALICE_DMG,
+    *sorted(P2_AVOIDABLE_IDS),
 )
 
 
@@ -149,6 +172,7 @@ class WCLClient:
         dict[int, dict[str, Any]],
         dict[int, str],
         dict[int, list[dict[str, Any]]],
+        dict[str, Any],
     ]:
         meta_q = f"""
         query {{
@@ -160,6 +184,7 @@ class WCLClient:
               masterData {{
                 actors {{
                   id
+                  gameID
                   name
                   type
                   subType
@@ -178,6 +203,10 @@ class WCLClient:
                 bossPercentage
                 kill
                 friendlyPlayers
+                phaseTransitions {{
+                  id
+                  startTime
+                }}
               }}
             }}
           }}
@@ -199,12 +228,17 @@ class WCLClient:
         min_start = min(int(f["startTime"]) for f in fights)
         max_end = max(int(f["endTime"]) for f in fights)
 
-        # Dynamically collect exact ability IDs present in this report for defensives & consumables
+        # Dynamically collect exact ability IDs present in this report for defensives, consumables & P3 spells
         def_ids = sorted(gid for gid, name in abilities.items() if is_defensive_buff(name))
         consumable_ids = sorted(
             gid
             for gid, name in abilities.items()
             if is_health_potion(gid, name) or is_healthstone(gid, name)
+        )
+        p3_dynamic_ids = sorted(
+            gid
+            for gid, name in abilities.items()
+            if any(s in (name or "").lower() for s in (P3_KICK_SPELL_NAMES + P3_AVOIDABLE_SPELL_NAMES))
         )
 
         # 1. Deaths (fast, exact killer info)
@@ -212,11 +246,14 @@ class WCLClient:
             code, min_start, max_end, fight_ids, data_type="Deaths", include_resources=False
         )
 
-        # 2. Core Ula'tek mechanics + Boss/Gore Rattle Melees + Consumable casts (with HP resources!)
-        core_id_list = ", ".join(str(i) for i in CORE_MECHANIC_IDS)
+        # 2. Core Ula'tek mechanics + Boss/Gore Rattle Melees + Consumables + Interrupts + Warden Deaths
+        all_core_ids = sorted(set(CORE_MECHANIC_IDS) | set(p3_dynamic_ids))
+        core_id_list = ", ".join(str(i) for i in all_core_ids)
         parts = [
             f"ability.id in ({core_id_list})",
             '(type = "damage" and ability.id = 1 and (source.name = "Ula\'tek" or source.name = "Gore Rattle"))',
+            'type = "interrupt"',
+            '(type = "death" and target.name = "Doomscale Warden")',
         ]
         if consumable_ids:
             cons_list = ", ".join(str(i) for i in consumable_ids)
@@ -262,9 +299,150 @@ class WCLClient:
             if fid is not None:
                 events_by_fight[int(fid)].append(ev)
 
+        # 4. Batched DamageDone tables for Heart Phase windows, P2 Warden DPS, and P3 Boss DPS
+        extra_tables = self._fetch_phase_damage_tables(code, fights, actors, events_by_fight)
+
         meta = {
             "title": report.get("title", code),
             "startTime": report.get("startTime", 0),
             "endTime": report.get("endTime", 0),
         }
-        return meta, fights, actors, abilities, events_by_fight
+        return meta, fights, actors, abilities, events_by_fight, extra_tables
+
+    def _fetch_phase_damage_tables(
+        self,
+        code: str,
+        fights: list[dict[str, Any]],
+        actors: dict[int, dict[str, Any]],
+        events_by_fight: dict[int, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        boss_actor_id = next(
+            (aid for aid, a in actors.items() if a.get("gameID") == NPC_ULATEK_GAME_ID),
+            next((aid for aid, a in actors.items() if a.get("name") == "Ula'tek" and a.get("subType") == "Boss"), None),
+        )
+        heart_actor_id = next(
+            (aid for aid, a in actors.items() if a.get("gameID") == NPC_VENOMOUS_HEART_GAME_ID),
+            next((aid for aid, a in actors.items() if a.get("name") == "Venomous Heart"), None),
+        )
+        warden_actor_id = next(
+            (aid for aid, a in actors.items() if a.get("gameID") == NPC_DOOMSCALE_WARDEN_GAME_ID),
+            next((aid for aid, a in actors.items() if a.get("name") == "Doomscale Warden"), None),
+        )
+
+        # Detect exact Heart windows per fight from Venomous Heart (1299526) / Rage of the Shackled (1286860)
+        heart_specs: list[tuple[int, int, int, int]] = []  # (fid, win_num, start_ts, end_ts)
+        p2_specs: list[tuple[int, int, int]] = []  # (fid, p2_start, f_end)
+        p3_specs: list[tuple[int, int, int]] = []  # (fid, p3_start, f_end)
+
+        for fight in sorted(fights, key=lambda f: int(f["startTime"])):
+            fid = int(fight["id"])
+            f_end = int(fight["endTime"])
+            fevs = sorted(events_by_fight.get(fid, []), key=lambda e: int(e["timestamp"]))
+
+            # Extract heart intervals
+            win_start: int | None = None
+            win_num = 0
+            for ev in fevs:
+                aid = ev.get("abilityGameID")
+                t = ev.get("type")
+                if aid == SPELL_VENOMOUS_HEART_BUFF:
+                    if t == "applybuff" and win_start is None:
+                        win_start = int(ev["timestamp"])
+                    elif t == "removebuff" and win_start is not None:
+                        win_num += 1
+                        heart_specs.append((fid, win_num, win_start, int(ev["timestamp"])))
+                        win_start = None
+            if win_start is not None:
+                win_num += 1
+                heart_specs.append((fid, win_num, win_start, min(f_end, win_start + 21000)))
+
+            # Fallback to Rage of the Shackled buff if Venomous Heart buff was absent
+            if win_num == 0:
+                for ev in fevs:
+                    if ev.get("abilityGameID") == SPELL_RAGE_OF_THE_SHACKLED_BUFF:
+                        if ev.get("type") == "applybuff" and win_start is None:
+                            win_start = int(ev["timestamp"])
+                        elif ev.get("type") == "removebuff" and win_start is not None:
+                            win_num += 1
+                            heart_specs.append((fid, win_num, win_start, int(ev["timestamp"])))
+                            win_start = None
+                if win_start is not None:
+                    win_num += 1
+                    heart_specs.append((fid, win_num, win_start, min(f_end, win_start + 21000)))
+
+            transitions = fight.get("phaseTransitions") or []
+            p2 = next((pt for pt in transitions if int(pt.get("id", 0)) == 2), None)
+            p3 = next((pt for pt in transitions if int(pt.get("id", 0)) == 3), None)
+            if p2 is not None and warden_actor_id is not None:
+                p2_specs.append((fid, int(p2["startTime"]), f_end))
+            if p3 is not None and boss_actor_id is not None:
+                p3_specs.append((fid, int(p3["startTime"]), f_end))
+
+        def _entries_to_map(table_obj: dict[str, Any] | None) -> dict[int, int]:
+            out: dict[int, int] = {}
+            entries = ((table_obj or {}).get("data") or {}).get("entries") or []
+            for e in entries:
+                pid = e.get("id")
+                tot = int(e.get("total", 0) or 0)
+                if pid is not None and tot > 0:
+                    out[int(pid)] = tot
+            return out
+
+        aliases: list[str] = []
+        for idx, (fid, _wn, hs, he) in enumerate(heart_specs):
+            aliases.append(
+                f"ht_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies)"
+            )
+            if heart_actor_id is not None:
+                aliases.append(
+                    f"hh_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {heart_actor_id})"
+                )
+            if boss_actor_id is not None:
+                aliases.append(
+                    f"hb_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {boss_actor_id})"
+                )
+        for idx, (fid, ps, pe) in enumerate(p2_specs):
+            aliases.append(
+                f"w_{idx}: table(fightIDs: [{fid}], startTime: {ps}, endTime: {pe}, dataType: DamageDone, hostilityType: Friendlies, targetID: {warden_actor_id})"
+            )
+        for idx, (fid, ps, pe) in enumerate(p3_specs):
+            aliases.append(
+                f"p3_{idx}: table(fightIDs: [{fid}], startTime: {ps}, endTime: {pe}, dataType: DamageDone, hostilityType: Friendlies, targetID: {boss_actor_id})"
+            )
+
+        merged_tables: dict[str, Any] = {}
+        # Batch GraphQL aliases in chunks of 18 to stay comfortably within WCL point limits
+        for i in range(0, len(aliases), 18):
+            chunk_str = "\n".join(aliases[i : i + 18])
+            q = f'query {{ reportData {{ report(code: "{code}") {{ {chunk_str} }} }} }}'
+            res = self.gql(q)["reportData"]["report"] or {}
+            merged_tables.update(res)
+
+        heart_windows_out: list[dict[str, Any]] = []
+        for idx, (fid, wn, hs, he) in enumerate(heart_specs):
+            heart_windows_out.append(
+                {
+                    "fight_id": fid,
+                    "window_num": wn,
+                    "start_time": hs,
+                    "end_time": he,
+                    "total_by_player": _entries_to_map(merged_tables.get(f"ht_{idx}")),
+                    "heart_by_player": _entries_to_map(merged_tables.get(f"hh_{idx}")),
+                    "boss_by_player": _entries_to_map(merged_tables.get(f"hb_{idx}")),
+                }
+            )
+
+        warden_dmg_by_fight = {
+            fid: _entries_to_map(merged_tables.get(f"w_{idx}"))
+            for idx, (fid, _, _) in enumerate(p2_specs)
+        }
+        p3_boss_dmg_by_fight = {
+            fid: _entries_to_map(merged_tables.get(f"p3_{idx}"))
+            for idx, (fid, _, _) in enumerate(p3_specs)
+        }
+
+        return {
+            "heart_windows": heart_windows_out,
+            "warden_dmg_by_fight": warden_dmg_by_fight,
+            "p3_boss_dmg_by_fight": p3_boss_dmg_by_fight,
+        }

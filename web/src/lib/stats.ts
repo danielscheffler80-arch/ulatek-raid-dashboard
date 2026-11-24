@@ -1,8 +1,12 @@
 import type {
   DefensiveEvent,
   EggFail,
+  HeartPhaseWindow,
+  P3PullSummary,
+  PhaseEvent,
   ReportData,
   TankFail,
+  WardenPullSummary,
   WaveFail,
 } from '../types'
 
@@ -295,10 +299,13 @@ export interface DefensivePlayerRow {
   lowSpikes: number
   lowSpikesWithDef: number
   lowSpikesNoDef: number
+  lowSpikesNoDefReady: number
   defSpikeRatePct: number
   deaths: number
   deathsNoDef: number
+  deathsNoDefReady: number
   deathsNoPotNoHs: number
+  deathsAnyReady: number
   items: WithReport<DefensiveEvent>[]
 }
 
@@ -324,10 +331,13 @@ export function aggregateDefensives(
         lowSpikes: 0,
         lowSpikesWithDef: 0,
         lowSpikesNoDef: 0,
+        lowSpikesNoDefReady: 0,
         defSpikeRatePct: 0,
         deaths: 0,
         deathsNoDef: 0,
+        deathsNoDefReady: 0,
         deathsNoPotNoHs: 0,
+        deathsAnyReady: 0,
         items: [],
       }
       byPlayer.set(player, row)
@@ -355,14 +365,23 @@ export function aggregateDefensives(
       allEvents.push(enriched)
       const row = ensure(ev.player, ev.class)
       row.items.push(enriched)
+      const hasReadyDef = (ev.ready_defs?.length ?? 0) > 0
+      const hasAnyReady = ev.any_ready ?? (hasReadyDef || !ev.pot_used_in_pull || !ev.hs_used_in_pull)
       if (ev.kind === 'low_hp_spike') {
         row.lowSpikes++
         if (ev.had_def_cd) row.lowSpikesWithDef++
-        else row.lowSpikesNoDef++
+        else {
+          row.lowSpikesNoDef++
+          if (hasReadyDef) row.lowSpikesNoDefReady++
+        }
       } else if (ev.kind === 'death') {
         row.deaths++
-        if (!ev.had_def_cd) row.deathsNoDef++
+        if (!ev.had_def_cd) {
+          row.deathsNoDef++
+          if (hasReadyDef) row.deathsNoDefReady++
+        }
         if (!ev.pot_used_in_pull && !ev.hs_used_in_pull) row.deathsNoPotNoHs++
+        if (!ev.had_def_cd && hasAnyReady) row.deathsAnyReady++
       }
     }
   }
@@ -376,8 +395,9 @@ export function aggregateDefensives(
     }))
     .sort(
       (a, b) =>
+        b.deathsAnyReady - a.deathsAnyReady ||
         b.deathsNoPotNoHs - a.deathsNoPotNoHs ||
-        b.lowSpikesNoDef - a.lowSpikesNoDef ||
+        b.lowSpikesNoDefReady - a.lowSpikesNoDefReady ||
         a.player.localeCompare(b.player),
     )
 
@@ -389,6 +409,12 @@ export function aggregateDefensives(
   const totalSpikesWithDef = allEvents.filter((e) => e.kind === 'low_hp_spike' && e.had_def_cd).length
   const totalDeaths = allEvents.filter((e) => e.kind === 'death').length
   const totalDeathsNoPotNoHs = allEvents.filter((e) => e.kind === 'death' && !e.pot_used_in_pull && !e.hs_used_in_pull).length
+  const totalDeathsAnyReady = allEvents.filter(
+    (e) =>
+      e.kind === 'death' &&
+      !e.had_def_cd &&
+      (e.any_ready ?? ((e.ready_defs?.length ?? 0) > 0 || !e.pot_used_in_pull || !e.hs_used_in_pull)),
+  ).length
   const totalPullPlayerSlots = players.reduce((s, p) => s + p.pullsPresent, 0)
   const totalPotPulls = players.reduce((s, p) => s + p.potPulls, 0)
   const totalHsPulls = players.reduce((s, p) => s + p.hsPulls, 0)
@@ -399,9 +425,265 @@ export function aggregateDefensives(
     spikeDefRatePct: totalSpikes > 0 ? Math.round((totalSpikesWithDef / totalSpikes) * 100) : 0,
     totalDeaths,
     totalDeathsNoPotNoHs,
+    totalDeathsAnyReady,
     overallPotRatePct: totalPullPlayerSlots > 0 ? Math.round((totalPotPulls / totalPullPlayerSlots) * 100) : 0,
     overallHsRatePct: totalPullPlayerSlots > 0 ? Math.round((totalHsPulls / totalPullPlayerSlots) * 100) : 0,
     players,
+  }
+}
+
+export interface HeartPlayerEntry {
+  reportCode: string
+  reportLabel: string
+  reportDate: string
+  pull_num: number
+  fight_id: number
+  window_num: number
+  start_rel_time: string
+  duration_ms: number
+  deaths_before: number
+  heart_dmg: number
+  heart_raw_dmg: number
+  boss_dmg: number
+  total_boss_dmg: number
+  other_dmg: number
+  heart_share_pct: number
+  debris_hits: number
+  events_url: string
+  replay_url: string
+}
+
+export interface HeartPlayerRow {
+  player: string
+  className: string
+  windowsPresent: number
+  heartDmg: number
+  heartRawDmg: number
+  bossDmg: number
+  totalBossDmg: number
+  avgBossDmg: number
+  otherDmg: number
+  heartSharePct: number
+  debrisHits: number
+  entries: HeartPlayerEntry[]
+}
+
+export function aggregateHeartPhases(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
+  const rawWindows: WithReport<HeartPhaseWindow>[] = []
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    for (const hw of rep.heart_phases ?? []) {
+      rawWindows.push({
+        ...hw,
+        reportCode: rep.code,
+        reportLabel: label,
+        reportDate: rep.date_iso,
+      })
+    }
+  }
+
+  const windows = filterByPullRange(filterByMaxDeaths(rawWindows, maxDeaths), pullRange).sort(
+    (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.window_num - b.window_num,
+  )
+
+  const byPlayer = new Map<string, HeartPlayerRow>()
+  for (const hw of windows) {
+    for (const p of hw.players) {
+      let row = byPlayer.get(p.player)
+      if (!row) {
+        row = {
+          player: p.player,
+          className: p.class,
+          windowsPresent: 0,
+          heartDmg: 0,
+          heartRawDmg: 0,
+          bossDmg: 0,
+          totalBossDmg: 0,
+          avgBossDmg: 0,
+          otherDmg: 0,
+          heartSharePct: 0,
+          debrisHits: 0,
+          entries: [],
+        }
+        byPlayer.set(p.player, row)
+      }
+      row.windowsPresent++
+      row.heartDmg += p.heart_dmg
+      row.heartRawDmg += p.heart_raw_dmg
+      row.bossDmg += p.boss_dmg
+      row.totalBossDmg += p.total_boss_dmg
+      row.otherDmg += p.other_dmg
+      row.debrisHits += p.debris_hits
+      row.entries.push({
+        reportCode: hw.reportCode,
+        reportLabel: hw.reportLabel,
+        reportDate: hw.reportDate,
+        pull_num: hw.pull_num,
+        fight_id: hw.fight_id,
+        window_num: hw.window_num,
+        start_rel_time: hw.start_rel_time,
+        duration_ms: hw.duration_ms,
+        deaths_before: hw.deaths_before,
+        heart_dmg: p.heart_dmg,
+        heart_raw_dmg: p.heart_raw_dmg,
+        boss_dmg: p.boss_dmg,
+        total_boss_dmg: p.total_boss_dmg,
+        other_dmg: p.other_dmg,
+        heart_share_pct: p.heart_share_pct,
+        debris_hits: p.debris_hits,
+        events_url: hw.events_url,
+        replay_url: hw.replay_url,
+      })
+    }
+  }
+
+  const players = Array.from(byPlayer.values())
+    .map((p) => ({
+      ...p,
+      avgBossDmg: p.windowsPresent > 0 ? Math.round(p.totalBossDmg / p.windowsPresent) : 0,
+      heartSharePct: p.totalBossDmg > 0 ? Math.round((p.heartDmg / p.totalBossDmg) * 1000) / 10 : 0,
+    }))
+    .sort((a, b) => b.totalBossDmg - a.totalBossDmg || a.player.localeCompare(b.player))
+
+  const totalHeartDmg = windows.reduce((s, w) => s + w.total_heart_dmg, 0)
+  const totalBossDmg = windows.reduce((s, w) => s + w.total_boss_dmg, 0)
+  const totalEffectiveDmg = windows.reduce((s, w) => s + w.total_effective_dmg, 0)
+  const totalOtherDmg = windows.reduce((s, w) => s + w.total_other_dmg, 0)
+  const totalDebrisHits = windows.reduce((s, w) => s + w.debris_hits_total, 0)
+
+  return {
+    windowCount: windows.length,
+    totalHeartDmg,
+    totalBossDmg,
+    totalEffectiveDmg,
+    avgEffectiveDmgPerWindow: windows.length > 0 ? Math.round(totalEffectiveDmg / windows.length) : 0,
+    overallHeartSharePct: totalEffectiveDmg > 0 ? Math.round((totalHeartDmg / totalEffectiveDmg) * 1000) / 10 : 0,
+    totalOtherDmg,
+    totalDebrisHits,
+    windows,
+    players,
+  }
+}
+
+export interface PhasePlayerCountRow {
+  player: string
+  className: string
+  count: number
+  totalDamage: number
+  lethalCount: number
+  items: WithReport<PhaseEvent>[]
+}
+
+export interface PhaseDamageRankRow {
+  player: string
+  className: string
+  pullsPresent: number
+  totalDamage: number
+  avgDamage: number
+}
+
+function groupPhaseEventsByPlayer(items: WithReport<PhaseEvent>[]): PhasePlayerCountRow[] {
+  const map = new Map<string, PhasePlayerCountRow>()
+  for (const item of items) {
+    let row = map.get(item.player)
+    if (!row) {
+      row = {
+        player: item.player,
+        className: item.class,
+        count: 0,
+        totalDamage: 0,
+        lethalCount: 0,
+        items: [],
+      }
+      map.set(item.player, row)
+    }
+    row.count++
+    row.totalDamage += item.damage
+    if (item.lethal) row.lethalCount++
+    row.items.push(item)
+  }
+  return Array.from(map.values()).sort((a, b) => b.count - a.count || b.totalDamage - a.totalDamage || a.player.localeCompare(b.player))
+}
+
+export function aggregatePhaseAnalysis(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
+  const rawEvents: WithReport<PhaseEvent>[] = []
+  const rawWarden: WithReport<WardenPullSummary>[] = []
+  const rawP3: WithReport<P3PullSummary>[] = []
+
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    for (const ev of rep.phase_events ?? []) {
+      rawEvents.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+    for (const ws of rep.warden_summaries ?? []) {
+      rawWarden.push({ ...ws, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+    for (const p3 of rep.p3_summaries ?? []) {
+      rawP3.push({ ...p3, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+  }
+
+  const events = filterByPullRange(filterByMaxDeaths(rawEvents, maxDeaths), pullRange)
+  const wardenPulls = filterByPullRange(
+    rawWarden.filter((w) => maxDeaths === null || w.deaths_at_p2_start <= maxDeaths),
+    pullRange,
+  ).sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num)
+
+  const p3Pulls = filterByPullRange(
+    rawP3.filter((p) => maxDeaths === null || p.deaths_at_p3_start <= maxDeaths),
+    pullRange,
+  ).sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num)
+
+  const blightOverlaps = events.filter((e) => e.kind === 'blight_vein_overlap')
+  const maliceKicks = events.filter((e) => e.kind === 'malice_kick')
+  const maliceMissed = events.filter((e) => e.kind === 'malice_missed')
+  const viciousKicks = events.filter((e) => e.kind === 'vicious_echoes_kick')
+  const viciousMissed = events.filter((e) => e.kind === 'vicious_echoes_missed')
+  const p2Avoidables = events.filter((e) => e.kind === 'p2_avoidable')
+  const p3Avoidables = events.filter((e) => e.kind === 'p3_avoidable')
+
+  const rankDamage = (pulls: { players: { player: string; class: string; damage: number }[] }[]): PhaseDamageRankRow[] => {
+    const byP = new Map<string, PhaseDamageRankRow>()
+    for (const pull of pulls) {
+      for (const p of pull.players) {
+        let row = byP.get(p.player)
+        if (!row) {
+          row = { player: p.player, className: p.class, pullsPresent: 0, totalDamage: 0, avgDamage: 0 }
+          byP.set(p.player, row)
+        }
+        row.pullsPresent++
+        row.totalDamage += p.damage
+      }
+    }
+    return Array.from(byP.values())
+      .map((r) => ({ ...r, avgDamage: r.pullsPresent > 0 ? Math.round(r.totalDamage / r.pullsPresent) : 0 }))
+      .sort((a, b) => b.totalDamage - a.totalDamage || a.player.localeCompare(b.player))
+  }
+
+  return {
+    blightOverlaps,
+    blightOverlapPlayers: groupPhaseEventsByPlayer(blightOverlaps),
+    maliceKicks,
+    maliceKickPlayers: groupPhaseEventsByPlayer(maliceKicks),
+    maliceMissed,
+    viciousKicks,
+    viciousKickPlayers: groupPhaseEventsByPlayer(viciousKicks),
+    viciousMissed,
+    p2Avoidables,
+    p3Avoidables,
+    avoidablePlayers: groupPhaseEventsByPlayer([...p2Avoidables, ...p3Avoidables]),
+    wardenPulls,
+    wardenPlayers: rankDamage(wardenPulls),
+    p3Pulls,
+    p3Players: rankDamage(p3Pulls),
   }
 }
 

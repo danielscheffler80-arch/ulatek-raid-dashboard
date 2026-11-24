@@ -240,3 +240,192 @@ def test_merge_report_into_store_idempotent_and_preserves_label():
     r2 = {"code": "BBB2222222222222", "title": "Newer", "label": "Sonntag Raid", "start_time_epoch_ms": 2000}
     store = merge_report_into_store(store, r2)
     assert [r["code"] for r in store["reports"]] == ["BBB2222222222222", "AAA1111111111111"]
+
+
+def test_heart_phase_damage_aggregation_and_debris():
+    actors = _base_actors()
+    actors[194] = {"id": 194, "name": "Venomous Heart", "type": "NPC", "subType": "Boss"}
+    abilities = _base_abilities()
+    abilities.update(
+        {
+            1299526: "Venomous Heart",
+            1286860: "Rage of the Shackled",
+            1286885: "Falling Debris",
+        }
+    )
+    meta = {"title": "Heart Test", "startTime": 1795450000000}
+    fights = [
+        {
+            "id": 41,
+            "name": "Ula'tek",
+            "startTime": 100000,
+            "endTime": 340000,
+            "fightPercentage": 69.2,
+            "bossPercentage": 69.2,
+            "kill": False,
+        }
+    ]
+    events = [
+        {"timestamp": 245000, "type": "applybuff", "sourceID": 194, "targetID": 194, "abilityGameID": 1299526, "fight": 41},
+        {"timestamp": 252000, "type": "damage", "sourceID": 152, "targetID": 4, "abilityGameID": 1286885, "amount": 340000, "fight": 41},
+        {"timestamp": 265000, "type": "removebuff", "sourceID": 194, "targetID": 194, "abilityGameID": 1299526, "fight": 41},
+    ]
+    extra_tables = {
+        "heart_windows": [
+            {
+                "fight_id": 41,
+                "window_num": 1,
+                "start_time": 245000,
+                "end_time": 265000,
+                "heart_by_player": {3: 20_000_000, 4: 12_000_000},
+                "boss_by_player": {3: 4_000_000, 4: 8_000_000},
+                "total_by_player": {3: 24_500_000, 4: 20_000_000},
+            }
+        ],
+        "warden_dmg_by_fight": {},
+        "p3_boss_dmg_by_fight": {},
+    }
+
+    rep = analyze_report_events(
+        meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7", extra_tables=extra_tables
+    )
+    assert len(rep["heart_phases"]) == 1
+    hw = rep["heart_phases"][0]
+    assert hw["total_heart_dmg"] == 32_000_000
+    assert hw["total_boss_dmg"] == 12_000_000
+    assert hw["total_effective_dmg"] == 44_000_000
+    assert hw["total_other_dmg"] == 500_000
+    assert hw["debris_hits_total"] == 1
+    assert hw["players"][0]["player"] == "Narande"
+    assert hw["players"][0]["total_boss_dmg"] == 24_000_000
+    assert hw["players"][0]["heart_raw_dmg"] == 10_000_000
+    assert hw["players"][0]["other_dmg"] == 500_000
+    assert hw["players"][0]["heart_share_pct"] == 83.3
+    assert hw["players"][1]["player"] == "Näxxs"
+    assert hw["players"][1]["debris_hits"] == 1
+
+    debris_evs = [e for e in rep["phase_events"] if e["kind"] == "falling_debris"]
+    assert len(debris_evs) == 1
+    assert debris_evs[0]["player"] == "Näxxs"
+
+
+def test_p2_blight_vein_overlap_malice_kicks_and_warden_sync():
+    actors = _base_actors()
+    actors[198] = {"id": 198, "name": "Doomscale Warden", "type": "NPC", "subType": "NPC"}
+    abilities = _base_abilities()
+    abilities.update(
+        {
+            1311611: "Grasping Fangs",
+            1317955: "Blight Vein",
+            1290779: "Malice",
+            1290991: "Malice",
+            1301800: "Acidic Burst",
+            1766: "Kick",
+        }
+    )
+    meta = {"title": "P2 Test", "startTime": 1795450000000}
+    fights = [
+        {
+            "id": 41,
+            "name": "Ula'tek",
+            "startTime": 100000,
+            "endTime": 340000,
+            "fightPercentage": 69.2,
+            "bossPercentage": 69.2,
+            "kill": False,
+            "phaseTransitions": [{"id": 1, "startTime": 100000}, {"id": 2, "startTime": 270000}],
+        }
+    ]
+    events = [
+        # Malice kicked by Näxxs
+        {"timestamp": 280000, "type": "begincast", "sourceID": 198, "targetID": -1, "abilityGameID": 1290779, "fight": 41},
+        {"timestamp": 281000, "type": "interrupt", "sourceID": 4, "targetID": 198, "abilityGameID": 1766, "extraAbilityGameID": 1290779, "fight": 41},
+        # Second Malice cast goes through un-interrupted
+        {"timestamp": 290000, "type": "cast", "sourceID": 198, "targetID": -1, "abilityGameID": 1290779, "fight": 41},
+        {"timestamp": 290500, "type": "damage", "sourceID": 198, "targetID": 3, "abilityGameID": 1290991, "amount": 400000, "fight": 41},
+        # Grasping Fangs breaks: Narande at 300000 (ok), Näxxs at 301200 (OVERLAP 1200ms!), Valysa at 305000 (ok 3800ms)
+        {"timestamp": 300000, "type": "removedebuff", "sourceID": 152, "targetID": 3, "abilityGameID": 1311611, "fight": 41},
+        {"timestamp": 301200, "type": "removedebuff", "sourceID": 152, "targetID": 4, "abilityGameID": 1311611, "fight": 41},
+        {"timestamp": 305000, "type": "removedebuff", "sourceID": 152, "targetID": 5, "abilityGameID": 1311611, "fight": 41},
+        # Avoidable Acidic Burst hit
+        {"timestamp": 308000, "type": "damage", "sourceID": 198, "targetID": 5, "abilityGameID": 1301800, "amount": 410000, "fight": 41},
+        # Two Warden deaths 4200ms apart
+        {"timestamp": 320000, "type": "death", "targetID": 198, "targetInstance": 1, "fight": 41},
+        {"timestamp": 324200, "type": "death", "targetID": 198, "targetInstance": 2, "fight": 41},
+    ]
+    extra_tables = {
+        "heart_windows": [],
+        "warden_dmg_by_fight": {41: {3: 15_000_000, 4: 9_000_000}},
+        "p3_boss_dmg_by_fight": {},
+    }
+
+    rep = analyze_report_events(
+        meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7", extra_tables=extra_tables
+    )
+    overlaps = [e for e in rep["phase_events"] if e["kind"] == "blight_vein_overlap"]
+    assert len(overlaps) == 1
+    assert overlaps[0]["player"] == "Näxxs"
+    assert overlaps[0]["detail"] == "Narande"
+    assert overlaps[0]["gap_ms"] == 1200
+
+    kicks = [e for e in rep["phase_events"] if e["kind"] == "malice_kick"]
+    assert len(kicks) == 1
+    assert kicks[0]["player"] == "Näxxs"
+
+    missed = [e for e in rep["phase_events"] if e["kind"] == "malice_missed"]
+    assert len(missed) == 1
+
+    avoidable = [e for e in rep["phase_events"] if e["kind"] == "p2_avoidable"]
+    assert len(avoidable) == 1
+    assert avoidable[0]["player"] == "Valysa"
+
+    assert len(rep["warden_summaries"]) == 1
+    ws = rep["warden_summaries"][0]
+    assert ws["warden_kills"] == 2
+    assert ws["kill_sync_delta_ms"] == 4200
+    assert ws["total_warden_dmg"] == 24_000_000
+    assert ws["players"][0]["player"] == "Narande"
+
+
+def test_defensive_readiness_tracking_cooldowns_and_consumables():
+    actors = _base_actors()
+    abilities = _base_abilities()
+    abilities[108416] = "Dark Pact"
+    meta = {"title": "Readiness Test", "startTime": 1795450000000}
+    fights = [
+        {"id": 20, "name": "Ula'tek", "startTime": 100000, "endTime": 260000, "fightPercentage": 50.0, "bossPercentage": 50.0, "kill": False}
+    ]
+    events = [
+        # Narande (Warlock) uses Unending Resolve (180s CD) at 110s, Dark Pact (60s CD) at 115s, Pot at 120s, HS at 122s
+        {"timestamp": 110000, "type": "applybuff", "sourceID": 3, "targetID": 3, "abilityGameID": 104773, "fight": 20},
+        {"timestamp": 118000, "type": "removebuff", "sourceID": 3, "targetID": 3, "abilityGameID": 104773, "fight": 20},
+        {"timestamp": 115000, "type": "applybuff", "sourceID": 3, "targetID": 3, "abilityGameID": 108416, "fight": 20},
+        {"timestamp": 125000, "type": "removebuff", "sourceID": 3, "targetID": 3, "abilityGameID": 108416, "fight": 20},
+        {"timestamp": 120000, "type": "cast", "sourceID": 3, "targetID": 3, "abilityGameID": 1234768, "fight": 20},
+        {"timestamp": 122000, "type": "cast", "sourceID": 3, "targetID": 3, "abilityGameID": 6262, "fight": 20},
+        # At 140s: Narande drops low -> ALL defensives & consumables are on CD!
+        {"timestamp": 140000, "type": "damage", "sourceID": 176, "targetID": 3, "abilityGameID": 1296301, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 20},
+        # At 185s: Dark Pact (60s CD since 115s -> ready at 175s!) is READY again, Unending Resolve still on CD -> dies with Dark Pact ready!
+        {"timestamp": 185000, "type": "death", "targetID": 3, "killerID": 176, "killingAbilityGameID": 1296301, "fight": 20},
+        # Näxxs (Hunter) used NOTHING -> dies at 150s with Aspect of the Turtle, Exhilaration, Pot, and HS ALL ready!
+        {"timestamp": 150000, "type": "death", "targetID": 4, "killerID": 176, "killingAbilityGameID": 1296301, "fight": 20},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {20: events}, "qy9FnMvjwQ2R13c7")
+    narande_spike = next(e for e in rep["defensive_events"] if e["player"] == "Narande" and e["kind"] == "low_hp_spike")
+    assert narande_spike["ready_defs"] == []
+    assert narande_spike["pot_ready"] is False
+    assert narande_spike["hs_ready"] is False
+    assert narande_spike["any_ready"] is False
+
+    narande_death = next(e for e in rep["defensive_events"] if e["player"] == "Narande" and e["kind"] == "death")
+    assert "Dark Pact" in narande_death["ready_defs"]
+    assert "Unending Resolve" not in narande_death["ready_defs"]
+    assert narande_death["pot_ready"] is False
+    assert narande_death["any_ready"] is True
+
+    naxxs_death = next(e for e in rep["defensive_events"] if e["player"] == "Näxxs" and e["kind"] == "death")
+    assert "Aspect of the Turtle" in naxxs_death["ready_defs"]
+    assert naxxs_death["pot_ready"] is True
+    assert naxxs_death["hs_ready"] is True
+    assert naxxs_death["any_ready"] is True

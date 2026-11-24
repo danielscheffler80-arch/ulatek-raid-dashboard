@@ -276,6 +276,13 @@ function TankRowView({
                             {item.stacks} Stacks · kein Def-CD/External
                           </span>
                         )}
+                        {item.ready_defs && item.ready_defs.length > 0 ? (
+                          <Pill variant="destructive">
+                            Rdy: {item.ready_defs.join(', ')}
+                          </Pill>
+                        ) : item.ready_defs ? (
+                          <Pill variant="info">Eigene CDs auf CD (External nötig)</Pill>
+                        ) : null}
                       </>
                     )}
                     {item.deaths_before > 0 && (

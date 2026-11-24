@@ -9,6 +9,8 @@ import { EggFailsTab } from './components/EggFailsTab'
 import { WaveFailsTab } from './components/WaveFailsTab'
 import { TankFailsTab } from './components/TankFailsTab'
 import { DefensivesTab } from './components/DefensivesTab'
+import { HeartPhaseTab } from './components/HeartPhaseTab'
+import { PhasesTab } from './components/PhasesTab'
 import { PullsTab } from './components/PullsTab'
 import { Pill } from './components/ui'
 
@@ -17,6 +19,8 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'wave', label: 'Wave Fails' },
   { key: 'tank', label: 'Tank Fails' },
   { key: 'defensives', label: 'Def CD / Pot / HS' },
+  { key: 'heart', label: 'Herzphase' },
+  { key: 'phases', label: 'P2 / P3 & Kicks' },
   { key: 'pulls', label: 'Try-Übersicht' },
 ]
 
@@ -25,12 +29,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [selectedCode, setSelectedCode] = useState<string>('all')
   const [activeTab, setActiveTab] = useState<TabKey>('egg')
-  // Standardmäßig nach 4 Toden filtern (je Tab individuell anpassbar über den kompakten Stepper oben)
+  // Standardmäßig nach 4 Toden filtern (je Tab individuell anpassbar über den Stepper in der Sidebar)
   const [maxDeathsByTab, setMaxDeathsByTab] = useState<Record<TabKey, number>>({
     egg: 4,
     wave: 4,
     tank: 4,
     defensives: 4,
+    heart: 4,
+    phases: 4,
     pulls: 4,
   })
   const [pullRange, setPullRange] = useState<PullRange>({ from: 1, to: 40 })
@@ -218,6 +224,24 @@ export default function App() {
               )}
               {activeTab === 'defensives' && (
                 <DefensivesTab
+                  reports={activeReports}
+                  isMultiReport={isMultiReport}
+                  searchQuery={searchQuery}
+                  maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
+                />
+              )}
+              {activeTab === 'heart' && (
+                <HeartPhaseTab
+                  reports={activeReports}
+                  isMultiReport={isMultiReport}
+                  searchQuery={searchQuery}
+                  maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
+                />
+              )}
+              {activeTab === 'phases' && (
+                <PhasesTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}

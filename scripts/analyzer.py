@@ -8,9 +8,20 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scripts.spells_config import (
+    CLASS_BASELINE_DEFS,
+    DEMONIC_HEALTHSTONE_CD_SEC,
+    DEMONIC_HEALTHSTONE_ID,
+    HEALTH_POTION_CD_SEC,
     MYTHIC_DIFFICULTY,
+    P2_AVOIDABLE_IDS,
+    P3_AVOIDABLE_SPELL_NAMES,
+    P3_KICK_SPELL_NAMES,
     RAID_SPIKE_ABILITY_IDS,
     SPELL_CAUSTIC_WAVES,
+    SPELL_FALLING_DEBRIS,
+    SPELL_GRASPING_FANGS_DEBUFF,
+    SPELL_MALICE_CAST,
+    SPELL_MALICE_DMG,
     SPELL_MELEE,
     SPELL_NOXIOUS_SHELL_DEBUFF,
     SPELL_NOXIOUS_SPLASH,
@@ -21,9 +32,11 @@ from scripts.spells_config import (
     SPELL_STONE_VENOM_DEBUFF,
     SPELL_STONE_VENOM_DMG,
     ULATEK_ENCOUNTER_ID,
+    get_defensive_cooldown_ms,
     is_defensive_buff,
     is_health_potion,
     is_healthstone,
+    is_trackable_personal_def,
 )
 
 REPORT_CODE_RE = re.compile(r"(?:warcraftlogs\.com/reports/|^[a-zA-Z0-9]{16}$)")
@@ -82,6 +95,18 @@ def build_replay_url(
     )
 
 
+def build_damage_window_url(
+    report_code: str,
+    fight_id: int,
+    start_ts: int,
+    end_ts: int,
+) -> str:
+    return (
+        f"https://www.warcraftlogs.com/reports/{report_code}"
+        f"?fight={fight_id}&type=damage-done&start={int(start_ts)}&end={int(end_ts)}"
+    )
+
+
 def _detect_tanks(
     actors: dict[int, dict[str, Any]],
     events_by_fight: dict[int, list[dict[str, Any]]],
@@ -112,6 +137,38 @@ def _detect_tanks(
     return [tid for tid, _ in combined.most_common(2)]
 
 
+def _build_player_known_defs(
+    actors: dict[int, dict[str, Any]],
+    abilities: dict[int, str],
+    events_by_fight: dict[int, list[dict[str, Any]]],
+) -> dict[int, dict[str, str]]:
+    """Build each player's personal defensive kit from class baseline + abilities actually used in this report."""
+    known: dict[int, dict[str, str]] = {}
+    for pid, actor in actors.items():
+        if actor.get("type") != "Player":
+            continue
+        kit: dict[str, str] = {}
+        for base_name in CLASS_BASELINE_DEFS.get(actor.get("subType", ""), ()):
+            kit[base_name.lower()] = base_name
+        known[pid] = kit
+
+    for fevs in events_by_fight.values():
+        for ev in fevs:
+            t = ev.get("type")
+            if t not in ("applybuff", "cast"):
+                continue
+            aid = ev.get("abilityGameID")
+            ab_name = (abilities.get(aid, "") or "").strip()
+            if not is_trackable_personal_def(ab_name):
+                continue
+            src = ev.get("sourceID")
+            tgt = ev.get("targetID")
+            pid = src if src in known else (tgt if tgt in known else None)
+            if pid is not None and (src == tgt or src == pid or src is None):
+                known[pid].setdefault(ab_name.lower(), ab_name)
+    return known
+
+
 def analyze_report_events(
     meta: dict[str, Any],
     fights: list[dict[str, Any]],
@@ -122,11 +179,25 @@ def analyze_report_events(
     label: str | None = None,
     encounter_id: int = ULATEK_ENCOUNTER_ID,
     difficulty: int = MYTHIC_DIFFICULTY,
+    extra_tables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run complete Ula'tek Mythic analysis across all fights in a report."""
     sorted_fights = sorted(fights, key=lambda f: f["startTime"])
     tank_ids = _detect_tanks(actors, events_by_fight)
     tank_id_set = set(tank_ids)
+    player_known_defs = _build_player_known_defs(actors, abilities, events_by_fight)
+    extra = extra_tables or {}
+    heart_windows_by_fight: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for hw in extra.get("heart_windows") or []:
+        heart_windows_by_fight[int(hw["fight_id"])].append(hw)
+    warden_dmg_by_fight: dict[int, dict[int, int]] = {
+        int(fid): {int(pid): int(val) for pid, val in pmap.items()}
+        for fid, pmap in (extra.get("warden_dmg_by_fight") or {}).items()
+    }
+    p3_boss_dmg_by_fight: dict[int, dict[int, int]] = {
+        int(fid): {int(pid): int(val) for pid, val in pmap.items()}
+        for fid, pmap in (extra.get("p3_boss_dmg_by_fight") or {}).items()
+    }
 
     pulls_out: list[dict[str, Any]] = []
     egg_fails: list[dict[str, Any]] = []
@@ -134,6 +205,10 @@ def analyze_report_events(
     tank_fails: list[dict[str, Any]] = []
     defensive_events: list[dict[str, Any]] = []
     consumable_usage: list[dict[str, Any]] = []
+    heart_phases: list[dict[str, Any]] = []
+    phase_events: list[dict[str, Any]] = []
+    warden_summaries: list[dict[str, Any]] = []
+    p3_summaries: list[dict[str, Any]] = []
     removal_summary: Counter[str] = Counter()
     player_pulls_present: Counter[int] = Counter()
 
@@ -184,10 +259,42 @@ def analyze_report_events(
         hs_counts: Counter[int] = Counter()
         def_cd_casts: Counter[int] = Counter()
 
+        # Cooldown readiness state per player inside this fight
+        last_def_used_ts: dict[int, dict[str, int]] = defaultdict(dict)
+        last_pot_ts: dict[int, int] = {}
+        last_hs_ts: dict[int, tuple[int, bool]] = {}
+
         # Also track active defensive buff intervals per player via single pass
-        active_defs_at_event: list[set[str]] = []
         active_tank_defs: dict[int, set[str]] = defaultdict(set)
         active_all_defs: dict[int, set[str]] = defaultdict(set)
+
+        # Heart Phase & P2/P3 tracking per fight
+        debris_hits_in_fight: list[tuple[int, int]] = []  # (player_id, ts)
+        fang_breaks: list[tuple[int, int]] = []  # (ts, player_id)
+        malice_missed_casts: list[int] = []
+        malice_dmg_events: list[tuple[int, int]] = []  # (ts, amount)
+        vicious_missed_casts: list[int] = []
+        warden_death_ts: list[int] = []
+
+        def compute_readiness(pid: int, ts_now: int) -> tuple[list[str], bool, bool, bool]:
+            active_low = {n.lower() for n in active_all_defs[pid]}
+            ready: list[str] = []
+            for low_name, disp_name in player_known_defs.get(pid, {}).items():
+                if low_name in active_low:
+                    continue
+                used_at = last_def_used_ts[pid].get(low_name)
+                if used_at is None or (ts_now - used_at) >= get_defensive_cooldown_ms(low_name):
+                    ready.append(disp_name)
+            ready.sort()
+            pot_used_at = last_pot_ts.get(pid)
+            pot_rdy = (pot_used_at is None) or ((ts_now - pot_used_at) >= HEALTH_POTION_CD_SEC * 1000)
+            hs_info = last_hs_ts.get(pid)
+            if hs_info is None:
+                hs_rdy = True
+            else:
+                hs_used_at, is_demonic_hs = hs_info
+                hs_rdy = is_demonic_hs and ((ts_now - hs_used_at) >= DEMONIC_HEALTHSTONE_CD_SEC * 1000)
+            return ready, pot_rdy, hs_rdy, (bool(ready) or pot_rdy or hs_rdy)
 
         # Track Stone Venom state per tank
         sv_active: dict[int, bool] = defaultdict(bool)
@@ -258,8 +365,11 @@ def analyze_report_events(
                 if actor_id in actors and actors[actor_id].get("type") == "Player":
                     if t == "cast" and is_health_potion(aid, ab_name):
                         pot_counts[actor_id] += 1
+                        last_pot_ts[actor_id] = ts
                     elif t == "cast" and is_healthstone(aid, ab_name):
                         hs_counts[actor_id] += 1
+                        is_dem = aid == DEMONIC_HEALTHSTONE_ID or "demonic" in (ab_name or "").lower()
+                        last_hs_ts[actor_id] = (ts, is_dem)
 
             # Defensive buff state machine
             if tid in actors and actors[tid].get("type") == "Player":
@@ -267,12 +377,177 @@ def analyze_report_events(
                     if is_defensive_buff(ab_name, for_tank_stone_venom=False):
                         if ab_name not in active_all_defs[tid]:
                             def_cd_casts[tid] += 1
+                            if is_trackable_personal_def(ab_name):
+                                last_def_used_ts[tid][ab_name.lower()] = ts
                         active_all_defs[tid].add(ab_name)
                     if is_defensive_buff(ab_name, for_tank_stone_venom=True):
                         active_tank_defs[tid].add(ab_name)
                 elif t == "removebuff":
                     active_all_defs[tid].discard(ab_name)
                     active_tank_defs[tid].discard(ab_name)
+            if t == "cast" and src_id in actors and actors[src_id].get("type") == "Player":
+                if is_trackable_personal_def(ab_name):
+                    last_def_used_ts[src_id][ab_name.lower()] = ts
+
+            # Heart Phase & P2 / P3 event capture
+            ab_low = (ab_name or "").strip().lower()
+            if t == "damage" and not ev.get("tick") and tid in actors and actors[tid].get("type") == "Player":
+                if aid == SPELL_FALLING_DEBRIS:
+                    debris_hits_in_fight.append((tid, ts))
+                    rel_ms = ts - f_start
+                    ovk = int(ev.get("overkill", 0) or 0)
+                    phase_events.append(
+                        {
+                            "id": f"{report_code}-{fid}-{tid}-{ts}-debris",
+                            "kind": "falling_debris",
+                            "phase": "heart",
+                            "player": actors[tid]["name"],
+                            "class": actors[tid].get("subType", ""),
+                            "target_id": tid,
+                            "ability": ab_name or "Falling Debris",
+                            "detail": None,
+                            "gap_ms": None,
+                            "damage": int(ev.get("amount", 0) or 0),
+                            "lethal": ovk > 0 or any(abs(dt - ts) <= 50 for dt in deaths_by_player[tid]),
+                            "pull_num": pull_idx,
+                            "fight_id": fid,
+                            "is_kill": is_kill,
+                            "rel_time": format_rel_time(rel_ms),
+                            "rel_ms": rel_ms,
+                            "timestamp": ts,
+                            "deaths_before": count_deaths_before(ts),
+                            "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                            "replay_url": build_replay_url(report_code, fid, rel_ms),
+                        }
+                    )
+                elif aid in P2_AVOIDABLE_IDS:
+                    rel_ms = ts - f_start
+                    ovk = int(ev.get("overkill", 0) or 0)
+                    phase_events.append(
+                        {
+                            "id": f"{report_code}-{fid}-{tid}-{ts}-p2av-{aid}",
+                            "kind": "p2_avoidable",
+                            "phase": "p2",
+                            "player": actors[tid]["name"],
+                            "class": actors[tid].get("subType", ""),
+                            "target_id": tid,
+                            "ability": ab_name or str(aid),
+                            "detail": None,
+                            "gap_ms": None,
+                            "damage": int(ev.get("amount", 0) or 0),
+                            "lethal": ovk > 0 or any(abs(dt - ts) <= 50 for dt in deaths_by_player[tid]),
+                            "pull_num": pull_idx,
+                            "fight_id": fid,
+                            "is_kill": is_kill,
+                            "rel_time": format_rel_time(rel_ms),
+                            "rel_ms": rel_ms,
+                            "timestamp": ts,
+                            "deaths_before": count_deaths_before(ts),
+                            "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                            "replay_url": build_replay_url(report_code, fid, rel_ms),
+                        }
+                    )
+                elif any(s in ab_low for s in P3_AVOIDABLE_SPELL_NAMES):
+                    rel_ms = ts - f_start
+                    ovk = int(ev.get("overkill", 0) or 0)
+                    phase_events.append(
+                        {
+                            "id": f"{report_code}-{fid}-{tid}-{ts}-p3av-{aid}",
+                            "kind": "p3_avoidable",
+                            "phase": "p3",
+                            "player": actors[tid]["name"],
+                            "class": actors[tid].get("subType", ""),
+                            "target_id": tid,
+                            "ability": ab_name or str(aid),
+                            "detail": None,
+                            "gap_ms": None,
+                            "damage": int(ev.get("amount", 0) or 0),
+                            "lethal": ovk > 0 or any(abs(dt - ts) <= 50 for dt in deaths_by_player[tid]),
+                            "pull_num": pull_idx,
+                            "fight_id": fid,
+                            "is_kill": is_kill,
+                            "rel_time": format_rel_time(rel_ms),
+                            "rel_ms": rel_ms,
+                            "timestamp": ts,
+                            "deaths_before": count_deaths_before(ts),
+                            "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                            "replay_url": build_replay_url(report_code, fid, rel_ms),
+                        }
+                    )
+                elif aid == SPELL_MALICE_DMG:
+                    malice_dmg_events.append((ts, int(ev.get("amount", 0) or 0)))
+
+            if t == "removedebuff" and aid == SPELL_GRASPING_FANGS_DEBUFF and tid in actors and actors[tid].get("type") == "Player":
+                if not any(-100 <= dt - ts <= 150 for dt in deaths_by_player[tid]):
+                    fang_breaks.append((ts, tid))
+
+            if t == "interrupt" and src_id in actors and actors[src_id].get("type") == "Player":
+                ex_aid = ev.get("extraAbilityGameID")
+                ex_name = (abilities.get(ex_aid, "") or "").strip()
+                ex_low = ex_name.lower()
+                if ex_aid == SPELL_MALICE_CAST or "malice" in ex_low:
+                    rel_ms = ts - f_start
+                    phase_events.append(
+                        {
+                            "id": f"{report_code}-{fid}-{src_id}-{ts}-mkick",
+                            "kind": "malice_kick",
+                            "phase": "p2",
+                            "player": actors[src_id]["name"],
+                            "class": actors[src_id].get("subType", ""),
+                            "target_id": src_id,
+                            "ability": ex_name or "Malice",
+                            "detail": ab_name or "Interrupt",
+                            "gap_ms": None,
+                            "damage": 0,
+                            "lethal": False,
+                            "pull_num": pull_idx,
+                            "fight_id": fid,
+                            "is_kill": is_kill,
+                            "rel_time": format_rel_time(rel_ms),
+                            "rel_ms": rel_ms,
+                            "timestamp": ts,
+                            "deaths_before": count_deaths_before(ts),
+                            "events_url": build_events_url(report_code, fid, src_id, ts, f_start, f_end),
+                            "replay_url": build_replay_url(report_code, fid, rel_ms),
+                        }
+                    )
+                elif any(s in ex_low for s in P3_KICK_SPELL_NAMES):
+                    rel_ms = ts - f_start
+                    phase_events.append(
+                        {
+                            "id": f"{report_code}-{fid}-{src_id}-{ts}-vkick",
+                            "kind": "vicious_echoes_kick",
+                            "phase": "p3",
+                            "player": actors[src_id]["name"],
+                            "class": actors[src_id].get("subType", ""),
+                            "target_id": src_id,
+                            "ability": ex_name or "Vicious Echoes",
+                            "detail": ab_name or "Interrupt",
+                            "gap_ms": None,
+                            "damage": 0,
+                            "lethal": False,
+                            "pull_num": pull_idx,
+                            "fight_id": fid,
+                            "is_kill": is_kill,
+                            "rel_time": format_rel_time(rel_ms),
+                            "rel_ms": rel_ms,
+                            "timestamp": ts,
+                            "deaths_before": count_deaths_before(ts),
+                            "events_url": build_events_url(report_code, fid, src_id, ts, f_start, f_end),
+                            "replay_url": build_replay_url(report_code, fid, rel_ms),
+                        }
+                    )
+
+            if t == "cast":
+                if aid == SPELL_MALICE_CAST:
+                    if not malice_missed_casts or (ts - malice_missed_casts[-1]) >= 2500:
+                        malice_missed_casts.append(ts)
+                elif any(s in ab_low for s in P3_KICK_SPELL_NAMES):
+                    if not vicious_missed_casts or (ts - vicious_missed_casts[-1]) >= 2500:
+                        vicious_missed_casts.append(ts)
+
+            if t == "death" and tid in actors and actors[tid].get("name") == "Doomscale Warden":
+                warden_death_ts.append(ts)
 
             # Boss tank tracking (Ula'tek Melee or Stone Venom on tank)
             if tid in tank_id_set:
@@ -310,6 +585,7 @@ def analyze_report_events(
                         cur_fail = sv_window_fail[tid]
                         if cur_fail is None:
                             other_tanks = [actors[ot]["name"] for ot in tank_ids if ot != tid]
+                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
                             sv_window_fail[tid] = {
                                 "id": f"{report_code}-{fid}-{tid}-{ts}-sv",
                                 "kind": "stone_venom_no_def",
@@ -325,6 +601,10 @@ def analyze_report_events(
                                 "lethal": False,
                                 "death_rel_time": None,
                                 "death_ability": None,
+                                "ready_defs": r_defs,
+                                "pot_ready": r_pot,
+                                "hs_ready": r_hs,
+                                "any_ready": r_any,
                                 "_last_low_ts": ts,
                                 "pull_num": pull_idx,
                                 "fight_id": fid,
@@ -388,6 +668,10 @@ def analyze_report_events(
                             "lethal": True,
                             "death_rel_time": format_rel_time(rel_ms),
                             "death_ability": "Gore Rattle Melee",
+                            "ready_defs": [],
+                            "pot_ready": False,
+                            "hs_ready": False,
+                            "any_ready": False,
                             "pull_num": pull_idx,
                             "fight_id": fid,
                             "is_kill": is_kill,
@@ -411,6 +695,7 @@ def analyze_report_events(
                             last_spike_event_ts[tid] = ts
                             rel_ms = ts - f_start
                             defs_now = sorted(active_all_defs[tid])
+                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
                             defensive_events.append(
                                 {
                                     "id": f"{report_code}-{fid}-{tid}-{ts}-sp",
@@ -429,6 +714,10 @@ def analyze_report_events(
                                     "hp_pct": hp_pct,
                                     "had_def_cd": bool(defs_now),
                                     "active_defs": defs_now,
+                                    "ready_defs": r_defs,
+                                    "pot_ready": r_pot,
+                                    "hs_ready": r_hs,
+                                    "any_ready": r_any,
                                     "pot_used_in_pull": pot_counts[tid] > 0,
                                     "hs_used_in_pull": hs_counts[tid] > 0,
                                     "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
@@ -440,6 +729,7 @@ def analyze_report_events(
                     kaid = ev.get("killingAbilityGameID")
                     kab_name = abilities.get(kaid, str(kaid)) if kaid else "Unbekannt"
                     defs_now = sorted(active_all_defs[tid])
+                    r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
                     defensive_events.append(
                         {
                             "id": f"{report_code}-{fid}-{tid}-{ts}-dt",
@@ -458,6 +748,10 @@ def analyze_report_events(
                             "hp_pct": 0.0,
                             "had_def_cd": bool(defs_now),
                             "active_defs": defs_now,
+                            "ready_defs": r_defs,
+                            "pot_ready": r_pot,
+                            "hs_ready": r_hs,
+                            "any_ready": r_any,
                             "pot_used_in_pull": pot_counts[tid] > 0,
                             "hs_used_in_pull": hs_counts[tid] > 0,
                             "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
@@ -468,6 +762,222 @@ def analyze_report_events(
         # Flush any still-open Stone Venom window at fight end
         for tk in list(sv_window_fail.keys()):
             _finalize_sv_fail(tk, f_end)
+
+        # ---- 1b. Finalize P2 / P3 & Heart Phase summaries for this fight ----
+        # Blight Vein overlaps (Grasping Fangs broken within <= 2500ms of previous break)
+        fang_breaks.sort(key=lambda x: x[0])
+        for idx_fb in range(1, len(fang_breaks)):
+            prev_ts, prev_pid = fang_breaks[idx_fb - 1]
+            cur_ts, cur_pid = fang_breaks[idx_fb]
+            gap = cur_ts - prev_ts
+            if 0 <= gap <= 2500:
+                rel_ms = cur_ts - f_start
+                phase_events.append(
+                    {
+                        "id": f"{report_code}-{fid}-{cur_pid}-{cur_ts}-bvo",
+                        "kind": "blight_vein_overlap",
+                        "phase": "p2",
+                        "player": actors[cur_pid]["name"],
+                        "class": actors[cur_pid].get("subType", ""),
+                        "target_id": cur_pid,
+                        "ability": "Blight Vein Overlap",
+                        "detail": actors[prev_pid]["name"],
+                        "gap_ms": gap,
+                        "damage": 0,
+                        "lethal": False,
+                        "pull_num": pull_idx,
+                        "fight_id": fid,
+                        "is_kill": is_kill,
+                        "rel_time": format_rel_time(rel_ms),
+                        "rel_ms": rel_ms,
+                        "timestamp": cur_ts,
+                        "deaths_before": count_deaths_before(cur_ts),
+                        "events_url": build_events_url(report_code, fid, cur_pid, cur_ts, f_start, f_end),
+                        "replay_url": build_replay_url(report_code, fid, rel_ms),
+                    }
+                )
+
+        # Missed Malice casts (P2)
+        for mts in malice_missed_casts:
+            rel_ms = mts - f_start
+            total_malice_dmg = sum(amt for dts, amt in malice_dmg_events if mts <= dts <= mts + 5000)
+            phase_events.append(
+                {
+                    "id": f"{report_code}-{fid}-{mts}-mmiss",
+                    "kind": "malice_missed",
+                    "phase": "p2",
+                    "player": "Raid (nicht gekickt)",
+                    "class": "",
+                    "target_id": 0,
+                    "ability": "Malice",
+                    "detail": "Cast durchgekommen",
+                    "gap_ms": None,
+                    "damage": total_malice_dmg,
+                    "lethal": False,
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "rel_time": format_rel_time(rel_ms),
+                    "rel_ms": rel_ms,
+                    "timestamp": mts,
+                    "deaths_before": count_deaths_before(mts),
+                    "events_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}&type=damage-taken&ability={SPELL_MALICE_DMG}&start={max(f_start, mts - 2000)}&end={min(f_end, mts + 5000)}",
+                    "replay_url": build_replay_url(report_code, fid, rel_ms),
+                }
+            )
+
+        # Missed Vicious Echoes casts (P3)
+        for vts in vicious_missed_casts:
+            rel_ms = vts - f_start
+            phase_events.append(
+                {
+                    "id": f"{report_code}-{fid}-{vts}-vmiss",
+                    "kind": "vicious_echoes_missed",
+                    "phase": "p3",
+                    "player": "Raid (nicht gekickt)",
+                    "class": "",
+                    "target_id": 0,
+                    "ability": "Vicious Echoes",
+                    "detail": "Raid-Stun durchgekommen",
+                    "gap_ms": None,
+                    "damage": 0,
+                    "lethal": False,
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "rel_time": format_rel_time(rel_ms),
+                    "rel_ms": rel_ms,
+                    "timestamp": vts,
+                    "deaths_before": count_deaths_before(vts),
+                    "events_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}&type=casts&hostility=1&start={max(f_start, vts - 2000)}&end={min(f_end, vts + 5000)}",
+                    "replay_url": build_replay_url(report_code, fid, rel_ms),
+                }
+            )
+
+        # Heart Phase windows for this fight
+        for hw in heart_windows_by_fight.get(fid, []):
+            hs = int(hw["start_time"])
+            he = int(hw["end_time"])
+            win_num = int(hw.get("window_num", 1))
+            h_map = {int(k): int(v) for k, v in (hw.get("heart_by_player") or {}).items()}
+            b_map = {int(k): int(v) for k, v in (hw.get("boss_by_player") or {}).items()}
+            t_map = {int(k): int(v) for k, v in (hw.get("total_by_player") or {}).items()}
+            debris_counts: Counter[int] = Counter(
+                dpid for dpid, dts in debris_hits_in_fight if hs - 500 <= dts <= he + 500
+            )
+            pids = sorted((set(h_map) | set(b_map) | set(t_map) | set(debris_counts)) & {pid for pid, a in actors.items() if a.get("type") == "Player"})
+            p_rows: list[dict[str, Any]] = []
+            for pid in pids:
+                hd = h_map.get(pid, 0)
+                bd = b_map.get(pid, 0)
+                eff = hd + bd
+                tot = max(eff, t_map.get(pid, eff))
+                other = max(0, tot - eff)
+                share = round((hd / eff) * 100.0, 1) if eff > 0 else 0.0
+                p_rows.append(
+                    {
+                        "player": actors[pid]["name"],
+                        "class": actors[pid].get("subType", ""),
+                        "player_id": pid,
+                        "heart_dmg": hd,
+                        "heart_raw_dmg": round(hd / 2),
+                        "boss_dmg": bd,
+                        "total_boss_dmg": eff,
+                        "other_dmg": other,
+                        "heart_share_pct": share,
+                        "debris_hits": debris_counts.get(pid, 0),
+                    }
+                )
+            p_rows.sort(key=lambda r: (-r["total_boss_dmg"], r["player"]))
+            start_rel = max(0, hs - f_start)
+            heart_phases.append(
+                {
+                    "id": f"{report_code}-{fid}-hw-{win_num}",
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "window_num": win_num,
+                    "start_rel_time": format_rel_time(start_rel),
+                    "start_rel_ms": start_rel,
+                    "duration_ms": max(0, he - hs),
+                    "deaths_before": count_deaths_before(hs),
+                    "total_heart_dmg": sum(r["heart_dmg"] for r in p_rows),
+                    "total_boss_dmg": sum(r["boss_dmg"] for r in p_rows),
+                    "total_effective_dmg": sum(r["total_boss_dmg"] for r in p_rows),
+                    "total_other_dmg": sum(r["other_dmg"] for r in p_rows),
+                    "debris_hits_total": sum(r["debris_hits"] for r in p_rows),
+                    "players": p_rows,
+                    "events_url": build_damage_window_url(report_code, fid, hs, he),
+                    "replay_url": build_replay_url(report_code, fid, start_rel),
+                }
+            )
+
+        # Phase 2 Doomscale Warden summary (when P2 reached or warden data present)
+        transitions = fight.get("phaseTransitions") or []
+        p2_trans = next((pt for pt in transitions if int(pt.get("id", 0)) == 2), None)
+        p3_trans = next((pt for pt in transitions if int(pt.get("id", 0)) == 3), None)
+        w_map = warden_dmg_by_fight.get(fid, {})
+        if p2_trans is not None or w_map or warden_death_ts:
+            p2_ts = int(p2_trans["startTime"]) if p2_trans else f_start
+            p2_rel = max(0, p2_ts - f_start)
+            warden_death_ts.sort()
+            sync_delta = (warden_death_ts[1] - warden_death_ts[0]) if len(warden_death_ts) >= 2 else None
+            w_players = [
+                {
+                    "player": actors[pid]["name"],
+                    "class": actors[pid].get("subType", ""),
+                    "player_id": pid,
+                    "damage": dmg,
+                }
+                for pid, dmg in w_map.items()
+                if pid in actors and actors[pid].get("type") == "Player" and dmg > 0
+            ]
+            w_players.sort(key=lambda r: (-r["damage"], r["player"]))
+            warden_summaries.append(
+                {
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "p2_start_rel_time": format_rel_time(p2_rel),
+                    "deaths_at_p2_start": count_deaths_before(p2_ts),
+                    "warden_kills": len(warden_death_ts),
+                    "kill_sync_delta_ms": sync_delta,
+                    "total_warden_dmg": sum(r["damage"] for r in w_players),
+                    "players": w_players,
+                    "events_url": build_damage_window_url(report_code, fid, p2_ts, f_end),
+                    "replay_url": build_replay_url(report_code, fid, p2_rel),
+                }
+            )
+
+        # Phase 3 Boss Execute summary (auto-active once logs reach P3)
+        p3_map = p3_boss_dmg_by_fight.get(fid, {})
+        if p3_trans is not None or p3_map:
+            p3_ts = int(p3_trans["startTime"]) if p3_trans else f_start
+            p3_rel = max(0, p3_ts - f_start)
+            p3_players = [
+                {
+                    "player": actors[pid]["name"],
+                    "class": actors[pid].get("subType", ""),
+                    "player_id": pid,
+                    "damage": dmg,
+                }
+                for pid, dmg in p3_map.items()
+                if pid in actors and actors[pid].get("type") == "Player" and dmg > 0
+            ]
+            p3_players.sort(key=lambda r: (-r["damage"], r["player"]))
+            p3_summaries.append(
+                {
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "p3_start_rel_time": format_rel_time(p3_rel),
+                    "deaths_at_p3_start": count_deaths_before(p3_ts),
+                    "total_boss_dmg": sum(r["damage"] for r in p3_players),
+                    "players": p3_players,
+                    "events_url": build_damage_window_url(report_code, fid, p3_ts, f_end),
+                    "replay_url": build_replay_url(report_code, fid, p3_rel),
+                }
+            )
 
         # ---- 2. Classify all Noxious Shell (1307612) removals ----
         for rem in shell_removes:
@@ -665,6 +1175,10 @@ def analyze_report_events(
         "tank_fails": sorted(tank_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
         "defensive_events": sorted(defensive_events, key=lambda x: (x["pull_num"], x["timestamp"])),
         "consumable_usage": consumable_usage,
+        "heart_phases": sorted(heart_phases, key=lambda x: (x["pull_num"], x["window_num"])),
+        "phase_events": sorted(phase_events, key=lambda x: (x["pull_num"], x["timestamp"])),
+        "warden_summaries": sorted(warden_summaries, key=lambda x: x["pull_num"]),
+        "p3_summaries": sorted(p3_summaries, key=lambda x: x["pull_num"]),
     }
 
 

@@ -88,6 +88,10 @@ export interface TankFail {
   lethal: boolean
   death_rel_time: string | null
   death_ability: string | null
+  ready_defs?: string[]
+  pot_ready?: boolean
+  hs_ready?: boolean
+  any_ready?: boolean
   pull_num: number
   fight_id: number
   is_kill: boolean
@@ -116,6 +120,10 @@ export interface DefensiveEvent {
   hp_pct: number
   had_def_cd: boolean
   active_defs: string[]
+  ready_defs?: string[]
+  pot_ready?: boolean
+  hs_ready?: boolean
+  any_ready?: boolean
   pot_used_in_pull: boolean
   hs_used_in_pull: boolean
   events_url: string
@@ -133,6 +141,105 @@ export interface ConsumableUsage {
   used_healthstone: boolean
   healthstone_count: number
   def_cd_casts: number
+}
+
+export interface HeartPlayerDamage {
+  player: string
+  class: string
+  player_id: number
+  heart_dmg: number
+  heart_raw_dmg: number
+  boss_dmg: number
+  total_boss_dmg: number
+  other_dmg: number
+  heart_share_pct: number
+  debris_hits: number
+}
+
+export interface HeartPhaseWindow {
+  id: string
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  window_num: number
+  start_rel_time: string
+  start_rel_ms: number
+  duration_ms: number
+  deaths_before: number
+  total_heart_dmg: number
+  total_boss_dmg: number
+  total_effective_dmg: number
+  total_other_dmg: number
+  debris_hits_total: number
+  players: HeartPlayerDamage[]
+  events_url: string
+  replay_url: string
+}
+
+export type PhaseEventKind =
+  | 'blight_vein_overlap'
+  | 'malice_kick'
+  | 'malice_missed'
+  | 'vicious_echoes_kick'
+  | 'vicious_echoes_missed'
+  | 'falling_debris'
+  | 'p2_avoidable'
+  | 'p3_avoidable'
+
+export interface PhaseEvent {
+  id: string
+  kind: PhaseEventKind
+  phase: 'heart' | 'p2' | 'p3'
+  player: string
+  class: string
+  target_id: number
+  ability: string
+  detail: string | null
+  gap_ms: number | null
+  damage: number
+  lethal: boolean
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  rel_time: string
+  rel_ms: number
+  timestamp: number
+  deaths_before: number
+  events_url: string
+  replay_url: string
+}
+
+export interface PhaseDamagePlayer {
+  player: string
+  class: string
+  player_id: number
+  damage: number
+}
+
+export interface WardenPullSummary {
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  p2_start_rel_time: string
+  deaths_at_p2_start: number
+  warden_kills: number
+  kill_sync_delta_ms: number | null
+  total_warden_dmg: number
+  players: PhaseDamagePlayer[]
+  events_url: string
+  replay_url: string
+}
+
+export interface P3PullSummary {
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  p3_start_rel_time: string
+  deaths_at_p3_start: number
+  total_boss_dmg: number
+  players: PhaseDamagePlayer[]
+  events_url: string
+  replay_url: string
 }
 
 export interface ReportData {
@@ -163,6 +270,10 @@ export interface ReportData {
   tank_fails: TankFail[]
   defensive_events: DefensiveEvent[]
   consumable_usage: ConsumableUsage[]
+  heart_phases?: HeartPhaseWindow[]
+  phase_events?: PhaseEvent[]
+  warden_summaries?: WardenPullSummary[]
+  p3_summaries?: P3PullSummary[]
 }
 
-export type TabKey = 'egg' | 'wave' | 'tank' | 'defensives' | 'pulls'
+export type TabKey = 'egg' | 'wave' | 'tank' | 'defensives' | 'heart' | 'phases' | 'pulls'
