@@ -886,6 +886,7 @@ export interface HeartPlayerEntry {
   debris_hits: number
   switch_delay_ms: number | null
   first_heart_spell: string | null
+  first_heart_switch_type: 'direct' | 'aoe' | null
   was_dead_at_heart: boolean
   first_switch_player: string | null
   events_url: string
@@ -1011,6 +1012,7 @@ export function aggregateHeartPhases(
         debris_hits: p.debris_hits,
         switch_delay_ms: swDelay,
         first_heart_spell: p.first_heart_spell ?? null,
+        first_heart_switch_type: p.first_heart_switch_type ?? null,
         was_dead_at_heart: wasDead,
         first_switch_player: hw.first_switch_player ?? null,
         events_url: hw.events_url,

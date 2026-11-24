@@ -123,9 +123,11 @@ export function HeartPhaseTab({
           <strong className="text-white">Herzphasen-Rechnung &amp; Switch-Delay:</strong>{' '}
           WarcraftLogs loggt den <strong className="text-[#34f5c5]">+100 %-Multiplikator (2×)</strong> auf{' '}
           <span className="font-mono-num text-white">Venomous Heart</span> bereits im Schaden (Gesamt = Herz 2× + Boss 1×).{' '}
-          <strong className="text-white">Switch-Delay</strong> misst die Verzögerung bis zum ersten direkten Cast/Spell jedes Spielers aufs Herz{' '}
+          <strong className="text-white">Switch-Delay</strong> misst die Verzögerung bis zum ersten direkten Cast/Spell{' '}
+          <strong className="text-white">oder aktiven Cone-/AoE-Cast</strong> (z. B. <span className="text-white">Fire Breath</span>,{' '}
+          <span className="text-white">Cleave</span>, <span className="text-white">Blood Boil</span>, <span className="text-white">Wake of Ashes</span>, die nach Herz-Spawn das Herz direkt treffen){' '}
           <strong className="text-[#34f5c5]">ab dem Moment, in dem der erste Spieler im Raid seinen Cast aufs Herz startet</strong>{' '}
-          (inkl. <code className="font-mono-num text-white">begincast</code>-Startzeit für Caster).
+          (inkl. <code className="font-mono-num text-white">begincast</code>-Startzeit für Caster; passive Trinkets/Procs sind ausgeschlossen).
         </div>
       </div>
 
@@ -275,7 +277,14 @@ export function HeartPhaseTab({
                                         </span>
                                       )}
                                       {p.first_heart_spell && (
-                                        <span className="text-[11px] text-[#8b96a9]">{p.first_heart_spell}</span>
+                                        <span className="text-[11px] text-[#8b96a9]">
+                                          {p.first_heart_spell}
+                                          {p.first_heart_switch_type === 'aoe' && (
+                                            <span className="ml-1 rounded bg-[rgba(56,189,248,0.14)] px-1 py-0.2 text-[9.5px] text-[#38bdf8]">
+                                              AoE/Cone
+                                            </span>
+                                          )}
+                                        </span>
                                       )}
                                     </span>
                                   ) : p.was_dead_at_heart ? (
@@ -436,6 +445,7 @@ function HeartPlayerRowView({
                         Switch {formatDelaySec(entry.switch_delay_ms)}
                         {entry.switch_delay_ms === 0 ? ' (Erster)' : ''}
                         {entry.first_heart_spell ? ` · ${entry.first_heart_spell}` : ''}
+                        {entry.first_heart_switch_type === 'aoe' ? ' [AoE/Cone]' : ''}
                       </Pill>
                     ) : entry.was_dead_at_heart ? (
                       <Pill>Tot</Pill>

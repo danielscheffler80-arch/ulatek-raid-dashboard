@@ -338,7 +338,7 @@ class WCLClient:
                 events_by_fight[int(fid)].append(ev)
 
         # 4. Batched DamageDone tables for Heart Phase windows, P2 Warden DPS, and P3 Boss DPS
-        extra_tables = self._fetch_phase_damage_tables(code, fights, actors, events_by_fight)
+        extra_tables = self._fetch_phase_damage_tables(code, fights, actors, abilities, events_by_fight)
         extra_tables["ability_schools"] = ability_schools
 
         meta = {
@@ -353,6 +353,7 @@ class WCLClient:
         code: str,
         fights: list[dict[str, Any]],
         actors: dict[int, dict[str, Any]],
+        abilities: dict[int, str],
         events_by_fight: dict[int, list[dict[str, Any]]],
     ) -> dict[str, Any]:
         boss_actor_id = next(
@@ -439,6 +440,9 @@ class WCLClient:
                 aliases.append(
                     f"hc_{idx}: events(fightIDs: [{fid}], startTime: {max(0, hs - 1000)}, endTime: {he}, dataType: Casts, hostilityType: Friendlies, limit: 2000) {{ data }}"
                 )
+                aliases.append(
+                    f"hd_{idx}: events(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {heart_actor_id}, limit: 2000) {{ data }}"
+                )
             if boss_actor_id is not None:
                 aliases.append(
                     f"hb_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {boss_actor_id})"
@@ -460,14 +464,53 @@ class WCLClient:
             res = self.gql(q)["reportData"]["report"] or {}
             merged_tables.update(res)
 
-        def _extract_first_heart_casts(ev_block: dict[str, Any] | None, hs: int) -> dict[int, dict[str, int]]:
+        non_dmg_buff_names = {
+            "ebon might",
+            "prescience",
+            "fatebound coin (tails)",
+            "fatebound coin (heads)",
+            "trueshot",
+            "empowering venom",
+            "bloodlust",
+            "heroism",
+            "time warp",
+            "power infusion",
+            "windfury totem",
+            "skyfury",
+        }
+
+        def _extract_first_heart_casts(
+            ev_block: dict[str, Any] | None,
+            dmg_block: dict[str, Any] | None,
+            hs: int,
+            abilities_map: dict[int, str],
+        ) -> dict[int, dict[str, Any]]:
             if heart_actor_id is None or not ev_block:
                 return {}
+            # Index non-tick heart damage events by (player_id, ability_id) and (player_id, ability_name_low)
+            dmg_by_id: dict[tuple[int, int], list[int]] = defaultdict(list)
+            dmg_by_name: dict[tuple[int, str], list[int]] = defaultdict(list)
+            for dev in (dmg_block or {}).get("data") or []:
+                if dev.get("type") != "damage" or dev.get("tick"):
+                    continue
+                dsrc = dev.get("sourceID")
+                if dsrc is None or int(dsrc) not in actors or actors[int(dsrc)].get("type") != "Player":
+                    continue
+                dpid = int(dsrc)
+                daid = int(dev.get("abilityGameID") or 0)
+                if daid <= 1:
+                    continue
+                dts = int(dev.get("timestamp", 0))
+                dmg_by_id[(dpid, daid)].append(dts)
+                dab_low = (abilities_map.get(daid, "") or "").strip().lower()
+                if dab_low:
+                    dmg_by_name[(dpid, dab_low)].append(dts)
+
             data = ev_block.get("data") or []
             sorted_evs = sorted(data, key=lambda e: int(e.get("timestamp", 0)))
-            # Track recent begincast timestamps per (player_id, ability_id) so casters get credit for cast start time!
             recent_begincast: dict[tuple[int, int], int] = {}
-            first_by_player: dict[int, dict[str, int]] = {}
+            first_by_player: dict[int, dict[str, Any]] = {}
+
             for ev in sorted_evs:
                 src = ev.get("sourceID")
                 if src is None or int(src) not in actors or actors[int(src)].get("type") != "Player":
@@ -480,14 +523,35 @@ class WCLClient:
                 et = ev.get("type")
                 if et == "begincast":
                     recent_begincast[(pid, aid)] = ts
-                elif et in ("cast", "empowerstart") and ev.get("targetID") == heart_actor_id:
-                    if pid not in first_by_player:
-                        bc_ts = recent_begincast.get((pid, aid))
-                        if bc_ts is not None and 0 <= ts - bc_ts <= 4000 and bc_ts >= hs - 1500:
-                            start_ts = bc_ts
-                        else:
-                            start_ts = ts
-                        first_by_player[pid] = {"ts": start_ts, "ability_id": aid}
+                    continue
+                if et not in ("cast", "empowerstart"):
+                    continue
+
+                is_direct = ev.get("targetID") == heart_actor_id
+                is_aoe_hit = False
+                if not is_direct and ts >= hs:
+                    ab_low = (abilities_map.get(aid, "") or "").strip().lower()
+                    if ab_low not in non_dmg_buff_names:
+                        hit_times = dmg_by_id.get((pid, aid)) or (
+                            dmg_by_name.get((pid, ab_low)) if ab_low else None
+                        )
+                        if hit_times and any(-50 <= hts - ts <= 3500 for hts in hit_times):
+                            is_aoe_hit = True
+
+                if is_direct or is_aoe_hit:
+                    bc_ts = recent_begincast.get((pid, aid))
+                    if bc_ts is not None and 0 <= ts - bc_ts <= 4000 and bc_ts >= hs - 200:
+                        start_ts = max(hs, bc_ts)
+                    else:
+                        start_ts = max(hs, ts)
+                    sw_type = "direct" if is_direct else "aoe"
+                    prev = first_by_player.get(pid)
+                    if prev is None or start_ts < int(prev["ts"]):
+                        first_by_player[pid] = {
+                            "ts": start_ts,
+                            "ability_id": aid,
+                            "switch_type": sw_type,
+                        }
             return first_by_player
 
         heart_windows_out: list[dict[str, Any]] = []
@@ -501,7 +565,12 @@ class WCLClient:
                     "total_by_player": _entries_to_map(merged_tables.get(f"ht_{idx}")),
                     "heart_by_player": _entries_to_map(merged_tables.get(f"hh_{idx}")),
                     "boss_by_player": _entries_to_map(merged_tables.get(f"hb_{idx}")),
-                    "first_cast_by_player": _extract_first_heart_casts(merged_tables.get(f"hc_{idx}"), hs),
+                    "first_cast_by_player": _extract_first_heart_casts(
+                        merged_tables.get(f"hc_{idx}"),
+                        merged_tables.get(f"hd_{idx}"),
+                        hs,
+                        abilities,
+                    ),
                 }
             )
 

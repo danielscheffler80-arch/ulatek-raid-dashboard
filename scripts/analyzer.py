@@ -1371,7 +1371,11 @@ def analyze_report_events(
             b_map = {int(k): int(v) for k, v in (hw.get("boss_by_player") or {}).items()}
             t_map = {int(k): int(v) for k, v in (hw.get("total_by_player") or {}).items()}
             fc_map = {
-                int(k): {"ts": int(v["ts"]), "ability_id": int(v.get("ability_id", 0))}
+                int(k): {
+                    "ts": int(v["ts"]),
+                    "ability_id": int(v.get("ability_id", 0)),
+                    "switch_type": str(v.get("switch_type") or "direct"),
+                }
                 for k, v in (hw.get("first_cast_by_player") or {}).items()
                 if int(k) in actors and actors[int(k)].get("type") == "Player"
             }
@@ -1411,9 +1415,11 @@ def analyze_report_events(
                 if fc_info is not None and first_raid_ts is not None:
                     sw_delay: int | None = max(0, fc_info["ts"] - first_raid_ts)
                     sw_spell: str | None = abilities.get(fc_info["ability_id"], "") or str(fc_info["ability_id"])
+                    sw_type: str | None = fc_info.get("switch_type", "direct")
                 else:
                     sw_delay = None
                     sw_spell = None
+                    sw_type = None
                 p_rows.append(
                     {
                         "player": actors[pid]["name"],
@@ -1428,6 +1434,7 @@ def analyze_report_events(
                         "debris_hits": debris_counts.get(pid, 0),
                         "switch_delay_ms": sw_delay,
                         "first_heart_spell": sw_spell,
+                        "first_heart_switch_type": sw_type,
                         "was_dead_at_heart": was_dead,
                     }
                 )

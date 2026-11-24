@@ -336,6 +336,7 @@ async function fetchPhaseDamageTables(
   code: string,
   fights: WclFight[],
   actors: Record<number, WclActor>,
+  abilities: Record<number, string>,
   eventsByFight: Record<number, WclEvent[]>,
 ): Promise<ExtraTables> {
   const actorEntries = Object.entries(actors).map(([id, a]) => [Number(id), a] as const)
@@ -422,6 +423,9 @@ async function fetchPhaseDamageTables(
       aliases.push(
         `hc_${idx}: events(fightIDs: [${fid}], startTime: ${Math.max(0, hs - 1000)}, endTime: ${he}, dataType: Casts, hostilityType: Friendlies, limit: 2000) { data }`,
       )
+      aliases.push(
+        `hd_${idx}: events(fightIDs: [${fid}], startTime: ${hs}, endTime: ${he}, dataType: DamageDone, hostilityType: Friendlies, targetID: ${heartActorId}, limit: 2000) { data }`,
+      )
     }
     if (bossActorId !== null) {
       aliases.push(
@@ -469,15 +473,55 @@ async function fetchPhaseDamageTables(
     return out
   }
 
+  const nonDmgBuffNames = new Set([
+    'ebon might',
+    'prescience',
+    'fatebound coin (tails)',
+    'fatebound coin (heads)',
+    'trueshot',
+    'empowering venom',
+    'bloodlust',
+    'heroism',
+    'time warp',
+    'power infusion',
+    'windfury totem',
+    'skyfury',
+  ])
+
   const extractFirstHeartCasts = (
     evBlock: { data?: unknown } | undefined,
+    dmgBlock: { data?: unknown } | undefined,
     hs: number,
-  ): Record<number, { ts: number; ability_id: number }> => {
+  ): Record<number, { ts: number; ability_id: number; switch_type: 'direct' | 'aoe' }> => {
     if (heartActorId === null || !evBlock) return {}
+    const dmgById = new Map<string, number[]>()
+    const dmgByName = new Map<string, number[]>()
+    const rawDmgList = Array.isArray(dmgBlock?.data) ? (dmgBlock!.data as WclEvent[]) : []
+    for (const dev of rawDmgList) {
+      if (dev.type !== 'damage' || dev.tick) continue
+      const dsrc = dev.sourceID
+      if (dsrc == null || actors[Number(dsrc)]?.type !== 'Player') continue
+      const dpid = Number(dsrc)
+      const daid = Number(dev.abilityGameID ?? 0)
+      if (daid <= 1) continue
+      const dts = Number(dev.timestamp ?? 0)
+      const idKey = `${dpid}:${daid}`
+      const idArr = dmgById.get(idKey)
+      if (idArr) idArr.push(dts)
+      else dmgById.set(idKey, [dts])
+      const dabLow = (abilities[daid] ?? '').trim().toLowerCase()
+      if (dabLow) {
+        const nameKey = `${dpid}:${dabLow}`
+        const nameArr = dmgByName.get(nameKey)
+        if (nameArr) nameArr.push(dts)
+        else dmgByName.set(nameKey, [dts])
+      }
+    }
+
     const rawList = Array.isArray(evBlock.data) ? (evBlock.data as WclEvent[]) : []
     const sortedEvs = [...rawList].sort((a, b) => Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0))
     const recentBegincast = new Map<string, number>()
-    const firstByPlayer: Record<number, { ts: number; ability_id: number }> = {}
+    const firstByPlayer: Record<number, { ts: number; ability_id: number; switch_type: 'direct' | 'aoe' }> = {}
     for (const ev of sortedEvs) {
       const src = ev.sourceID
       if (src == null || actors[Number(src)]?.type !== 'Player') continue
@@ -487,14 +531,32 @@ async function fetchPhaseDamageTables(
       const ts = Number(ev.timestamp ?? 0)
       if (ev.type === 'begincast') {
         recentBegincast.set(`${pid}:${aid}`, ts)
-      } else if ((ev.type === 'cast' || ev.type === 'empowerstart') && ev.targetID === heartActorId) {
-        if (!firstByPlayer[pid]) {
-          const bcTs = recentBegincast.get(`${pid}:${aid}`)
-          const startTs =
-            bcTs !== undefined && ts - bcTs >= 0 && ts - bcTs <= 4000 && bcTs >= hs - 1500
-              ? bcTs
-              : ts
-          firstByPlayer[pid] = { ts: startTs, ability_id: aid }
+        continue
+      }
+      if (ev.type !== 'cast' && ev.type !== 'empowerstart') continue
+
+      const isDirect = ev.targetID === heartActorId
+      let isAoeHit = false
+      if (!isDirect && ts >= hs) {
+        const abLow = (abilities[aid] ?? '').trim().toLowerCase()
+        if (!nonDmgBuffNames.has(abLow)) {
+          const hitTimes = dmgById.get(`${pid}:${aid}`) ?? (abLow ? dmgByName.get(`${pid}:${abLow}`) : undefined)
+          if (hitTimes && hitTimes.some((hts) => hts - ts >= -50 && hts - ts <= 3500)) {
+            isAoeHit = true
+          }
+        }
+      }
+
+      if (isDirect || isAoeHit) {
+        const bcTs = recentBegincast.get(`${pid}:${aid}`)
+        const startTs =
+          bcTs !== undefined && ts - bcTs >= 0 && ts - bcTs <= 4000 && bcTs >= hs - 200
+            ? Math.max(hs, bcTs)
+            : Math.max(hs, ts)
+        const swType: 'direct' | 'aoe' = isDirect ? 'direct' : 'aoe'
+        const prev = firstByPlayer[pid]
+        if (!prev || startTs < prev.ts) {
+          firstByPlayer[pid] = { ts: startTs, ability_id: aid, switch_type: swType }
         }
       }
     }
@@ -509,7 +571,7 @@ async function fetchPhaseDamageTables(
     total_by_player: entriesToMap(mergedTables[`ht_${idx}`]),
     heart_by_player: entriesToMap(mergedTables[`hh_${idx}`]),
     boss_by_player: entriesToMap(mergedTables[`hb_${idx}`]),
-    first_cast_by_player: extractFirstHeartCasts(mergedTables[`hc_${idx}`], hs),
+    first_cast_by_player: extractFirstHeartCasts(mergedTables[`hc_${idx}`], mergedTables[`hd_${idx}`], hs),
   }))
 
   const wardenDmgByFight: Record<number, Record<number, number>> = {}
@@ -726,7 +788,7 @@ export async function fetchAndAnalyzeReport(
     for (const ev of chunk) addEvent(ev)
   }
 
-  const extraTables = await fetchPhaseDamageTables(env, code, fights, actors, eventsByFight)
+  const extraTables = await fetchPhaseDamageTables(env, code, fights, actors, abilities, eventsByFight)
   extraTables.ability_schools = abilitySchools
 
   const meta = {

@@ -202,6 +202,7 @@ export interface HeartPlayerDamage {
   debris_hits: number
   switch_delay_ms?: number | null
   first_heart_spell?: string | null
+  first_heart_switch_type?: 'direct' | 'aoe' | null
   was_dead_at_heart?: boolean
 }
 

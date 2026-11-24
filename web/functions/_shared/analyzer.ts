@@ -93,7 +93,7 @@ export interface ExtraTables {
     heart_by_player: Record<number, number>
     boss_by_player: Record<number, number>
     total_by_player: Record<number, number>
-    first_cast_by_player?: Record<number, { ts: number; ability_id: number }>
+    first_cast_by_player?: Record<number, { ts: number; ability_id: number; switch_type?: string }>
   }[]
   warden_dmg_by_fight?: Record<number, Record<number, number>>
   p3_boss_dmg_by_fight?: Record<number, Record<number, number>>
@@ -1420,11 +1420,15 @@ export function analyzeReportEventsTS(
           debrisCounts.set(dh.pid, (debrisCounts.get(dh.pid) ?? 0) + 1)
         }
       }
-      const fcMap = new Map<number, { ts: number; ability_id: number }>()
+      const fcMap = new Map<number, { ts: number; ability_id: number; switch_type: string }>()
       for (const [k, v] of Object.entries(hw.first_cast_by_player ?? {})) {
         const pid = Number(k)
         if (actors[pid]?.type === 'Player') {
-          fcMap.set(pid, { ts: Number(v.ts), ability_id: Number(v.ability_id ?? 0) })
+          fcMap.set(pid, {
+            ts: Number(v.ts),
+            ability_id: Number(v.ability_id ?? 0),
+            switch_type: String(v.switch_type ?? 'direct'),
+          })
         }
       }
       let firstRaidTs: number | null = null
@@ -1471,6 +1475,7 @@ export function analyzeReportEventsTS(
             fcInfo !== undefined && firstRaidTs !== null ? Math.max(0, fcInfo.ts - firstRaidTs) : null
           const swSpell =
             fcInfo !== undefined ? abilities[fcInfo.ability_id] || String(fcInfo.ability_id) : null
+          const swType = fcInfo !== undefined ? fcInfo.switch_type : null
           return {
             player: actors[pid].name,
             class: actors[pid].subType ?? '',
@@ -1484,6 +1489,7 @@ export function analyzeReportEventsTS(
             debris_hits: debrisCounts.get(pid) ?? 0,
             switch_delay_ms: swDelay,
             first_heart_spell: swSpell,
+            first_heart_switch_type: swType,
             was_dead_at_heart: wasDead,
           }
         })
