@@ -429,3 +429,64 @@ def test_defensive_readiness_tracking_cooldowns_and_consumables():
     assert naxxs_death["pot_ready"] is True
     assert naxxs_death["hs_ready"] is True
     assert naxxs_death["any_ready"] is True
+
+
+def test_defensive_school_matching_and_removed_non_defs():
+    actors = _base_actors()
+    actors[6] = {"id": 6, "name": "Schurke", "type": "Player", "subType": "Rogue"}
+    abilities = _base_abilities()
+    abilities.update(
+        {
+            49039: "Lichborne",
+            325153: "Exploding Keg",
+            5277: "Evasion",
+            31224: "Cloak of Shadows",
+            48707: "Anti-Magic Shell",
+            81256: "Dancing Rune Weapon",
+        }
+    )
+    meta = {"title": "School Test", "startTime": 1795450000000}
+    fights = [
+        {"id": 30, "name": "Ula'tek", "startTime": 100000, "endTime": 260000, "fightPercentage": 50.0, "bossPercentage": 50.0, "kill": False}
+    ]
+    events = [
+        # Tank setup: Betøng (Monk, 1) & Barrumir (DK, 2)
+        {"timestamp": 105000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 100000, "fight": 30},
+        {"timestamp": 106000, "type": "damage", "sourceID": 176, "targetID": 2, "abilityGameID": 1, "amount": 100000, "fight": 30},
+        # DK has Lichborne (no DR in Midnight!) + Dancing Rune Weapon (Physical Parry only!) active during Stone Venom (Nature/Magic) < 30% -> MUST STILL BE A FAIL!
+        {"timestamp": 110000, "type": "applybuff", "sourceID": 2, "targetID": 2, "abilityGameID": 49039, "fight": 30},
+        {"timestamp": 110000, "type": "applybuff", "sourceID": 2, "targetID": 2, "abilityGameID": 81256, "fight": 30},
+        {"timestamp": 111000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 30},
+        {"timestamp": 112000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 120000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
+        {"timestamp": 115000, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 30},
+        # Rogue has Evasion (Physical only!) active when hit by Caustic Waves (Nature/Magic) < 35% -> NOT protected! And Evasion must NOT appear in ready_defs, only Cloak of Shadows!
+        {"timestamp": 120000, "type": "applybuff", "sourceID": 6, "targetID": 6, "abilityGameID": 5277, "fight": 30},
+        {"timestamp": 121000, "type": "damage", "sourceID": 152, "targetID": 6, "abilityGameID": 1292403, "amount": 400000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
+        {"timestamp": 125000, "type": "removebuff", "sourceID": 6, "targetID": 6, "abilityGameID": 5277, "fight": 30},
+        # Rogue dies to Physical Melee (1) -> Evasion (if ready) or no Cloak of Shadows (Magic only!) in ready_defs!
+        {"timestamp": 130000, "type": "death", "targetID": 6, "killerID": 176, "killingAbilityGameID": 1, "fight": 30},
+        # Monk has Exploding Keg -> must NOT protect against Stone Venom or appear in ready_defs
+        {"timestamp": 140000, "type": "applybuff", "sourceID": 1, "targetID": 1, "abilityGameID": 325153, "fight": 30},
+        {"timestamp": 141000, "type": "applydebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 30},
+        {"timestamp": 142000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1298418, "amount": 120000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 30},
+        {"timestamp": 145000, "type": "removedebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 30},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {30: events}, "qy9FnMvjwQ2R13c7")
+    sv_fails = [t for t in rep["tank_fails"] if t["kind"] == "stone_venom_no_def"]
+    assert {t["tank"] for t in sv_fails} == {"Barrumir", "Betøng"}
+    dk_sv = next(t for t in sv_fails if t["tank"] == "Barrumir")
+    assert "Lichborne" not in dk_sv["ready_defs"]
+    assert "Dancing Rune Weapon" not in dk_sv["ready_defs"]
+    assert "Anti-Magic Shell" in dk_sv["ready_defs"]
+
+    monk_sv = next(t for t in sv_fails if t["tank"] == "Betøng")
+    assert "Exploding Keg" not in monk_sv["ready_defs"]
+
+    rogue_spike = next(e for e in rep["defensive_events"] if e["player"] == "Schurke" and e["kind"] == "low_hp_spike")
+    assert rogue_spike["had_def_cd"] is False
+    assert "Cloak of Shadows" in rogue_spike["ready_defs"]
+    assert "Evasion" not in rogue_spike["ready_defs"]
+
+    rogue_death = next(e for e in rep["defensive_events"] if e["player"] == "Schurke" and e["kind"] == "death")
+    assert "Cloak of Shadows" not in rogue_death["ready_defs"]

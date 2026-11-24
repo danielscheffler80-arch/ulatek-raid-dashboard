@@ -32,7 +32,9 @@ from scripts.spells_config import (
     SPELL_STONE_VENOM_DEBUFF,
     SPELL_STONE_VENOM_DMG,
     ULATEK_ENCOUNTER_ID,
+    defensive_mitigates,
     get_defensive_cooldown_ms,
+    infer_damage_school,
     is_defensive_buff,
     is_health_potion,
     is_healthstone,
@@ -187,6 +189,9 @@ def analyze_report_events(
     tank_id_set = set(tank_ids)
     player_known_defs = _build_player_known_defs(actors, abilities, events_by_fight)
     extra = extra_tables or {}
+    ability_schools: dict[int, int] = {
+        int(k): int(v) for k, v in (extra.get("ability_schools") or {}).items()
+    }
     heart_windows_by_fight: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for hw in extra.get("heart_windows") or []:
         heart_windows_by_fight[int(hw["fight_id"])].append(hw)
@@ -276,11 +281,15 @@ def analyze_report_events(
         vicious_missed_casts: list[int] = []
         warden_death_ts: list[int] = []
 
-        def compute_readiness(pid: int, ts_now: int) -> tuple[list[str], bool, bool, bool]:
+        def compute_readiness(
+            pid: int, ts_now: int, dmg_school: str = "all"
+        ) -> tuple[list[str], bool, bool, bool]:
             active_low = {n.lower() for n in active_all_defs[pid]}
             ready: list[str] = []
             for low_name, disp_name in player_known_defs.get(pid, {}).items():
                 if low_name in active_low:
+                    continue
+                if not defensive_mitigates(disp_name, dmg_school):
                     continue
                 used_at = last_def_used_ts[pid].get(low_name)
                 if used_at is None or (ts_now - used_at) >= get_defensive_cooldown_ms(low_name):
@@ -580,12 +589,16 @@ def analyze_report_events(
                 mhp = ev.get("maxHitPoints")
                 if hp is not None and mhp and mhp > 0:
                     hp_pct = round((hp / mhp) * 100.0, 1)
-                    if hp_pct < 30.0 and not active_tank_defs[tid]:
+                    dmg_school = infer_damage_school(aid, ability_schools)
+                    mitigating_tank_defs = [
+                        d for d in active_tank_defs[tid] if defensive_mitigates(d, dmg_school)
+                    ]
+                    if hp_pct < 30.0 and not mitigating_tank_defs:
                         rel_ms = ts - f_start
                         cur_fail = sv_window_fail[tid]
                         if cur_fail is None:
                             other_tanks = [actors[ot]["name"] for ot in tank_ids if ot != tid]
-                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
+                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
                             sv_window_fail[tid] = {
                                 "id": f"{report_code}-{fid}-{tid}-{ts}-sv",
                                 "kind": "stone_venom_no_def",
@@ -694,8 +707,11 @@ def analyze_report_events(
                         if 0.0 < hp_pct < 35.0 and (ts - last_spike_event_ts.get(tid, -999999)) >= 4000:
                             last_spike_event_ts[tid] = ts
                             rel_ms = ts - f_start
-                            defs_now = sorted(active_all_defs[tid])
-                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
+                            dmg_school = infer_damage_school(aid, ability_schools)
+                            defs_now = sorted(
+                                d for d in active_all_defs[tid] if defensive_mitigates(d, dmg_school)
+                            )
+                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
                             defensive_events.append(
                                 {
                                     "id": f"{report_code}-{fid}-{tid}-{ts}-sp",
@@ -728,8 +744,11 @@ def analyze_report_events(
                     rel_ms = ts - f_start
                     kaid = ev.get("killingAbilityGameID")
                     kab_name = abilities.get(kaid, str(kaid)) if kaid else "Unbekannt"
-                    defs_now = sorted(active_all_defs[tid])
-                    r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts)
+                    dmg_school = infer_damage_school(kaid, ability_schools)
+                    defs_now = sorted(
+                        d for d in active_all_defs[tid] if defensive_mitigates(d, dmg_school)
+                    )
+                    r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
                     defensive_events.append(
                         {
                             "id": f"{report_code}-{fid}-{tid}-{ts}-dt",

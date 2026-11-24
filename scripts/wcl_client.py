@@ -192,6 +192,7 @@ class WCLClient:
                 abilities {{
                   gameID
                   name
+                  type
                 }}
               }}
               fights(encounterID: {encounter_id}, difficulty: {difficulty}) {{
@@ -224,6 +225,11 @@ class WCLClient:
 
         actors = {int(a["id"]): a for a in report["masterData"]["actors"]}
         abilities = {int(a["gameID"]): a["name"] or "" for a in report["masterData"]["abilities"]}
+        ability_schools = {
+            int(a["gameID"]): int(a["type"])
+            for a in report["masterData"]["abilities"]
+            if a.get("type") is not None
+        }
         fight_ids = [int(f["id"]) for f in fights]
         min_start = min(int(f["startTime"]) for f in fights)
         max_end = max(int(f["endTime"]) for f in fights)
@@ -301,6 +307,7 @@ class WCLClient:
 
         # 4. Batched DamageDone tables for Heart Phase windows, P2 Warden DPS, and P3 Boss DPS
         extra_tables = self._fetch_phase_damage_tables(code, fights, actors, events_by_fight)
+        extra_tables["ability_schools"] = ability_schools
 
         meta = {
             "title": report.get("title", code),

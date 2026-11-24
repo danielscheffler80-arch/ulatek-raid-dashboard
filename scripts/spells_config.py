@@ -117,17 +117,16 @@ EXTERNAL_DEF_NAMES = {
 
 # Personal & Tank Defensive Cooldowns (all classes, incl. Midnight Season 2)
 PERSONAL_DEF_NAMES = {
-    # Death Knight (Blood / Frost / Unholy)
+    # Death Knight (Blood / Frost / Unholy) — Lichborne removed (no DR in Midnight!)
     "icebound fortitude",
     "vampiric blood",
     "anti-magic shell",
     "dancing rune weapon",
     "rune tap",
-    "lichborne",
     "tombstone",
     "purgatory",
     "blood shield",
-    # Monk (Brewmaster / Windwalker / Mistweaver)
+    # Monk (Brewmaster / Windwalker / Mistweaver) — Exploding Keg removed (only melee miss debuff, no spell/DoT DR)
     "fortifying brew",
     "celestial infusion",
     "celestial brew",
@@ -135,7 +134,6 @@ PERSONAL_DEF_NAMES = {
     "dampen harm",
     "diffuse magic",
     "zen meditation",
-    "exploding keg",
     "touch of karma",
     # Paladin
     "divine shield",
@@ -244,7 +242,6 @@ DEFENSIVE_COOLDOWNS_SEC: dict[str, int] = {
     "anti-magic shell": 45,
     "dancing rune weapon": 120,
     "rune tap": 25,
-    "lichborne": 120,
     "tombstone": 60,
     # Monk
     "fortifying brew": 120,
@@ -254,7 +251,6 @@ DEFENSIVE_COOLDOWNS_SEC: dict[str, int] = {
     "dampen harm": 120,
     "diffuse magic": 90,
     "zen meditation": 180,
-    "exploding keg": 60,
     "touch of karma": 90,
     # Paladin
     "divine shield": 300,
@@ -327,6 +323,81 @@ CLASS_BASELINE_DEFS: dict[str, tuple[str, ...]] = {
     "Warlock": ("Unending Resolve",),
     "Warrior": ("Spell Reflection",),
 }
+
+
+# Damage-school scope per defensive CD / external:
+#   "magic"    -> only mitigates Magic/Nature/Shadow/Fire/Frost/Arcane/Holy damage
+#   "physical" -> only mitigates Physical/Melee damage
+#   default    -> "all" (mitigates both Physical and Magic via universal DR, absorb, or max-HP)
+DEFENSIVE_DAMAGE_SCOPE: dict[str, str] = {
+    # Magic-only defensives & externals
+    "anti-magic shell": "magic",
+    "anti-magic zone": "magic",
+    "diffuse magic": "magic",
+    "cloak of shadows": "magic",
+    "blessing of spellwarding": "magic",
+    "spell reflection": "magic",
+    "zen meditation": "magic",
+    # Physical-only defensives & externals
+    "evasion": "physical",
+    "blessing of protection": "physical",
+    "dancing rune weapon": "physical",
+    "intervene": "physical",
+    "blistering scales": "physical",
+    "demon spikes": "physical",
+}
+
+KNOWN_MAGIC_ABILITY_IDS = {
+    SPELL_NOXIOUS_SHELL_DMG,
+    SPELL_CAUSTIC_WAVES,
+    SPELL_NOXIOUS_SPLASH,
+    SPELL_SPECTRAL_COILS_DMG,
+    SPELL_PUTRID_MEMBRANE_DMG,
+    SPELL_STONE_VENOM_DMG,
+    SPELL_MEPHITIC_THRASH,
+    SPELL_NECROTIC_VAPORS,
+    SPELL_RAGE_OF_THE_SHACKLED_DMG,
+    SPELL_FALLING_DEBRIS,
+    SPELL_GRASPING_FANGS_DMG,
+    SPELL_BLIGHT_VEIN_DMG,
+    SPELL_MALICE_DMG,
+    SPELL_ACIDIC_BURST,
+    SPELL_ACIDIC_EXPULSION,
+    SPELL_PETRIFYING_STING,
+    SPELL_VIRULENT_SPIT,
+}
+
+
+def infer_damage_school(
+    ability_id: int | None,
+    ability_schools: dict[int, int] | None = None,
+) -> str:
+    """Return 'physical', 'magic', or 'all' from WCL school bitmask or known Ula'tek spell IDs."""
+    if ability_id is None:
+        return "all"
+    if ability_schools and ability_id in ability_schools:
+        mask = int(ability_schools[ability_id] or 0)
+        if mask == 1:
+            return "physical"
+        if mask > 1:
+            if mask & 1:
+                return "all"  # Hybrid Physical+Magic
+            return "magic"
+    if ability_id == SPELL_MELEE:
+        return "physical"
+    if ability_id in KNOWN_MAGIC_ABILITY_IDS:
+        return "magic"
+    return "all"
+
+
+def defensive_mitigates(ability_name: str, damage_school: str) -> bool:
+    """True if this defensive buff/external actually reduces damage of `damage_school`."""
+    if damage_school == "all":
+        return True
+    scope = DEFENSIVE_DAMAGE_SCOPE.get((ability_name or "").strip().lower(), "all")
+    if scope == "all":
+        return True
+    return scope == damage_school
 
 
 def get_defensive_cooldown_ms(ability_name: str) -> int:

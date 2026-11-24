@@ -154,18 +154,18 @@ export function TankFailsTab({
           <div className="space-y-2.5 text-[11.5px] text-[#c5cdd9] leading-relaxed">
             <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
               <div className="font-semibold text-[#00FF98] mb-1">Brewmaster Monk</div>
-              Fortifying Brew, Celestial Infusion, Invoke Niuzao, Dampen Harm, Diffuse Magic, Zen Meditation, Exploding Keg.
+              Fortifying Brew, Celestial Infusion, Invoke Niuzao, Dampen Harm, Diffuse Magic (Magie), Zen Meditation (Magie).
             </div>
             <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
               <div className="font-semibold text-[#f87171] mb-1">Blood Death Knight</div>
-              Vampiric Blood, Dancing Rune Weapon, Anti-Magic Shell, Icebound Fortitude, Lichborne, Rune Tap, Tombstone, Purgatory.
+              Vampiric Blood, Anti-Magic Shell (Magie), Icebound Fortitude, Rune Tap, Tombstone, Purgatory, Dancing Rune Weapon (nur Physisch/Melee).
             </div>
             <div className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] p-3">
               <div className="font-semibold text-[#38bdf8] mb-1">Aktive Raid-Externals</div>
-              Ironbark, Time Dilation, Guardian Spirit, Pain Suppression, Life Cocoon, Blessing of Sacrifice/Protection, Spirit Link, AMZ, Rewind, Zephyr, Rallying Cry, Darkness, Rescue, Blistering Scales.
+              Ironbark, Time Dilation, Guardian Spirit, Pain Suppression, Life Cocoon, Blessing of Sacrifice, Spirit Link, AMZ (Magie), Spellwarding (Magie), BoP (Physisch), Rewind, Zephyr, Rallying Cry, Darkness, Rescue.
             </div>
             <p className="text-[11px] text-[#8b96a9]">
-              <strong>Mephitic Thrash</strong>, <strong>Rattler Slam</strong> und passive Auren (z. B. Devotion Aura) werden korrekt ausgeklammert.
+              <strong>Schadensart-geprüft:</strong> Physische CDs (z. B. DRW, BoP, Evasion) zählen nur bei Melee, Magie-CDs (AMS, Diffuse Magic, AMZ, Cloak) nur bei Nature/Magie. <strong>Lichborne</strong> (in Midnight keine DR mehr) &amp; <strong>Exploding Keg</strong> werden ausgeschlossen.
             </p>
           </div>
         </Card>
