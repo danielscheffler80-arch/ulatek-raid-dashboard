@@ -4,6 +4,8 @@ import {
   aggregateDefensives,
   aggregateEggCarriers,
   aggregateEggFails,
+  aggregateHealerEmergency,
+  aggregateHealerTankSoaks,
   aggregateHeartPhases,
   aggregatePhaseAnalysis,
   aggregateTankFails,
@@ -101,7 +103,7 @@ const mockReport: ReportData = {
     },
     {
       id: 'd2', kind: 'death', player: 'Narande', class: 'Warlock', target_id: 3, pull_num: 2, fight_id: 11, is_kill: false,
-      rel_time: '02:05.000', rel_ms: 125000, timestamp: 325000, deaths_before: 4, trigger_ability: 'Caustic Waves', hp_pct: 0,
+      rel_time: '02:05.000', rel_ms: 125000, timestamp: 325000, deaths_before: 4, trigger_ability: 'Putrid Membrane', hp_pct: 0,
       had_def_cd: false, active_defs: [], pot_used_in_pull: false, hs_used_in_pull: false,
       events_url: 'https://wcl/d2', replay_url: 'https://wcl/rd2',
     },
@@ -425,5 +427,112 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const res16 = aggregateEggCarriers([repWithCarriers], 4, { from: 1, to: 2 }, 5, 16)
     expect(res16.totalUnnecessaryDmg).toBe(70_000)
     expect(res16.players.find((p) => p.player === 'Narande')!.unnecessaryMs).toBe(4_000)
+  })
+
+  it('aggregates healer emergency reactions and boss tank soak healing separately', () => {
+    const repWithHealers: ReportData = {
+      ...mockReport,
+      defensive_events: [
+        ...mockReport.defensive_events,
+        // Avoidable Caustic Waves death -> must be ignored by aggregateDefensives!
+        {
+          id: 'd-cw-avoid', kind: 'death', player: 'Narande', class: 'Warlock', target_id: 3,
+          pull_num: 1, fight_id: 10, is_kill: false, rel_time: '00:50.000', rel_ms: 50000, timestamp: 50000,
+          deaths_before: 0, trigger_ability: 'Caustic Waves', hp_pct: 0, had_def_cd: false, active_defs: [],
+          used_pot_here: false, used_hs_here: false, used_any_here: false,
+          ready_defs: ['Unending Resolve'], pot_ready: true, hs_ready: true, any_ready: true,
+          pot_used_in_pull: false, hs_used_in_pull: false,
+          events_url: 'https://wcl/dcw', replay_url: 'https://wcl/rdcw',
+        },
+      ],
+      healer_emergency_events: [
+        {
+          id: 'hem1', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '00:45.000', rel_ms: 45000, timestamp: 45000,
+          deaths_before: 0, victim: 'Narande', victim_class: 'Warlock', victim_id: 3,
+          trigger_ability: 'Caustic Waves', hp_pct: 22.5, concurrent_low_count: 1, target_died: false,
+          fastest_reaction_ms: 600, fastest_healer: 'Valysa', fastest_healer_class: 'Priest',
+          reactions: [
+            {
+              healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5,
+              status: 'instant_used', reaction_ms: 600, spell: 'Holy Word: Serenity', is_external: false,
+              instant_was_ready: true, ready_instants: ['Holy Word: Serenity'], covered_fast_by_other: false,
+            },
+            {
+              healer: 'Yaviroarz', healer_class: 'Druid', healer_spec: 'Restoration', healer_id: 157,
+              status: 'no_heal', reaction_ms: null, spell: null, is_external: false,
+              instant_was_ready: true, ready_instants: ['Swiftmend'], covered_fast_by_other: true,
+            },
+          ],
+          events_url: 'https://wcl/hem1', replay_url: 'https://wcl/rhem1',
+        },
+        {
+          id: 'hem2', pull_num: 2, fight_id: 11, is_kill: false, rel_time: '01:05.000', rel_ms: 65000, timestamp: 265000,
+          deaths_before: 1, victim: 'Narande', victim_class: 'Warlock', victim_id: 3,
+          trigger_ability: 'Noxious Shell', hp_pct: 18.0, concurrent_low_count: 1, target_died: true,
+          fastest_reaction_ms: 1800, fastest_healer: 'Valysa', fastest_healer_class: 'Priest',
+          reactions: [
+            {
+              healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5,
+              status: 'cast_used', reaction_ms: 1800, spell: 'Flash Heal', is_external: false,
+              instant_was_ready: false, ready_instants: [], covered_fast_by_other: false,
+            },
+            {
+              healer: 'Yaviroarz', healer_class: 'Druid', healer_spec: 'Restoration', healer_id: 157,
+              status: 'no_heal', reaction_ms: null, spell: null, is_external: false,
+              instant_was_ready: true, ready_instants: ['Swiftmend'], covered_fast_by_other: false,
+            },
+          ],
+          events_url: 'https://wcl/hem2', replay_url: 'https://wcl/rhem2',
+        },
+      ],
+      healer_tank_soak_events: [
+        {
+          id: 'hts1', pull_num: 1, fight_id: 10, is_kill: false, rel_time: '00:55.000', rel_ms: 55000, timestamp: 55000,
+          deaths_before: 0, tank: 'Betøng', tank_class: 'Monk', tank_id: 1,
+          stacks: 3, min_hp_pct: 28.0, tank_died: false, any_healed: true, healers_reacted_count: 1,
+          fastest_reaction_ms: 400, fastest_healer: 'Valysa',
+          reactions: [
+            {
+              healer: 'Valysa', healer_class: 'Priest', healer_spec: 'Holy', healer_id: 5,
+              healed: true, reaction_ms: 400, heal_count: 3, used_external: true, spells: ['Guardian Spirit', 'Flash Heal'],
+            },
+            {
+              healer: 'Yaviroarz', healer_class: 'Druid', healer_spec: 'Restoration', healer_id: 157,
+              healed: false, reaction_ms: null, heal_count: 0, used_external: false, spells: [],
+            },
+          ],
+          events_url: 'https://wcl/hts1', replay_url: 'https://wcl/rhts1',
+        },
+      ],
+    }
+
+    // Avoidable Caustic Waves death must not be counted in Defensives
+    const defs = aggregateDefensives([repWithHealers], 4, { from: 1, to: 2 })
+    expect(defs.players.flatMap((p) => p.items).some((e) => e.id === 'd-cw-avoid')).toBe(false)
+
+    // Emergency Heals aggregation
+    const em = aggregateHealerEmergency([repWithHealers], 4, { from: 1, to: 2 })
+    expect(em.totalEvents).toBe(2)
+    expect(em.targetDiedCount).toBe(1)
+    expect(em.avgFastestMs).toBe(1200)
+    const valEm = em.healers.find((h) => h.healer === 'Valysa')!
+    expect(valEm.instantUsedCount).toBe(1)
+    expect(valEm.castUsedCount).toBe(1)
+    expect(valEm.avgReactionMs).toBe(1200)
+    const yavEm = em.healers.find((h) => h.healer === 'Yaviroarz')!
+    expect(yavEm.noHealCount).toBe(2)
+    expect(yavEm.missedInstantReadyUnassistedCount).toBe(1) // hem1 was covered_fast_by_other; hem2 target died!
+    expect(yavEm.coveredFastCount).toBe(1)
+
+    // Separate Boss Tank Soak aggregation
+    const tk = aggregateHealerTankSoaks([repWithHealers], 4, { from: 1, to: 2 })
+    expect(tk.totalSoaks).toBe(1)
+    expect(tk.soaksWithHealCount).toBe(1)
+    const valTk = tk.healers.find((h) => h.healer === 'Valysa')!
+    expect(valTk.healedSoaks).toBe(1)
+    expect(valTk.externalCount).toBe(1)
+    expect(valTk.avgReactionMs).toBe(400)
+    const yavTk = tk.healers.find((h) => h.healer === 'Yaviroarz')!
+    expect(yavTk.unhealedSoaks).toBe(1)
   })
 })

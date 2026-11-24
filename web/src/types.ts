@@ -10,6 +10,90 @@ export interface TankActor {
   class: string
 }
 
+export interface HealerActor {
+  id: number
+  name: string
+  class: string
+  spec: string
+  pulls: number
+}
+
+export type HealerEmergencyStatus = 'instant_used' | 'cast_used' | 'no_heal'
+
+export interface HealerEmergencyReaction {
+  healer: string
+  healer_class: string
+  healer_spec: string
+  healer_id: number
+  status: HealerEmergencyStatus
+  reaction_ms: number | null
+  spell: string | null
+  is_external: boolean
+  instant_was_ready: boolean
+  ready_instants: string[]
+  covered_fast_by_other: boolean
+}
+
+export interface HealerEmergencyEvent {
+  id: string
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  rel_time: string
+  rel_ms: number
+  timestamp: number
+  deaths_before: number
+  victim: string
+  victim_class: string
+  victim_id: number
+  trigger_ability: string
+  hp_pct: number
+  concurrent_low_count: number
+  target_died: boolean
+  fastest_reaction_ms: number | null
+  fastest_healer: string | null
+  fastest_healer_class: string | null
+  reactions: HealerEmergencyReaction[]
+  events_url: string
+  replay_url: string
+}
+
+export interface HealerTankSoakReaction {
+  healer: string
+  healer_class: string
+  healer_spec: string
+  healer_id: number
+  healed: boolean
+  reaction_ms: number | null
+  heal_count: number
+  used_external: boolean
+  spells: string[]
+}
+
+export interface HealerTankSoakEvent {
+  id: string
+  pull_num: number
+  fight_id: number
+  is_kill: boolean
+  rel_time: string
+  rel_ms: number
+  timestamp: number
+  deaths_before: number
+  tank: string
+  tank_class: string
+  tank_id: number
+  stacks: number
+  min_hp_pct: number | null
+  tank_died: boolean
+  any_healed: boolean
+  healers_reacted_count: number
+  fastest_reaction_ms: number | null
+  fastest_healer: string | null
+  reactions: HealerTankSoakReaction[]
+  events_url: string
+  replay_url: string
+}
+
 export interface PlayerSummary {
   id: number
   name: string
@@ -323,6 +407,7 @@ export interface ReportData {
   wipes_count: number
   kills_count: number
   tanks: TankActor[]
+  healers?: HealerActor[]
   players: PlayerSummary[]
   egg_regular_carriers?: string[]
   removal_summary: {
@@ -339,6 +424,8 @@ export interface ReportData {
   wave_fails: WaveFail[]
   tank_fails: TankFail[]
   defensive_events: DefensiveEvent[]
+  healer_emergency_events?: HealerEmergencyEvent[]
+  healer_tank_soak_events?: HealerTankSoakEvent[]
   consumable_usage: ConsumableUsage[]
   heart_phases?: HeartPhaseWindow[]
   phase_events?: PhaseEvent[]
@@ -346,4 +433,4 @@ export interface ReportData {
   p3_summaries?: P3PullSummary[]
 }
 
-export type TabKey = 'egg' | 'wave' | 'tank' | 'defensives' | 'heart' | 'phases' | 'pulls'
+export type TabKey = 'egg' | 'wave' | 'tank' | 'defensives' | 'healers' | 'heart' | 'phases' | 'pulls'

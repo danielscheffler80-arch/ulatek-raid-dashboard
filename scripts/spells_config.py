@@ -66,6 +66,174 @@ RAID_SPIKE_ABILITY_IDS = {
     SPELL_BLIGHT_VEIN_DMG,
 }
 
+# Avoidable killing abilities excluded from Def CD / Pot / HS death tracking
+# (already tracked separately in Wave Fails / Egg Fails / P2-P3 tabs)
+AVOIDABLE_DEATH_ABILITY_IDS = {
+    SPELL_CAUSTIC_WAVES,
+    SPELL_FALLING_DEBRIS,
+    SPELL_RATTLER_SLAM,
+    SPELL_NOXIOUS_SPLASH,
+    SPELL_RANCID_YOLK,
+    *P2_AVOIDABLE_IDS,
+}
+
+
+def is_avoidable_defensive_death(ability_id: int | None, ability_name: str) -> bool:
+    if ability_id in AVOIDABLE_DEATH_ABILITY_IDS:
+        return True
+    low = (ability_name or "").strip().lower()
+    if not low:
+        return False
+    if low in ("caustic waves", "falling debris", "rattler slam", "noxious splash", "rancid yolk"):
+        return True
+    return any(s in low for s in P3_AVOIDABLE_SPELL_NAMES)
+
+
+# Targeted healer spells & externals (used for Healer Emergency & Tank-Soak reaction tracking)
+HEALER_EXTERNAL_SPELLS = {
+    "guardian spirit",
+    "pain suppression",
+    "ironbark",
+    "life cocoon",
+    "time dilation",
+    "blessing of sacrifice",
+    "blessing of protection",
+    "blessing of spellwarding",
+    "rescue",
+    "spirit link totem",
+    "ancestral protection totem",
+    "void shift",
+}
+
+HEALER_DIRECT_HEAL_SPELLS = {
+    # Priest (Holy / Discipline)
+    "holy word: serenity",
+    "flash heal",
+    "heal",
+    "prayer of mending",
+    "power word: shield",
+    "power word: life",
+    "penance",
+    "renew",
+    "binding heal",
+    "leap of faith",
+    "desperate prayer",
+    # Shaman (Restoration)
+    "riptide",
+    "healing surge",
+    "healing wave",
+    "chain heal",
+    "unleash life",
+    "earth shield",
+    "primordial wave",
+    # Druid (Restoration)
+    "swiftmend",
+    "regrowth",
+    "rejuvenation",
+    "rejuvenation (germination)",
+    "lifebloom",
+    "cenarion ward",
+    "wild growth",
+    "grove guardians",
+    "adaptive swarm",
+    "overgrowth",
+    # Evoker (Preservation)
+    "verdant embrace",
+    "reversion",
+    "echo",
+    "living flame",
+    "spiritbloom",
+    "emerald blossom",
+    "twin flame",
+    "merithra's blessing",
+    # Paladin (Holy)
+    "holy shock",
+    "word of glory",
+    "flash of light",
+    "holy light",
+    "lay on hands",
+    "eternal flame",
+    "bestow faith",
+    "holy prism",
+    "barrier of faith",
+    # Monk (Mistweaver)
+    "vivify",
+    "enveloping mist",
+    "soothing mist",
+    "renewing mist",
+    "sheilun's gift",
+    "expel harm",
+    "zen pulse",
+    *HEALER_EXTERNAL_SPELLS,
+}
+
+# Conservative spec-specific instant emergency cooldowns (baseline=True always tracked;
+# baseline=False tracked only when that healer actually cast the spell in this report)
+HEALER_INSTANT_SPELLS_BY_CLASS_SPEC: dict[str, list[dict[str, object]]] = {
+    "Priest:Holy": [
+        {"name": "Holy Word: Serenity", "cd_ms": 60_000, "charges": 2, "baseline": True, "is_external": False},
+        {"name": "Power Word: Life", "cd_ms": 15_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Guardian Spirit", "cd_ms": 180_000, "charges": 1, "baseline": False, "is_external": True},
+    ],
+    "Priest:Discipline": [
+        {"name": "Power Word: Shield", "cd_ms": 8_000, "charges": 1, "baseline": True, "is_external": False},
+        {"name": "Penance", "cd_ms": 9_000, "charges": 1, "baseline": True, "is_external": False},
+        {"name": "Power Word: Life", "cd_ms": 15_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Pain Suppression", "cd_ms": 180_000, "charges": 2, "baseline": False, "is_external": True},
+    ],
+    "Shaman:Restoration": [
+        {"name": "Riptide", "cd_ms": 6_000, "charges": 2, "baseline": True, "is_external": False},
+        {"name": "Nature's Swiftness", "cd_ms": 60_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Ancestral Swiftness", "cd_ms": 45_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Unleash Life", "cd_ms": 15_000, "charges": 1, "baseline": False, "is_external": False},
+    ],
+    "Druid:Restoration": [
+        {"name": "Swiftmend", "cd_ms": 15_000, "charges": 1, "baseline": True, "is_external": False},
+        {"name": "Nature's Swiftness", "cd_ms": 60_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Ironbark", "cd_ms": 90_000, "charges": 1, "baseline": False, "is_external": True},
+    ],
+    "Evoker:Preservation": [
+        {"name": "Reversion", "cd_ms": 9_000, "charges": 2, "baseline": True, "is_external": False},
+        {"name": "Verdant Embrace", "cd_ms": 24_000, "charges": 1, "baseline": True, "is_external": False},
+        {"name": "Time Dilation", "cd_ms": 60_000, "charges": 1, "baseline": False, "is_external": True},
+    ],
+    "Paladin:Holy": [
+        {"name": "Holy Shock", "cd_ms": 8_000, "charges": 1, "baseline": True, "is_external": False},
+        {"name": "Lay on Hands", "cd_ms": 420_000, "charges": 1, "baseline": False, "is_external": False},
+        {"name": "Blessing of Sacrifice", "cd_ms": 120_000, "charges": 1, "baseline": False, "is_external": True},
+    ],
+    "Monk:Mistweaver": [
+        {"name": "Renewing Mist", "cd_ms": 9_000, "charges": 2, "baseline": True, "is_external": False},
+        {"name": "Life Cocoon", "cd_ms": 120_000, "charges": 1, "baseline": True, "is_external": True},
+        {"name": "Thunder Focus Tea", "cd_ms": 30_000, "charges": 1, "baseline": False, "is_external": False},
+    ],
+}
+
+
+def is_healer_direct_heal(ability_name: str) -> bool:
+    return (ability_name or "").strip().lower() in HEALER_DIRECT_HEAL_SPELLS
+
+
+def is_healer_external_spell(ability_name: str) -> bool:
+    return (ability_name or "").strip().lower() in HEALER_EXTERNAL_SPELLS
+
+
+def get_healer_instant_specs(class_name: str, spec_name: str) -> list[dict[str, object]]:
+    key = f"{(class_name or '').strip()}:{(spec_name or '').strip()}"
+    return list(HEALER_INSTANT_SPELLS_BY_CLASS_SPEC.get(key, []))
+
+
+HEALER_ALL_INSTANT_CD_NAMES = {
+    str(entry["name"]).lower()
+    for entries in HEALER_INSTANT_SPELLS_BY_CLASS_SPEC.values()
+    for entry in entries
+}
+
+
+def is_healer_tracked_cast(ability_name: str) -> bool:
+    low = (ability_name or "").strip().lower()
+    return low in HEALER_DIRECT_HEAL_SPELLS or low in HEALER_ALL_INSTANT_CD_NAMES
+
 # Health Potions (Midnight + TWW + generic name matching)
 HEALTH_POTION_IDS = {
     1234768,  # Silvermoon Health Potion

@@ -2,6 +2,10 @@ import type {
   DefensiveEvent,
   EggCarrierEvent,
   EggFail,
+  HealerEmergencyEvent,
+  HealerEmergencyReaction,
+  HealerTankSoakEvent,
+  HealerTankSoakReaction,
   HeartPhaseWindow,
   P3PullSummary,
   PhaseEvent,
@@ -804,10 +808,12 @@ export function aggregateDefensives(
     return row
   }
 
-  const AVOIDABLE_SPIKE_NAMES = new Set([
+  const AVOIDABLE_DEF_NAMES = new Set([
     'caustic waves',
     'falling debris',
     'rattler slam',
+    'noxious splash',
+    'rancid yolk',
     'acidic burst',
     'acidic expulsion',
     'petrifying sting',
@@ -817,6 +823,7 @@ export function aggregateDefensives(
   ])
 
   const allEvents: WithReport<DefensiveEvent>[] = []
+  const seenDefIds = new Set<string>()
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
     for (const u of filterByPullRange(rep.consumable_usage, pullRange)) {
@@ -827,10 +834,10 @@ export function aggregateDefensives(
       row.defCdCasts += u.def_cd_casts
     }
     for (const ev of filterByPullRange(filterByMaxDeaths(rep.defensive_events, maxDeaths), pullRange)) {
-      if (
-        ev.kind === 'low_hp_spike' &&
-        AVOIDABLE_SPIKE_NAMES.has((ev.trigger_ability ?? '').trim().toLowerCase())
-      ) {
+      const dedupKey = `${rep.code}:${ev.id}`
+      if (seenDefIds.has(dedupKey)) continue
+      seenDefIds.add(dedupKey)
+      if (AVOIDABLE_DEF_NAMES.has((ev.trigger_ability ?? '').trim().toLowerCase())) {
         continue
       }
       const enriched: WithReport<DefensiveEvent> = {
@@ -1339,6 +1346,314 @@ export function aggregatePhaseAnalysis(
     wardenPlayers: rankDamage(wardenPulls),
     p3Pulls,
     p3Players: rankDamage(p3Pulls),
+  }
+}
+
+export interface HealerEmergencyItem {
+  event: WithReport<HealerEmergencyEvent>
+  reaction: HealerEmergencyReaction
+}
+
+export interface HealerEmergencyRow {
+  healer: string
+  className: string
+  spec: string
+  opportunities: number
+  reactedCount: number
+  instantUsedCount: number
+  castUsedCount: number
+  castUsedDespiteInstantReadyCount: number
+  noHealCount: number
+  coveredFastCount: number
+  missedInstantReadyUnassistedCount: number
+  missedWhileTargetDiedCount: number
+  avgReactionMs: number | null
+  medianReactionMs: number | null
+  items: HealerEmergencyItem[]
+}
+
+export interface HealerTankSoakItem {
+  event: WithReport<HealerTankSoakEvent>
+  reaction: HealerTankSoakReaction
+}
+
+export interface HealerTankSoakRow {
+  healer: string
+  className: string
+  spec: string
+  opportunities: number
+  healedSoaks: number
+  unhealedSoaks: number
+  healedRatePct: number
+  totalHeals: number
+  avgHealsPerSoak: number
+  externalCount: number
+  avgReactionMs: number | null
+  medianReactionMs: number | null
+  items: HealerTankSoakItem[]
+}
+
+function calcMedian(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+}
+
+export function aggregateHealerEmergency(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
+  const raw: WithReport<HealerEmergencyEvent>[] = []
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    for (const ev of rep.healer_emergency_events ?? []) {
+      raw.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+  }
+  const events = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange).sort(
+    (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp,
+  )
+
+  const byHealer = new Map<
+    string,
+    {
+      healer: string
+      className: string
+      spec: string
+      opportunities: number
+      reactedCount: number
+      instantUsedCount: number
+      castUsedCount: number
+      castUsedDespiteInstantReadyCount: number
+      noHealCount: number
+      coveredFastCount: number
+      missedInstantReadyUnassistedCount: number
+      missedWhileTargetDiedCount: number
+      reactionSamples: number[]
+      items: HealerEmergencyItem[]
+    }
+  >()
+
+  const fastestSamples: number[] = []
+  let targetDiedCount = 0
+  let instantReadyOpps = 0
+  let instantUsedWhenReadyCount = 0
+  let missedInstantReadyUnassistedTotal = 0
+
+  for (const ev of events) {
+    if (ev.target_died) targetDiedCount++
+    if (ev.fastest_reaction_ms !== null) fastestSamples.push(ev.fastest_reaction_ms)
+    for (const rx of ev.reactions) {
+      let row = byHealer.get(rx.healer)
+      if (!row) {
+        row = {
+          healer: rx.healer,
+          className: rx.healer_class,
+          spec: rx.healer_spec,
+          opportunities: 0,
+          reactedCount: 0,
+          instantUsedCount: 0,
+          castUsedCount: 0,
+          castUsedDespiteInstantReadyCount: 0,
+          noHealCount: 0,
+          coveredFastCount: 0,
+          missedInstantReadyUnassistedCount: 0,
+          missedWhileTargetDiedCount: 0,
+          reactionSamples: [],
+          items: [],
+        }
+        byHealer.set(rx.healer, row)
+      }
+      if (!row.spec && rx.healer_spec) row.spec = rx.healer_spec
+      row.opportunities++
+      if (rx.instant_was_ready) {
+        instantReadyOpps++
+        if (rx.status === 'instant_used') instantUsedWhenReadyCount++
+      }
+      if (rx.status === 'instant_used') {
+        row.reactedCount++
+        row.instantUsedCount++
+        if (rx.reaction_ms !== null) row.reactionSamples.push(rx.reaction_ms)
+      } else if (rx.status === 'cast_used') {
+        row.reactedCount++
+        row.castUsedCount++
+        if (rx.instant_was_ready) row.castUsedDespiteInstantReadyCount++
+        if (rx.reaction_ms !== null) row.reactionSamples.push(rx.reaction_ms)
+      } else {
+        row.noHealCount++
+        if (rx.covered_fast_by_other) {
+          row.coveredFastCount++
+        } else {
+          if (rx.instant_was_ready) {
+            row.missedInstantReadyUnassistedCount++
+            missedInstantReadyUnassistedTotal++
+          }
+          if (ev.target_died) row.missedWhileTargetDiedCount++
+        }
+      }
+      row.items.push({ event: ev, reaction: rx })
+    }
+  }
+
+  const healers: HealerEmergencyRow[] = Array.from(byHealer.values())
+    .map((h) => ({
+      healer: h.healer,
+      className: h.className,
+      spec: h.spec,
+      opportunities: h.opportunities,
+      reactedCount: h.reactedCount,
+      instantUsedCount: h.instantUsedCount,
+      castUsedCount: h.castUsedCount,
+      castUsedDespiteInstantReadyCount: h.castUsedDespiteInstantReadyCount,
+      noHealCount: h.noHealCount,
+      coveredFastCount: h.coveredFastCount,
+      missedInstantReadyUnassistedCount: h.missedInstantReadyUnassistedCount,
+      missedWhileTargetDiedCount: h.missedWhileTargetDiedCount,
+      avgReactionMs:
+        h.reactionSamples.length > 0
+          ? Math.round(h.reactionSamples.reduce((a, b) => a + b, 0) / h.reactionSamples.length)
+          : null,
+      medianReactionMs: calcMedian(h.reactionSamples),
+      items: h.items,
+    }))
+    .sort((a, b) => {
+      if (a.avgReactionMs === null && b.avgReactionMs === null) return a.healer.localeCompare(b.healer)
+      if (a.avgReactionMs === null) return 1
+      if (b.avgReactionMs === null) return -1
+      return a.avgReactionMs - b.avgReactionMs || b.reactedCount - a.reactedCount
+    })
+
+  const avgFastestMs =
+    fastestSamples.length > 0
+      ? Math.round(fastestSamples.reduce((a, b) => a + b, 0) / fastestSamples.length)
+      : null
+
+  return {
+    totalEvents: events.length,
+    targetDiedCount,
+    avgFastestMs,
+    medianFastestMs: calcMedian(fastestSamples),
+    instantReadyOpps,
+    instantUsedWhenReadyCount,
+    instantUsedWhenReadyRatePct:
+      instantReadyOpps > 0 ? Math.round((instantUsedWhenReadyCount / instantReadyOpps) * 100) : 0,
+    missedInstantReadyUnassistedTotal,
+    events,
+    healers,
+  }
+}
+
+export function aggregateHealerTankSoaks(
+  reports: ReportData[],
+  maxDeaths: number | null,
+  pullRange?: PullRange | null,
+) {
+  const raw: WithReport<HealerTankSoakEvent>[] = []
+  for (const rep of reports) {
+    const label = getReportDisplayName(rep)
+    for (const ev of rep.healer_tank_soak_events ?? []) {
+      raw.push({ ...ev, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
+    }
+  }
+  const events = filterByPullRange(filterByMaxDeaths(raw, maxDeaths), pullRange).sort(
+    (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp,
+  )
+
+  const byHealer = new Map<
+    string,
+    {
+      healer: string
+      className: string
+      spec: string
+      opportunities: number
+      healedSoaks: number
+      unhealedSoaks: number
+      totalHeals: number
+      externalCount: number
+      reactionSamples: number[]
+      items: HealerTankSoakItem[]
+    }
+  >()
+
+  const fastestSamples: number[] = []
+  let soaksWithHealCount = 0
+  let tankLowCount = 0
+  let tankDiedCount = 0
+
+  for (const ev of events) {
+    if (ev.any_healed) soaksWithHealCount++
+    if (ev.min_hp_pct !== null && ev.min_hp_pct < 30) tankLowCount++
+    if (ev.tank_died) tankDiedCount++
+    if (ev.fastest_reaction_ms !== null) fastestSamples.push(ev.fastest_reaction_ms)
+
+    for (const rx of ev.reactions) {
+      let row = byHealer.get(rx.healer)
+      if (!row) {
+        row = {
+          healer: rx.healer,
+          className: rx.healer_class,
+          spec: rx.healer_spec,
+          opportunities: 0,
+          healedSoaks: 0,
+          unhealedSoaks: 0,
+          totalHeals: 0,
+          externalCount: 0,
+          reactionSamples: [],
+          items: [],
+        }
+        byHealer.set(rx.healer, row)
+      }
+      if (!row.spec && rx.healer_spec) row.spec = rx.healer_spec
+      row.opportunities++
+      if (rx.healed) {
+        row.healedSoaks++
+        row.totalHeals += rx.heal_count
+        if (rx.used_external) row.externalCount++
+        if (rx.reaction_ms !== null) row.reactionSamples.push(rx.reaction_ms)
+      } else {
+        row.unhealedSoaks++
+      }
+      row.items.push({ event: ev, reaction: rx })
+    }
+  }
+
+  const healers: HealerTankSoakRow[] = Array.from(byHealer.values())
+    .map((h) => ({
+      healer: h.healer,
+      className: h.className,
+      spec: h.spec,
+      opportunities: h.opportunities,
+      healedSoaks: h.healedSoaks,
+      unhealedSoaks: h.unhealedSoaks,
+      healedRatePct: h.opportunities > 0 ? Math.round((h.healedSoaks / h.opportunities) * 100) : 0,
+      totalHeals: h.totalHeals,
+      avgHealsPerSoak: h.healedSoaks > 0 ? Math.round((h.totalHeals / h.healedSoaks) * 10) / 10 : 0,
+      externalCount: h.externalCount,
+      avgReactionMs:
+        h.reactionSamples.length > 0
+          ? Math.round(h.reactionSamples.reduce((a, b) => a + b, 0) / h.reactionSamples.length)
+          : null,
+      medianReactionMs: calcMedian(h.reactionSamples),
+      items: h.items,
+    }))
+    .sort((a, b) => b.healedRatePct - a.healedRatePct || (a.avgReactionMs ?? 99999) - (b.avgReactionMs ?? 99999))
+
+  const avgFastestMs =
+    fastestSamples.length > 0
+      ? Math.round(fastestSamples.reduce((a, b) => a + b, 0) / fastestSamples.length)
+      : null
+
+  return {
+    totalSoaks: events.length,
+    soaksWithHealCount,
+    soaksWithHealRatePct: events.length > 0 ? Math.round((soaksWithHealCount / events.length) * 100) : 0,
+    avgFastestMs,
+    tankLowCount,
+    tankDiedCount,
+    events,
+    healers,
   }
 }
 

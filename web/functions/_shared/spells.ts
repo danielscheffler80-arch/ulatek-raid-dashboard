@@ -92,6 +92,183 @@ export const RAID_SPIKE_ABILITY_IDS = new Set([
   SPELL_BLIGHT_VEIN_DMG,
 ])
 
+// Avoidable killing abilities excluded from Def CD / Pot / HS death tracking
+export const AVOIDABLE_DEATH_ABILITY_IDS = new Set<number>([
+  SPELL_CAUSTIC_WAVES,
+  SPELL_FALLING_DEBRIS,
+  SPELL_RATTLER_SLAM,
+  SPELL_NOXIOUS_SPLASH,
+  SPELL_RANCID_YOLK,
+  ...Array.from(P2_AVOIDABLE_IDS),
+])
+
+export function isAvoidableDefensiveDeath(abilityId: number | undefined | null, abilityName: string): boolean {
+  if (abilityId !== undefined && abilityId !== null && AVOIDABLE_DEATH_ABILITY_IDS.has(abilityId)) {
+    return true
+  }
+  const low = (abilityName || '').trim().toLowerCase()
+  if (!low) return false
+  if (
+    low === 'caustic waves' ||
+    low === 'falling debris' ||
+    low === 'rattler slam' ||
+    low === 'noxious splash' ||
+    low === 'rancid yolk'
+  ) {
+    return true
+  }
+  return P3_AVOIDABLE_SPELL_NAMES.some((s) => low.includes(s))
+}
+
+export const HEALER_EXTERNAL_SPELLS = new Set([
+  'guardian spirit',
+  'pain suppression',
+  'ironbark',
+  'life cocoon',
+  'time dilation',
+  'blessing of sacrifice',
+  'blessing of protection',
+  'blessing of spellwarding',
+  'rescue',
+  'spirit link totem',
+  'ancestral protection totem',
+  'void shift',
+])
+
+export const HEALER_DIRECT_HEAL_SPELLS = new Set([
+  // Priest
+  'holy word: serenity',
+  'flash heal',
+  'heal',
+  'prayer of mending',
+  'power word: shield',
+  'power word: life',
+  'penance',
+  'renew',
+  'binding heal',
+  'leap of faith',
+  'desperate prayer',
+  // Shaman
+  'riptide',
+  'healing surge',
+  'healing wave',
+  'chain heal',
+  'unleash life',
+  'earth shield',
+  'primordial wave',
+  // Druid
+  'swiftmend',
+  'regrowth',
+  'rejuvenation',
+  'rejuvenation (germination)',
+  'lifebloom',
+  'cenarion ward',
+  'wild growth',
+  'grove guardians',
+  'adaptive swarm',
+  'overgrowth',
+  // Evoker
+  'verdant embrace',
+  'reversion',
+  'echo',
+  'living flame',
+  'spiritbloom',
+  'emerald blossom',
+  'twin flame',
+  "merithra's blessing",
+  // Paladin
+  'holy shock',
+  'word of glory',
+  'flash of light',
+  'holy light',
+  'lay on hands',
+  'eternal flame',
+  'bestow faith',
+  'holy prism',
+  'barrier of faith',
+  // Monk
+  'vivify',
+  'enveloping mist',
+  'soothing mist',
+  'renewing mist',
+  "sheilun's gift",
+  'expel harm',
+  'zen pulse',
+  ...Array.from(HEALER_EXTERNAL_SPELLS),
+])
+
+export interface HealerInstantSpec {
+  name: string
+  cd_ms: number
+  charges: number
+  baseline: boolean
+  is_external: boolean
+}
+
+export const HEALER_INSTANT_SPELLS_BY_CLASS_SPEC: Record<string, HealerInstantSpec[]> = {
+  'Priest:Holy': [
+    { name: 'Holy Word: Serenity', cd_ms: 60_000, charges: 2, baseline: true, is_external: false },
+    { name: 'Power Word: Life', cd_ms: 15_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Guardian Spirit', cd_ms: 180_000, charges: 1, baseline: false, is_external: true },
+  ],
+  'Priest:Discipline': [
+    { name: 'Power Word: Shield', cd_ms: 8_000, charges: 1, baseline: true, is_external: false },
+    { name: 'Penance', cd_ms: 9_000, charges: 1, baseline: true, is_external: false },
+    { name: 'Power Word: Life', cd_ms: 15_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Pain Suppression', cd_ms: 180_000, charges: 2, baseline: false, is_external: true },
+  ],
+  'Shaman:Restoration': [
+    { name: 'Riptide', cd_ms: 6_000, charges: 2, baseline: true, is_external: false },
+    { name: "Nature's Swiftness", cd_ms: 60_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Ancestral Swiftness', cd_ms: 45_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Unleash Life', cd_ms: 15_000, charges: 1, baseline: false, is_external: false },
+  ],
+  'Druid:Restoration': [
+    { name: 'Swiftmend', cd_ms: 15_000, charges: 1, baseline: true, is_external: false },
+    { name: "Nature's Swiftness", cd_ms: 60_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Ironbark', cd_ms: 90_000, charges: 1, baseline: false, is_external: true },
+  ],
+  'Evoker:Preservation': [
+    { name: 'Reversion', cd_ms: 9_000, charges: 2, baseline: true, is_external: false },
+    { name: 'Verdant Embrace', cd_ms: 24_000, charges: 1, baseline: true, is_external: false },
+    { name: 'Time Dilation', cd_ms: 60_000, charges: 1, baseline: false, is_external: true },
+  ],
+  'Paladin:Holy': [
+    { name: 'Holy Shock', cd_ms: 8_000, charges: 1, baseline: true, is_external: false },
+    { name: 'Lay on Hands', cd_ms: 420_000, charges: 1, baseline: false, is_external: false },
+    { name: 'Blessing of Sacrifice', cd_ms: 120_000, charges: 1, baseline: false, is_external: true },
+  ],
+  'Monk:Mistweaver': [
+    { name: 'Renewing Mist', cd_ms: 9_000, charges: 2, baseline: true, is_external: false },
+    { name: 'Life Cocoon', cd_ms: 120_000, charges: 1, baseline: true, is_external: true },
+    { name: 'Thunder Focus Tea', cd_ms: 30_000, charges: 1, baseline: false, is_external: false },
+  ],
+}
+
+export function isHealerDirectHeal(abilityName: string): boolean {
+  return HEALER_DIRECT_HEAL_SPELLS.has((abilityName || '').trim().toLowerCase())
+}
+
+export function isHealerExternalSpell(abilityName: string): boolean {
+  return HEALER_EXTERNAL_SPELLS.has((abilityName || '').trim().toLowerCase())
+}
+
+export function getHealerInstantSpecs(className: string, specName: string): HealerInstantSpec[] {
+  const key = `${(className || '').trim()}:${(specName || '').trim()}`
+  return HEALER_INSTANT_SPELLS_BY_CLASS_SPEC[key] ?? []
+}
+
+export const HEALER_ALL_INSTANT_CD_NAMES = new Set<string>(
+  Object.values(HEALER_INSTANT_SPELLS_BY_CLASS_SPEC).flatMap((entries) =>
+    entries.map((e) => e.name.toLowerCase()),
+  ),
+)
+
+export function isHealerTrackedCast(abilityName: string): boolean {
+  const low = (abilityName || '').trim().toLowerCase()
+  return HEALER_DIRECT_HEAL_SPELLS.has(low) || HEALER_ALL_INSTANT_CD_NAMES.has(low)
+}
+
 export const HEALTH_POTION_IDS = new Set([1234768, 1295247, 431416, 431418, 370511])
 export const HEALTHSTONE_IDS = new Set([6262, 452930, 387636])
 export const HEALTH_POTION_CD_MS = 300_000

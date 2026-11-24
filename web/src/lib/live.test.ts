@@ -162,4 +162,79 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
     expect(evs.find((e) => e.player === 'Bob' && e.pull_num === 2)?.status).toBe('missed_alive')
     expect(evs.find((e) => e.player === 'Bob' && e.pull_num === 3)?.status).toBe('missed_dead')
   })
+
+  it('deduplicates deaths, excludes avoidable deaths, and computes healer emergency + tank soak reactions in TS analyzer', () => {
+    const actors = {
+      1: { id: 1, name: 'HolyVal', type: 'Player', subType: 'Priest' },
+      2: { id: 2, name: 'RestoYav', type: 'Player', subType: 'Druid' },
+      10: { id: 10, name: 'VictimA', type: 'Player', subType: 'Hunter' },
+      25: { id: 25, name: 'BossTank', type: 'Player', subType: 'DeathKnight' },
+      152: { id: 152, name: "Ula'tek", type: 'NPC', subType: 'Boss' },
+    }
+    const abilities = {
+      1292403: 'Caustic Waves',
+      1308275: 'Putrid Membrane',
+      1298417: 'Stone Venom',
+      1298369: "Mother's Wrath",
+      2050: 'Holy Word: Serenity',
+      8936: 'Regrowth',
+      47788: 'Guardian Spirit',
+    }
+    const fights = [
+      {
+        id: 80,
+        name: "Ula'tek",
+        startTime: 100_000,
+        endTime: 220_000,
+        bossPercentage: 45,
+        kill: false,
+        friendlyPlayers: [1, 2, 10, 25],
+      },
+    ]
+    const events = [
+      // Duplicate avoidable Caustic Waves death -> excluded from defensive_events!
+      { timestamp: 115_000, type: 'death', targetID: 10, killerID: 152, killingAbilityGameID: 1292403 },
+      { timestamp: 115_000, type: 'death', targetID: 10, killerID: 152, killingAbilityGameID: 1292403 },
+      // Isolated <35% drop on VictimA at 110s
+      { timestamp: 110_000, type: 'damage', sourceID: 152, targetID: 10, abilityGameID: 1292403, amount: 500_000, hitPoints: 200_000, maxHitPoints: 1_000_000 },
+      // Boss tank soak at 130s
+      { timestamp: 130_000, type: 'applydebuff', sourceID: 152, targetID: 25, abilityGameID: 1298417, stack: 1 },
+      { timestamp: 130_500, type: 'damage', sourceID: 152, targetID: 25, abilityGameID: 1298369, amount: 800_000, hitPoints: 250_000, maxHitPoints: 1_000_000 },
+    ]
+    const healerCasts = [
+      { timestamp: 110_700, type: 'cast', sourceID: 1, targetID: 10, abilityGameID: 2050 },
+      { timestamp: 111_200, type: 'begincast', sourceID: 2, targetID: -1, abilityGameID: 8936 },
+      { timestamp: 112_400, type: 'cast', sourceID: 2, targetID: 10, abilityGameID: 8936 },
+      { timestamp: 130_400, type: 'cast', sourceID: 1, targetID: 25, abilityGameID: 47788 },
+    ]
+
+    const res = analyzeReportEventsTS(
+      { title: 'Healer TS Test', startTime: 1795450000000 },
+      fights,
+      actors,
+      abilities,
+      { 80: events },
+      'TESTHEALTS123456',
+      {
+        healers_by_fight: { 80: { 1: 'Holy', 2: 'Restoration' } },
+        low_hp_damage_by_fight: { 80: [events[2], events[4]] },
+        healer_casts_by_fight: { 80: healerCasts },
+      },
+    )
+
+    // Avoidable Caustic Waves death excluded
+    expect(res.defensive_events.filter((e) => e.kind === 'death')).toHaveLength(0)
+
+    // Emergency heal event
+    const emerg = res.healer_emergency_events as Array<Record<string, unknown>>
+    expect(emerg).toHaveLength(1)
+    expect(emerg[0].victim).toBe('VictimA')
+    expect(emerg[0].fastest_reaction_ms).toBe(700)
+
+    // Separate Boss Tank Soak event
+    const soaks = res.healer_tank_soak_events as Array<Record<string, unknown>>
+    expect(soaks).toHaveLength(1)
+    expect(soaks[0].tank).toBe('BossTank')
+    expect(soaks[0].any_healed).toBe(true)
+  })
 })

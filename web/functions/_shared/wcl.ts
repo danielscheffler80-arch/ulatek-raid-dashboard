@@ -44,6 +44,7 @@ import {
   SPELL_VENOMOUS_HEART_BUFF,
   ULATEK_ENCOUNTER_ID,
   isDefensiveBuff,
+  isHealerTrackedCast,
   isHealthPotion,
   isHealthstone,
   isInterruptSpell,
@@ -446,8 +447,8 @@ async function fetchPhaseDamageTables(
 
   const mergedTables: Record<string, { data?: unknown }> = {}
   const chunkPromises: Promise<Record<string, { data?: unknown }>>[] = []
-  for (let i = 0; i < aliases.length; i += 24) {
-    const chunkStr = aliases.slice(i, i + 24).join('\n')
+  for (let i = 0; i < aliases.length; i += 32) {
+    const chunkStr = aliases.slice(i, i + 32).join('\n')
     const q = `query { reportData { report(code: "${code}") { ${chunkStr} } } }`
     chunkPromises.push(
       gql<{ reportData?: { report?: Record<string, { data?: unknown }> } }>(env, q).then(
@@ -591,6 +592,130 @@ async function fetchPhaseDamageTables(
   }
 }
 
+async function fetchHealerReactionData(
+  env: WclEnv,
+  code: string,
+  fights: WclFight[],
+  minStart: number,
+  maxEnd: number,
+  fightIds: number[],
+  healerCastIds: number[],
+  lowHpEvents: WclEvent[],
+): Promise<{
+  healers_by_fight: Record<number, Record<number, string>>
+  low_hp_damage_by_fight: Record<number, WclEvent[]>
+  healer_casts_by_fight: Record<number, WclEvent[]>
+}> {
+  interface PdPlayer {
+    id: number
+    name?: string
+    specs?: { spec?: string; count?: number }[]
+  }
+  interface PdBlock {
+    data?: { playerDetails?: { healers?: PdPlayer[] } }
+  }
+
+  const qPd = `
+    query {
+      reportData {
+        report(code: "${code}") {
+          playerDetails(fightIDs: ${JSON.stringify(fightIds)}, includeCombatantInfo: false)
+        }
+      }
+    }
+  `
+  const pdRes = await gql<{ reportData?: { report?: { playerDetails?: PdBlock } } }>(env, qPd)
+  const allHealers = pdRes.reportData?.report?.playerDetails?.data?.playerDetails?.healers ?? []
+  if (allHealers.length === 0) {
+    return {
+      healers_by_fight: {},
+      low_hp_damage_by_fight: {},
+      healer_casts_by_fight: {},
+    }
+  }
+
+  const healerNames = Array.from(
+    new Set(allHealers.map((h) => String(h.name ?? '')).filter((n) => n.length > 0)),
+  ).sort()
+
+  const healersByFight: Record<number, Record<number, string>> = {}
+  const totalFights = fights.length
+  const needsPerFight = allHealers.some(
+    (h) => (h.specs ?? []).reduce((s, sp) => s + Number(sp.count ?? 0), 0) < totalFights,
+  )
+
+  const perFightPromise: Promise<void> = (async () => {
+    if (!needsPerFight) {
+      const baseMap: Record<number, string> = {}
+      for (const h of allHealers) {
+        const sp = h.specs?.[0]?.spec ?? ''
+        baseMap[Number(h.id)] = String(sp)
+      }
+      for (const fid of fightIds) {
+        healersByFight[fid] = { ...baseMap }
+      }
+      return
+    }
+    const aliases = fightIds.map(
+      (fid, idx) => `pd_${idx}: playerDetails(fightIDs: [${fid}], includeCombatantInfo: false)`,
+    )
+    const mergedPd: Record<string, PdBlock> = {}
+    for (let i = 0; i < aliases.length; i += 40) {
+      const chunkStr = aliases.slice(i, i + 40).join('\n')
+      const q = `query { reportData { report(code: "${code}") { ${chunkStr} } } }`
+      const res = await gql<{ reportData?: { report?: Record<string, PdBlock> } }>(env, q)
+      Object.assign(mergedPd, res.reportData?.report ?? {})
+    }
+    fightIds.forEach((fid, idx) => {
+      const fHealers = mergedPd[`pd_${idx}`]?.data?.playerDetails?.healers ?? []
+      const hmap: Record<number, string> = {}
+      for (const h of fHealers) {
+        hmap[Number(h.id)] = String(h.specs?.[0]?.spec ?? '')
+      }
+      healersByFight[fid] = hmap
+    })
+  })()
+
+  const escapedNames = healerNames.map((n) => JSON.stringify(n)).join(', ')
+  const castsPromise =
+    healerCastIds.length > 0
+      ? fetchEventsPaginated(
+          env,
+          code,
+          minStart,
+          maxEnd,
+          fightIds,
+          'Casts',
+          `(type = "cast" or type = "begincast") and source.name in (${escapedNames}) and ability.id in (${healerCastIds.join(', ')})`,
+          false,
+        )
+      : Promise.resolve<WclEvent[]>([])
+
+  const [, healerCasts] = await Promise.all([perFightPromise, castsPromise])
+
+  const lowHpByFight: Record<number, WclEvent[]> = {}
+  for (const ev of lowHpEvents) {
+    if (ev.fight == null) continue
+    const k = Number(ev.fight)
+    if (!lowHpByFight[k]) lowHpByFight[k] = []
+    lowHpByFight[k].push(ev)
+  }
+
+  const healerCastsByFight: Record<number, WclEvent[]> = {}
+  for (const ev of healerCasts) {
+    if (ev.fight == null) continue
+    const k = Number(ev.fight)
+    if (!healerCastsByFight[k]) healerCastsByFight[k] = []
+    healerCastsByFight[k].push(ev)
+  }
+
+  return {
+    healers_by_fight: healersByFight,
+    low_hp_damage_by_fight: lowHpByFight,
+    healer_casts_by_fight: healerCastsByFight,
+  }
+}
+
 export async function fetchAndAnalyzeReport(
   env: WclEnv,
   code: string,
@@ -685,6 +810,7 @@ export async function fetchAndAnalyzeReport(
   const consumableIds: number[] = []
   const p3DynamicIds: number[] = []
   const interruptIds: number[] = []
+  const healerCastIds: number[] = []
 
   for (const [gidStr, name] of Object.entries(abilities)) {
     const gid = Number(gidStr)
@@ -698,32 +824,31 @@ export async function fetchAndAnalyzeReport(
       p3DynamicIds.push(gid)
     }
     if (isInterruptSpell(name)) interruptIds.push(gid)
+    if (isHealerTrackedCast(name)) healerCastIds.push(gid)
   }
 
   defIds.sort((a, b) => a - b)
   consumableIds.sort((a, b) => a - b)
   p3DynamicIds.sort((a, b) => a - b)
   interruptIds.sort((a, b) => a - b)
+  healerCastIds.sort((a, b) => a - b)
 
   const allCoreIds = Array.from(new Set([...CORE_MECHANIC_IDS, ...p3DynamicIds])).sort((a, b) => a - b)
 
-  // Split HP-bearing damage events (includeResources: true) from non-HP mechanic events (includeResources: false)
-  // so WCL returns full 10k-event pages without hitting Cloudflare's subrequest budget on 40+ pull logs.
-  const hpDamageIdSet = new Set<number>([
-    ...Array.from(RAID_SPIKE_ABILITY_IDS),
-    SPELL_STONE_VENOM_DMG,
-    SPELL_MOTHERS_WRATH_DMG,
-  ])
-  const hpDamageIds = Array.from(hpDamageIdSet).sort((a, b) => a - b)
-  const nonHpDamageIds = allCoreIds.filter((id) => !hpDamageIdSet.has(id))
+  // Keep includeResources: true ONLY for <35% damage (covers all low_hp_spike, tank <30%, and healer emergency drops in ~2 pages!)
+  // plus Stone Venom / Mother's Wrath on tanks (~1 page for full tank-soak min_hp_pct).
+  // All remaining damage/debuff/cast mechanic events use includeResources: false (full 10k-event pages) to stay well under Cloudflare's 50-subrequest limit!
+  const tankSoakHpIds = [SPELL_STONE_VENOM_DMG, SPELL_MOTHERS_WRATH_DMG]
+  const tankSoakHpIdSet = new Set<number>(tankSoakHpIds)
+  const nonHpDamageIds = allCoreIds.filter((id) => !tankSoakHpIdSet.has(id))
 
-  const hpExpr = [
-    `(type = "damage" and ability.id in (${hpDamageIds.join(', ')}))`,
-    '(type = "damage" and ability.id = 1 and (source.name = "Ula\'tek" or source.name = "Gore Rattle"))',
-  ].join(' or ')
+  const lowHpExpr =
+    'type = "damage" and resources.hitPoints > 0 and resources.hitPoints * 100 < resources.maxHitPoints * 35'
+  const tankHpExpr = `type = "damage" and ability.id in (${tankSoakHpIds.join(', ')})`
 
   const nonHpParts = [
-    `(type != "damage" and ability.id in (${allCoreIds.join(', ')}))`,
+    `(type != "damage" and type != "death" and ability.id in (${allCoreIds.join(', ')}))`,
+    '(type = "damage" and ability.id = 1 and (source.name = "Ula\'tek" or source.name = "Gore Rattle"))',
     'type = "interrupt"',
     '(type = "death" and target.name = "Doomscale Warden")',
   ]
@@ -741,10 +866,10 @@ export async function fetchAndAnalyzeReport(
   const p2Fights = fights.filter((f) => (f.phaseTransitions ?? []).some((pt) => Number(pt.id) === 2))
   const p2FightIds = p2Fights.map((f) => Number(f.id))
 
-  // Batch defensive chunks (up to 70 IDs per filterExpression to stay compact & fast)
+  // Batch defensive chunks (up to 250 IDs per filterExpression to minimize subrequests)
   const defChunkPromises: Promise<WclEvent[]>[] = []
-  for (let i = 0; i < defIds.length; i += 70) {
-    const chunk = defIds.slice(i, i + 70).join(', ')
+  for (let i = 0; i < defIds.length; i += 250) {
+    const chunk = defIds.slice(i, i + 250).join(', ')
     const defExpr = `(type = "applybuff" or type = "removebuff" or type = "refreshbuff" or type = "applybuffstack") and ability.id in (${chunk})`
     defChunkPromises.push(
       fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'All', defExpr, false),
@@ -752,24 +877,26 @@ export async function fetchAndAnalyzeReport(
   }
 
   // Run independent event fetches concurrently
-  const [deaths, hpCoreEvents, nonHpCoreEvents, wardenDmgEvents, ...defChunks] = await Promise.all([
-    fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'Deaths', undefined, false),
-    fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'DamageTaken', hpExpr, true),
-    fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'All', nonHpExpr, false),
-    p2FightIds.length > 0
-      ? fetchEventsPaginated(
-          env,
-          code,
-          Math.min(...p2Fights.map((f) => Number(f.startTime))),
-          Math.max(...p2Fights.map((f) => Number(f.endTime))),
-          p2FightIds,
-          'DamageDone',
-          `type = "damage" and target.id = ${NPC_DOOMSCALE_WARDEN_GAME_ID}`,
-          false,
-        )
-      : Promise.resolve<WclEvent[]>([]),
-    ...defChunkPromises,
-  ])
+  const [deaths, lowHpEvents, tankHpEvents, nonHpCoreEvents, wardenDmgEvents, ...defChunks] =
+    await Promise.all([
+      fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'Deaths', undefined, false),
+      fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'DamageTaken', lowHpExpr, true),
+      fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'DamageTaken', tankHpExpr, true),
+      fetchEventsPaginated(env, code, minStart, maxEnd, fightIds, 'All', nonHpExpr, false),
+      p2FightIds.length > 0
+        ? fetchEventsPaginated(
+            env,
+            code,
+            Math.min(...p2Fights.map((f) => Number(f.startTime))),
+            Math.max(...p2Fights.map((f) => Number(f.endTime))),
+            p2FightIds,
+            'DamageDone',
+            `type = "damage" and target.id = ${NPC_DOOMSCALE_WARDEN_GAME_ID}`,
+            false,
+          )
+        : Promise.resolve<WclEvent[]>([]),
+      ...defChunkPromises,
+    ])
 
   const eventsByFight: Record<number, WclEvent[]> = {}
   const addEvent = (ev: WclEvent) => {
@@ -781,15 +908,33 @@ export async function fetchAndAnalyzeReport(
   }
 
   for (const ev of deaths) addEvent(ev)
-  for (const ev of hpCoreEvents) addEvent(ev)
+  for (const ev of tankHpEvents) addEvent(ev)
   for (const ev of nonHpCoreEvents) addEvent(ev)
+  // Feed HP-bearing <35% Raid-Spike and Boss/Gore Rattle Melee events into eventsByFight for low_hp_spike & tank <30% checks
+  for (const ev of lowHpEvents) {
+    const aid = ev.abilityGameID
+    const srcName = ev.sourceID !== undefined ? actors[ev.sourceID]?.name : undefined
+    if (
+      aid !== undefined &&
+      (RAID_SPIKE_ABILITY_IDS.has(aid) ||
+        (aid === 1 && (srcName === "Ula'tek" || srcName === 'Gore Rattle')))
+    ) {
+      addEvent(ev)
+    }
+  }
   for (const ev of wardenDmgEvents) addEvent(ev)
   for (const chunk of defChunks) {
     for (const ev of chunk) addEvent(ev)
   }
 
-  const extraTables = await fetchPhaseDamageTables(env, code, fights, actors, abilities, eventsByFight)
+  const [extraTables, healerBundle] = await Promise.all([
+    fetchPhaseDamageTables(env, code, fights, actors, abilities, eventsByFight),
+    fetchHealerReactionData(env, code, fights, minStart, maxEnd, fightIds, healerCastIds, lowHpEvents),
+  ])
   extraTables.ability_schools = abilitySchools
+  extraTables.healers_by_fight = healerBundle.healers_by_fight
+  extraTables.low_hp_damage_by_fight = healerBundle.low_hp_damage_by_fight
+  extraTables.healer_casts_by_fight = healerBundle.healer_casts_by_fight
 
   const meta = {
     title: report.title || code,

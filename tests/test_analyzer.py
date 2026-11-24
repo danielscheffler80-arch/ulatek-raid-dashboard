@@ -921,5 +921,181 @@ def test_defensive_pot_and_hs_reaction_at_low_hp_drop():
     assert by_p["Slacker"]["any_ready"] is True
 
 
+def test_defensive_deaths_deduplicated_and_avoidable_excluded():
+    meta = {"title": "Death Dedup & Avoidable Filter", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "WaveVictim", "type": "Player", "subType": "Hunter"},
+        2: {"id": 2, "name": "MembraneVictim", "type": "Player", "subType": "Mage"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {
+        1292403: "Caustic Waves",
+        1308275: "Putrid Membrane",
+        1286885: "Falling Debris",
+    }
+    fights = [
+        {"id": 60, "name": "Ula'tek", "startTime": 100000, "endTime": 200000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2]}
+    ]
+    events = [
+        # Duplicate avoidable Caustic Waves death (from Deaths + nonHpCoreEvents) -> MUST be excluded!
+        {"timestamp": 120000, "type": "death", "targetID": 1, "killerID": 152, "killingAbilityGameID": 1292403, "fight": 60},
+        {"timestamp": 120000, "type": "death", "targetID": 1, "killerID": 152, "killingAbilityGameID": 1292403, "fight": 60},
+        # Duplicate unavoidable Putrid Membrane death -> MUST appear exactly ONCE!
+        {"timestamp": 140000, "type": "death", "targetID": 2, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 60},
+        {"timestamp": 140000, "type": "death", "targetID": 2, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 60},
+    ]
+    rep = analyze_report_events(meta, fights, actors, abilities, {60: events}, "TESTDEDUP1234567")
+    deaths = [e for e in rep["defensive_events"] if e["kind"] == "death"]
+    assert len(deaths) == 1
+    assert deaths[0]["player"] == "MembraneVictim"
+    assert deaths[0]["trigger_ability"] == "Putrid Membrane"
+
+
+def test_healer_emergency_reactions_instant_cast_and_raid_burst_filter():
+    meta = {"title": "Healer Emergency Reactions", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "HolyVal", "type": "Player", "subType": "Priest"},
+        2: {"id": 2, "name": "RestoYav", "type": "Player", "subType": "Druid"},
+        3: {"id": 3, "name": "DeadSham", "type": "Player", "subType": "Shaman"},
+        10: {"id": 10, "name": "VictimA", "type": "Player", "subType": "Hunter"},
+        11: {"id": 11, "name": "VictimB", "type": "Player", "subType": "Mage"},
+        12: {"id": 12, "name": "VictimC", "type": "Player", "subType": "Warlock"},
+        13: {"id": 13, "name": "VictimD", "type": "Player", "subType": "Rogue"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {
+        1292403: "Caustic Waves",
+        1308275: "Putrid Membrane",
+        2050: "Holy Word: Serenity",
+        2061: "Flash Heal",
+        18562: "Swiftmend",
+        8936: "Regrowth",
+        61295: "Riptide",
+    }
+    fights = [
+        {
+            "id": 70,
+            "name": "Ula'tek",
+            "startTime": 100000,
+            "endTime": 260000,
+            "bossPercentage": 40.0,
+            "kill": False,
+            "friendlyPlayers": [1, 2, 3, 10, 11, 12, 13],
+        }
+    ]
+    events = [
+        # DeadSham dies at 105s before any drops -> must NOT be scored at 120s
+        {"timestamp": 105000, "type": "death", "targetID": 3, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 70},
+        # Isolated drop 1 at 120s: VictimA drops to 20% from Caustic Waves (only 1 player low -> counts!)
+        {"timestamp": 120000, "type": "damage", "sourceID": 152, "targetID": 10, "abilityGameID": 1292403, "amount": 500000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 70},
+        # Raid burst at 160s: 4 players drop <35% simultaneously -> MUST be excluded!
+        {"timestamp": 160000, "type": "damage", "sourceID": 152, "targetID": 10, "abilityGameID": 1308275, "amount": 500000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 70},
+        {"timestamp": 160100, "type": "damage", "sourceID": 152, "targetID": 11, "abilityGameID": 1308275, "amount": 500000, "hitPoints": 220000, "maxHitPoints": 1000000, "fight": 70},
+        {"timestamp": 160200, "type": "damage", "sourceID": 152, "targetID": 12, "abilityGameID": 1308275, "amount": 500000, "hitPoints": 250000, "maxHitPoints": 1000000, "fight": 70},
+        {"timestamp": 160300, "type": "damage", "sourceID": 152, "targetID": 13, "abilityGameID": 1308275, "amount": 500000, "hitPoints": 280000, "maxHitPoints": 1000000, "fight": 70},
+        # Isolated drop 2 at 190s: VictimB drops to 18% and DIES at 193s; nobody heals -> both living healers flagged!
+        {"timestamp": 190000, "type": "damage", "sourceID": 152, "targetID": 11, "abilityGameID": 1292403, "amount": 500000, "hitPoints": 180000, "maxHitPoints": 1000000, "fight": 70},
+        {"timestamp": 193000, "type": "death", "targetID": 11, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 70},
+    ]
+    healer_casts = [
+        # RestoYav already used Swiftmend at 115s (on 15s CD at 120s!) -> only Nature's Swiftness / Ironbark ready
+        {"timestamp": 115000, "type": "cast", "sourceID": 2, "targetID": 12, "abilityGameID": 18562, "fight": 70},
+        # At 120s drop on VictimA:
+        # HolyVal reacts in 650ms with Holy Word: Serenity (instant!)
+        {"timestamp": 120650, "type": "cast", "sourceID": 1, "targetID": 10, "abilityGameID": 2050, "fight": 70},
+        # RestoYav begins casting Regrowth at 121100 (targetID=-1) and finishes at 122300 on VictimA -> reaction 1100ms!
+        {"timestamp": 121100, "type": "begincast", "sourceID": 2, "targetID": -1, "abilityGameID": 8936, "fight": 70},
+        {"timestamp": 122300, "type": "cast", "sourceID": 2, "targetID": 10, "abilityGameID": 8936, "fight": 70},
+    ]
+    extra = {
+        "healers_by_fight": {70: {1: "Holy", 2: "Restoration", 3: "Restoration"}},
+        "low_hp_damage_by_fight": {70: [e for e in events if e.get("type") == "damage"]},
+        "healer_casts_by_fight": {70: healer_casts},
+    }
+    rep = analyze_report_events(meta, fights, actors, abilities, {70: events}, "TESTHEALEM123456", extra_tables=extra)
+    emerg = rep["healer_emergency_events"]
+    # Raid burst at 160s must be excluded -> only 2 isolated events (120s and 190s)
+    assert len(emerg) == 2
+
+    ev1 = emerg[0]
+    assert ev1["victim"] == "VictimA"
+    assert ev1["trigger_ability"] == "Caustic Waves"
+    assert ev1["target_died"] is False
+    assert ev1["fastest_reaction_ms"] == 650
+    assert ev1["fastest_healer"] == "HolyVal"
+    by_h1 = {r["healer"]: r for r in ev1["reactions"]}
+    assert "DeadSham" not in by_h1
+    assert by_h1["HolyVal"]["status"] == "instant_used"
+    assert by_h1["HolyVal"]["reaction_ms"] == 650
+    assert by_h1["HolyVal"]["spell"] == "Holy Word: Serenity"
+    assert by_h1["RestoYav"]["status"] == "cast_used"
+    assert by_h1["RestoYav"]["reaction_ms"] == 1100
+    assert by_h1["RestoYav"]["spell"] == "Regrowth"
+    assert "Swiftmend" not in by_h1["RestoYav"]["ready_instants"]
+
+    ev2 = emerg[1]
+    assert ev2["victim"] == "VictimB"
+    assert ev2["target_died"] is True
+    by_h2 = {r["healer"]: r for r in ev2["reactions"]}
+    assert by_h2["HolyVal"]["status"] == "no_heal"
+    assert by_h2["HolyVal"]["instant_was_ready"] is True
+    assert by_h2["HolyVal"]["covered_fast_by_other"] is False
+    assert by_h2["RestoYav"]["status"] == "no_heal"
+    assert "Swiftmend" in by_h2["RestoYav"]["ready_instants"]
+
+
+def test_healer_tank_soak_reactions_separate():
+    meta = {"title": "Healer Tank Soak Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "HolyVal", "type": "Player", "subType": "Priest"},
+        2: {"id": 2, "name": "RestoYav", "type": "Player", "subType": "Druid"},
+        25: {"id": 25, "name": "BossTank", "type": "Player", "subType": "DeathKnight"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {
+        1298417: "Stone Venom",
+        1298369: "Mother's Wrath",
+        2050: "Holy Word: Serenity",
+        47788: "Guardian Spirit",
+    }
+    fights = [
+        {"id": 71, "name": "Ula'tek", "startTime": 100000, "endTime": 200000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2, 25]}
+    ]
+    events = [
+        # BossTank takes Stone Venom + Mother's Wrath soak at 130s
+        {"timestamp": 130000, "type": "applydebuff", "sourceID": 152, "targetID": 25, "abilityGameID": 1298417, "stack": 1, "fight": 71},
+        {"timestamp": 130500, "type": "damage", "sourceID": 152, "targetID": 25, "abilityGameID": 1298369, "amount": 900000, "hitPoints": 250000, "maxHitPoints": 1000000, "fight": 71},
+        {"timestamp": 131500, "type": "applydebuffstack", "sourceID": 152, "targetID": 25, "abilityGameID": 1298417, "stack": 2, "fight": 71},
+    ]
+    healer_casts = [
+        # HolyVal heals BossTank with Guardian Spirit (external!) at 130400ms and Serenity at 131200ms
+        {"timestamp": 130400, "type": "cast", "sourceID": 1, "targetID": 25, "abilityGameID": 47788, "fight": 71},
+        {"timestamp": 131200, "type": "cast", "sourceID": 1, "targetID": 25, "abilityGameID": 2050, "fight": 71},
+        # RestoYav does NOT heal BossTank during soak!
+    ]
+    extra = {
+        "healers_by_fight": {71: {1: "Holy", 2: "Restoration"}},
+        "low_hp_damage_by_fight": {71: [events[1]]},
+        "healer_casts_by_fight": {71: healer_casts},
+    }
+    rep = analyze_report_events(meta, fights, actors, abilities, {71: events}, "TESTTANKSOAK1234", extra_tables=extra)
+    # Tank must NOT appear in non-tank emergency events
+    assert len(rep["healer_emergency_events"]) == 0
+    soaks = rep["healer_tank_soak_events"]
+    assert len(soaks) == 1
+    sk = soaks[0]
+    assert sk["tank"] == "BossTank"
+    assert sk["stacks"] == 2
+    assert sk["min_hp_pct"] == 25.0
+    by_h = {r["healer"]: r for r in sk["reactions"]}
+    assert by_h["HolyVal"]["healed"] is True
+    assert by_h["HolyVal"]["reaction_ms"] == 400
+    assert by_h["HolyVal"]["heal_count"] == 2
+    assert by_h["HolyVal"]["used_external"] is True
+    assert by_h["RestoYav"]["healed"] is False
+    assert by_h["RestoYav"]["heal_count"] == 0
+
+
+
 
 

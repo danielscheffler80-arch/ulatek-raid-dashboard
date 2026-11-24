@@ -34,9 +34,13 @@ import {
   ULATEK_ENCOUNTER_ID,
   defensiveMitigates,
   getDefensiveCooldownMs,
+  getHealerInstantSpecs,
   getInterruptCooldownMs,
   inferDamageSchool,
+  isAvoidableDefensiveDeath,
   isDefensiveBuff,
+  isHealerDirectHeal,
+  isHealerExternalSpell,
   isHealthPotion,
   isHealthstone,
   isInterruptSpell,
@@ -97,6 +101,9 @@ export interface ExtraTables {
   }[]
   warden_dmg_by_fight?: Record<number, Record<number, number>>
   p3_boss_dmg_by_fight?: Record<number, Record<number, number>>
+  healers_by_fight?: Record<number, Record<number, string>>
+  low_hp_damage_by_fight?: Record<number, WclEvent[]>
+  healer_casts_by_fight?: Record<number, WclEvent[]>
 }
 
 const LIVE_INACTIVE_MINUTES = 45
@@ -617,17 +624,23 @@ export function analyzeReportEventsTS(
 
     const playerDeaths: { ts: number; tid: number; ev: WclEvent }[] = []
     const deathsByPlayer = new Map<number, number[]>()
+    const seenDeathKeys = new Set<string>()
     for (const ev of fevs) {
       for (const idVal of [ev.sourceID, ev.targetID]) {
         if (idVal !== undefined && actors[idVal]?.type === 'Player') fightPlayers.add(idVal)
       }
       if (ev.type === 'death' && ev.targetID !== undefined && actors[ev.targetID]?.type === 'Player') {
-        playerDeaths.push({ ts: ev.timestamp, tid: ev.targetID, ev })
-        const list = deathsByPlayer.get(ev.targetID) ?? []
-        list.push(ev.timestamp)
-        deathsByPlayer.set(ev.targetID, list)
+        const dkey = `${ev.targetID}:${ev.timestamp}`
+        if (!seenDeathKeys.has(dkey)) {
+          seenDeathKeys.add(dkey)
+          playerDeaths.push({ ts: ev.timestamp, tid: ev.targetID, ev })
+          const list = deathsByPlayer.get(ev.targetID) ?? []
+          list.push(ev.timestamp)
+          deathsByPlayer.set(ev.targetID, list)
+        }
       }
     }
+    const seenDefDeathKeys = new Set<string>()
 
     for (const pid of fightPlayers) {
       playerPullsPresent.set(pid, (playerPullsPresent.get(pid) ?? 0) + 1)
@@ -1304,49 +1317,55 @@ export function analyzeReportEventsTS(
             }
           }
         } else if (t === 'death') {
-          const relMs = ts - fStart
-          const kaid = ev.killingAbilityGameID
-          const kabName = kaid !== undefined ? abilities[kaid] ?? String(kaid) : 'Unbekannt'
-          const dmgSchool = inferDamageSchool(kaid, abilitySchools)
-          const defsNow = Array.from(activeAllDefs.get(tid) ?? [])
-            .filter((d) => defensiveMitigates(d, dmgSchool))
-            .sort()
-          const { ready, potRdy, hsRdy } = computeReadiness(tid, ts, dmgSchool)
-          const usedPotHere = (potCastTsByP.get(tid) ?? []).some((pts) => pts >= ts - 3500 && pts <= ts)
-          const usedHsHere = (hsCastTsByP.get(tid) ?? []).some((hts) => hts >= ts - 3500 && hts <= ts)
-          const usedAnyHere = defsNow.length > 0 || usedPotHere || usedHsHere
-          const potRdyEff = potRdy && !usedPotHere
-          const hsRdyEff = hsRdy && !usedHsHere
-          const anyRdyEff = ready.length > 0 || potRdyEff || hsRdyEff
-          defensiveEvents.push({
-            id: `${reportCode}-${fid}-${tid}-${ts}-dt`,
-            kind: 'death',
-            player: actors[tid].name,
-            class: actors[tid].subType ?? '',
-            target_id: tid,
-            pull_num: pullNum,
-            fight_id: fid,
-            is_kill: isKill,
-            rel_time: formatRelTime(relMs),
-            rel_ms: relMs,
-            timestamp: ts,
-            deaths_before: countDeathsBefore(ts),
-            trigger_ability: kabName,
-            hp_pct: 0.0,
-            had_def_cd: defsNow.length > 0,
-            active_defs: defsNow,
-            used_pot_here: usedPotHere,
-            used_hs_here: usedHsHere,
-            used_any_here: usedAnyHere,
-            ready_defs: ready,
-            pot_ready: potRdyEff,
-            hs_ready: hsRdyEff,
-            any_ready: anyRdyEff,
-            pot_used_in_pull: (potCounts.get(tid) ?? 0) > 0,
-            hs_used_in_pull: (hsCounts.get(tid) ?? 0) > 0,
-            events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
-            replay_url: buildReplayUrl(reportCode, fid, relMs),
-          })
+          const dkey = `${tid}:${ts}`
+          if (!seenDefDeathKeys.has(dkey)) {
+            seenDefDeathKeys.add(dkey)
+            const relMs = ts - fStart
+            const kaid = ev.killingAbilityGameID
+            const kabName = kaid !== undefined ? abilities[kaid] ?? String(kaid) : 'Unbekannt'
+            if (!isAvoidableDefensiveDeath(kaid, kabName)) {
+              const dmgSchool = inferDamageSchool(kaid, abilitySchools)
+              const defsNow = Array.from(activeAllDefs.get(tid) ?? [])
+                .filter((d) => defensiveMitigates(d, dmgSchool))
+                .sort()
+              const { ready, potRdy, hsRdy } = computeReadiness(tid, ts, dmgSchool)
+              const usedPotHere = (potCastTsByP.get(tid) ?? []).some((pts) => pts >= ts - 3500 && pts <= ts)
+              const usedHsHere = (hsCastTsByP.get(tid) ?? []).some((hts) => hts >= ts - 3500 && hts <= ts)
+              const usedAnyHere = defsNow.length > 0 || usedPotHere || usedHsHere
+              const potRdyEff = potRdy && !usedPotHere
+              const hsRdyEff = hsRdy && !usedHsHere
+              const anyRdyEff = ready.length > 0 || potRdyEff || hsRdyEff
+              defensiveEvents.push({
+                id: `${reportCode}-${fid}-${tid}-${ts}-dt`,
+                kind: 'death',
+                player: actors[tid].name,
+                class: actors[tid].subType ?? '',
+                target_id: tid,
+                pull_num: pullNum,
+                fight_id: fid,
+                is_kill: isKill,
+                rel_time: formatRelTime(relMs),
+                rel_ms: relMs,
+                timestamp: ts,
+                deaths_before: countDeathsBefore(ts),
+                trigger_ability: kabName,
+                hp_pct: 0.0,
+                had_def_cd: defsNow.length > 0,
+                active_defs: defsNow,
+                used_pot_here: usedPotHere,
+                used_hs_here: usedHsHere,
+                used_any_here: usedAnyHere,
+                ready_defs: ready,
+                pot_ready: potRdyEff,
+                hs_ready: hsRdyEff,
+                any_ready: anyRdyEff,
+                pot_used_in_pull: (potCounts.get(tid) ?? 0) > 0,
+                hs_used_in_pull: (hsCounts.get(tid) ?? 0) > 0,
+                events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
+                replay_url: buildReplayUrl(reportCode, fid, relMs),
+              })
+            }
+          }
         }
       }
     }
@@ -1808,6 +1827,15 @@ export function analyzeReportEventsTS(
     eggFails,
     reportCode,
   )
+  const { healersOut, healerEmergencyEvents, healerTankSoakEvents } = buildHealerAnalysis(
+    sortedFights,
+    actors,
+    abilities,
+    eventsByFight,
+    tankIdSet,
+    extraTables,
+    reportCode,
+  )
 
   return {
     code: reportCode,
@@ -1824,6 +1852,7 @@ export function analyzeReportEventsTS(
     wipes_count: pullsOut.length - killsCount,
     kills_count: killsCount,
     tanks: tankIds.map((tid) => ({ id: tid, name: actors[tid].name, class: actors[tid].subType ?? '' })),
+    healers: healersOut,
     players: Array.from(playerPullsPresent.entries())
       .map(([pid, pulls_present]) => ({
         id: pid,
@@ -1841,10 +1870,501 @@ export function analyzeReportEventsTS(
     wave_fails: waveFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     tank_fails: tankFails.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     defensive_events: defensiveEvents.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
+    healer_emergency_events: healerEmergencyEvents,
+    healer_tank_soak_events: healerTankSoakEvents,
     consumable_usage: consumableUsage,
     heart_phases: heartPhases.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.window_num as number) - (b.window_num as number)),
     phase_events: phaseEvents.sort((a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number)),
     warden_summaries: wardenSummaries.sort((a, b) => (a.pull_num as number) - (b.pull_num as number)),
     p3_summaries: p3Summaries.sort((a, b) => (a.pull_num as number) - (b.pull_num as number)),
   }
+}
+
+function buildHealerAnalysis(
+  sortedFights: WclFight[],
+  actors: Record<number, WclActor>,
+  abilities: Record<number, string>,
+  eventsByFight: Record<number, WclEvent[]>,
+  tankIdSet: Set<number>,
+  extraTables: ExtraTables,
+  reportCode: string,
+): {
+  healersOut: { id: number; name: string; class: string; spec: string; pulls: number }[]
+  healerEmergencyEvents: Record<string, unknown>[]
+  healerTankSoakEvents: Record<string, unknown>[]
+} {
+  const rawHbf = extraTables.healers_by_fight ?? {}
+  const healersByFight = new Map<number, Map<number, string>>()
+  for (const [fidStr, hmap] of Object.entries(rawHbf)) {
+    if (!hmap || typeof hmap !== 'object') continue
+    const m = new Map<number, string>()
+    for (const [pidStr, spec] of Object.entries(hmap)) {
+      m.set(Number(pidStr), String(spec || ''))
+    }
+    healersByFight.set(Number(fidStr), m)
+  }
+
+  if (healersByFight.size === 0) {
+    return { healersOut: [], healerEmergencyEvents: [], healerTankSoakEvents: [] }
+  }
+
+  const lowHpByFight = new Map<number, WclEvent[]>()
+  for (const [fidStr, list] of Object.entries(extraTables.low_hp_damage_by_fight ?? {})) {
+    lowHpByFight.set(Number(fidStr), Array.isArray(list) ? list : [])
+  }
+  const hcastsByFight = new Map<number, WclEvent[]>()
+  for (const [fidStr, list] of Object.entries(extraTables.healer_casts_by_fight ?? {})) {
+    hcastsByFight.set(Number(fidStr), Array.isArray(list) ? list : [])
+  }
+
+  // Known spells cast by each healer across the report (for talented/optional instant CDs)
+  const knownHealerSpells = new Map<number, Set<string>>()
+  for (const cevs of hcastsByFight.values()) {
+    for (const ev of cevs) {
+      if (ev.type !== 'cast' || ev.sourceID === undefined) continue
+      const aid = ev.abilityGameID
+      const abLow = (aid !== undefined ? abilities[aid] ?? '' : '').trim().toLowerCase()
+      if (!abLow) continue
+      const s = knownHealerSpells.get(ev.sourceID) ?? new Set<string>()
+      s.add(abLow)
+      knownHealerSpells.set(ev.sourceID, s)
+    }
+  }
+
+  const healerPullCounts = new Map<number, number>()
+  const healerSpecCounts = new Map<number, Map<string, number>>()
+  for (const hmap of healersByFight.values()) {
+    for (const [hid, spec] of hmap.entries()) {
+      if (actors[hid]?.type === 'Player') {
+        healerPullCounts.set(hid, (healerPullCounts.get(hid) ?? 0) + 1)
+        if (spec) {
+          const sc = healerSpecCounts.get(hid) ?? new Map<string, number>()
+          sc.set(spec, (sc.get(spec) ?? 0) + 1)
+          healerSpecCounts.set(hid, sc)
+        }
+      }
+    }
+  }
+
+  const healersOut = Array.from(healerPullCounts.entries())
+    .map(([hid, pulls]) => {
+      const sc = healerSpecCounts.get(hid)
+      let bestSpec = ''
+      let bestCnt = -1
+      if (sc) {
+        for (const [sp, cnt] of sc.entries()) {
+          if (cnt > bestCnt) {
+            bestCnt = cnt
+            bestSpec = sp
+          }
+        }
+      }
+      return {
+        id: hid,
+        name: actors[hid].name,
+        class: actors[hid].subType ?? '',
+        spec: bestSpec,
+        pulls,
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const emergencyEvents: Record<string, unknown>[] = []
+  const tankSoakEvents: Record<string, unknown>[] = []
+
+  sortedFights.forEach((fight, idx) => {
+    const pullNum = idx + 1
+    const fid = fight.id
+    const fStart = fight.startTime
+    const fEnd = fight.endTime
+    const isKill = Boolean(fight.kill)
+
+    const fightHealers = new Map<number, string>()
+    for (const [hid, spec] of (healersByFight.get(fid) ?? new Map<number, string>()).entries()) {
+      if (actors[hid]?.type === 'Player') fightHealers.set(hid, spec)
+    }
+    if (fightHealers.size === 0) return
+
+    const fevs = [...(eventsByFight[fid] ?? [])].sort((a, b) => a.timestamp - b.timestamp)
+
+    // Deduplicated deaths
+    const playerDeaths: { ts: number; tid: number }[] = []
+    const deathsByPlayer = new Map<number, number[]>()
+    const seenDk = new Set<string>()
+    for (const ev of fevs) {
+      if (ev.type === 'death' && ev.targetID !== undefined && actors[ev.targetID]?.type === 'Player') {
+        const dk = `${ev.targetID}:${ev.timestamp}`
+        if (!seenDk.has(dk)) {
+          seenDk.add(dk)
+          playerDeaths.push({ ts: ev.timestamp, tid: ev.targetID })
+          const list = deathsByPlayer.get(ev.targetID) ?? []
+          list.push(ev.timestamp)
+          deathsByPlayer.set(ev.targetID, list)
+        }
+      }
+    }
+    const countDeathsBefore = (tsNow: number) => playerDeaths.reduce((c, d) => c + (d.ts < tsNow ? 1 : 0), 0)
+
+    const rawCasts =
+      hcastsByFight.get(fid) ??
+      fevs.filter((ev) => (ev.type === 'cast' || ev.type === 'begincast') && ev.sourceID !== undefined && fightHealers.has(ev.sourceID))
+    const sortedCasts = [...rawCasts].sort((a, b) => a.timestamp - b.timestamp)
+
+    const recentBegincast = new Map<string, number>()
+    const healerAllCastTs = new Map<number, number[]>()
+    const healerCdCasts = new Map<number, Map<string, number[]>>()
+    interface TargetedHeal {
+      start_ts: number
+      cast_ts: number
+      target_id: number
+      spell: string
+      is_hardcast: boolean
+      is_external: boolean
+    }
+    const healerTargetedHeals = new Map<number, TargetedHeal[]>()
+
+    for (const ev of sortedCasts) {
+      const src = ev.sourceID
+      if (src === undefined || !fightHealers.has(src)) continue
+      const ts = ev.timestamp
+      const aid = ev.abilityGameID ?? 0
+      if (ev.type === 'begincast') {
+        recentBegincast.set(`${src}:${aid}`, ts)
+        const allList = healerAllCastTs.get(src) ?? []
+        allList.push(ts)
+        healerAllCastTs.set(src, allList)
+        continue
+      }
+      if (ev.type !== 'cast') continue
+
+      const allList = healerAllCastTs.get(src) ?? []
+      allList.push(ts)
+      healerAllCastTs.set(src, allList)
+
+      const abName = (abilities[aid] ?? '').trim()
+      const abLow = abName.toLowerCase()
+      if (abLow) {
+        const cdMap = healerCdCasts.get(src) ?? new Map<string, number[]>()
+        const tsList = cdMap.get(abLow) ?? []
+        tsList.push(ts)
+        cdMap.set(abLow, tsList)
+        healerCdCasts.set(src, cdMap)
+      }
+
+      const tid = ev.targetID
+      if (tid !== undefined && actors[tid]?.type === 'Player' && isHealerDirectHeal(abName)) {
+        const bcTs = recentBegincast.get(`${src}:${aid}`)
+        let isHardcast = false
+        let startTs = ts
+        if (bcTs !== undefined && ts - bcTs >= 150 && ts - bcTs <= 3500) {
+          isHardcast = true
+          startTs = bcTs
+        }
+        const hList = healerTargetedHeals.get(src) ?? []
+        hList.push({
+          start_ts: startTs,
+          cast_ts: ts,
+          target_id: tid,
+          spell: abName,
+          is_hardcast: isHardcast,
+          is_external: isHealerExternalSpell(abName),
+        })
+        healerTargetedHeals.set(src, hList)
+      }
+    }
+
+    const isHealerDeadAt = (hid: number, tsNow: number): boolean => {
+      const dlist = (deathsByPlayer.get(hid) ?? []).filter((dts) => dts <= tsNow)
+      if (dlist.length === 0) return false
+      const lastDeath = Math.max(...dlist)
+      return !(healerAllCastTs.get(hid) ?? []).some((cts) => cts > lastDeath && cts <= tsNow)
+    }
+
+    const computeReadyInstants = (hid: number, tsNow: number): string[] => {
+      const cls = actors[hid].subType ?? ''
+      const spec = fightHealers.get(hid) ?? ''
+      const specs = getHealerInstantSpecs(cls, spec)
+      const known = knownHealerSpells.get(hid) ?? new Set<string>()
+      const cdMap = healerCdCasts.get(hid)
+      const ready: string[] = []
+      for (const entry of specs) {
+        const sname = entry.name
+        const slow = sname.toLowerCase()
+        if (!entry.baseline && !known.has(slow)) continue
+        let recharges: number[] = []
+        for (const cts of cdMap?.get(slow) ?? []) {
+          if (cts >= tsNow) break
+          recharges = recharges.filter((r) => r > cts)
+          const base = recharges.length > 0 ? recharges[recharges.length - 1] : cts
+          recharges.push(base + entry.cd_ms)
+          if (recharges.length > entry.charges) {
+            recharges = recharges.slice(-entry.charges)
+          }
+        }
+        const activeRecharges = recharges.filter((r) => r > tsNow)
+        if (activeRecharges.length < entry.charges) {
+          ready.push(sname)
+        }
+      }
+      return ready
+    }
+
+    const sortedHealerIds = Array.from(fightHealers.keys()).sort((a, b) =>
+      actors[a].name.localeCompare(actors[b].name),
+    )
+
+    // ---- Part A: Emergency Heals (isolated non-tank <35% drops, <= 3 unique players low in +-2s) ----
+    const rawLow = lowHpByFight.get(fid) ?? fevs.filter((ev) => ev.type === 'damage')
+    const lowHits: { ts: number; tid: number; hpPct: number; abName: string }[] = []
+    for (const ev of [...rawLow].sort((a, b) => a.timestamp - b.timestamp)) {
+      if (ev.type !== 'damage') continue
+      const tid = ev.targetID
+      if (tid === undefined || actors[tid]?.type !== 'Player') continue
+      const hp = ev.hitPoints
+      const mhp = ev.maxHitPoints
+      if (hp === undefined || !mhp || mhp <= 0) continue
+      const hpPct = Math.round((hp / mhp) * 1000) / 10
+      if (hpPct > 0.0 && hpPct < 35.0) {
+        const aid = ev.abilityGameID
+        const abName = (aid !== undefined ? abilities[aid] ?? String(aid) : 'Unbekannt') || 'Unbekannt'
+        lowHits.push({ ts: ev.timestamp, tid, hpPct, abName })
+      }
+    }
+
+    const lastEmergTsByVictim = new Map<number, number>()
+    let winL = 0
+    let winR = 0
+    for (const hit of lowHits) {
+      const { ts, tid, hpPct, abName } = hit
+      if (tankIdSet.has(tid)) continue
+      while (winL < lowHits.length && lowHits[winL].ts < ts - 2000) winL++
+      while (winR < lowHits.length && lowHits[winR].ts <= ts + 2000) winR++
+      const concurrentLow = new Set<number>()
+      for (let k = winL; k < winR; k++) {
+        concurrentLow.add(lowHits[k].tid)
+      }
+      if (concurrentLow.size > 3) continue
+      if (ts - (lastEmergTsByVictim.get(tid) ?? -999_999) < 4000) continue
+      lastEmergTsByVictim.set(tid, ts)
+
+      const targetDied = (deathsByPlayer.get(tid) ?? []).some((dts) => dts >= ts && dts <= ts + 4500)
+      const reactions: Record<string, unknown>[] = []
+
+      for (const hid of sortedHealerIds) {
+        if (hid === tid || isHealerDeadAt(hid, ts)) continue
+        const readyInst = computeReadyInstants(hid, ts)
+        const matchedHeal = (healerTargetedHeals.get(hid) ?? []).find(
+          (h) => h.target_id === tid && h.cast_ts >= ts && h.start_ts >= ts - 500 && h.start_ts <= ts + 4000,
+        )
+        if (matchedHeal) {
+          const rxMs = Math.max(0, matchedHeal.start_ts - ts)
+          reactions.push({
+            healer: actors[hid].name,
+            healer_class: actors[hid].subType ?? '',
+            healer_spec: fightHealers.get(hid) ?? '',
+            healer_id: hid,
+            status: matchedHeal.is_hardcast ? 'cast_used' : 'instant_used',
+            reaction_ms: rxMs,
+            spell: matchedHeal.spell,
+            is_external: matchedHeal.is_external,
+            instant_was_ready: readyInst.length > 0,
+            ready_instants: readyInst,
+            covered_fast_by_other: false,
+          })
+        } else {
+          reactions.push({
+            healer: actors[hid].name,
+            healer_class: actors[hid].subType ?? '',
+            healer_spec: fightHealers.get(hid) ?? '',
+            healer_id: hid,
+            status: 'no_heal',
+            reaction_ms: null,
+            spell: null,
+            is_external: false,
+            instant_was_ready: readyInst.length > 0,
+            ready_instants: readyInst,
+            covered_fast_by_other: false,
+          })
+        }
+      }
+
+      if (reactions.length === 0) continue
+
+      const reacted = reactions.filter((r) => r.reaction_ms !== null)
+      let fastest: Record<string, unknown> | null = null
+      for (const r of reacted) {
+        if (!fastest || (r.reaction_ms as number) < (fastest.reaction_ms as number)) fastest = r
+      }
+      const fastestMs = fastest ? (fastest.reaction_ms as number) : null
+      if (!targetDied && fastestMs !== null && fastestMs <= 1200) {
+        for (const r of reactions) {
+          if (r.status === 'no_heal') r.covered_fast_by_other = true
+        }
+      }
+
+      const relMs = ts - fStart
+      emergencyEvents.push({
+        id: `${reportCode}-${fid}-${tid}-${ts}-hem`,
+        pull_num: pullNum,
+        fight_id: fid,
+        is_kill: isKill,
+        rel_time: formatRelTime(relMs),
+        rel_ms: relMs,
+        timestamp: ts,
+        deaths_before: countDeathsBefore(ts),
+        victim: actors[tid].name,
+        victim_class: actors[tid].subType ?? '',
+        victim_id: tid,
+        trigger_ability: abName,
+        hp_pct: hpPct,
+        concurrent_low_count: concurrentLow.size,
+        target_died: targetDied,
+        fastest_reaction_ms: fastestMs,
+        fastest_healer: fastest ? (fastest.healer as string) : null,
+        fastest_healer_class: fastest ? (fastest.healer_class as string) : null,
+        reactions,
+        events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
+        replay_url: buildReplayUrl(reportCode, fid, relMs),
+      })
+    }
+
+    // ---- Part B: Boss-Tank Soak Heal (Mother's Wrath / Stone Venom windows) ----
+    interface SoakWindow {
+      tank_id: number
+      start_ts: number
+      last_stack_ts: number
+      stacks: number
+    }
+    const soakWindows: SoakWindow[] = []
+    const activeWinByTank = new Map<number, SoakWindow>()
+    const flushSoak = (tkId: number) => {
+      const w = activeWinByTank.get(tkId)
+      if (w) {
+        activeWinByTank.delete(tkId)
+        soakWindows.push(w)
+      }
+    }
+
+    for (const ev of fevs) {
+      const tid = ev.targetID
+      if (tid === undefined || !tankIdSet.has(tid)) continue
+      const t = ev.type
+      const aid = ev.abilityGameID
+      const ts = ev.timestamp
+      const isSoakEv =
+        (aid === SPELL_STONE_VENOM_DEBUFF && (t === 'applydebuff' || t === 'applydebuffstack')) ||
+        (aid === SPELL_MOTHERS_WRATH_DMG && t === 'damage')
+      if (isSoakEv) {
+        let cur = activeWinByTank.get(tid)
+        if (cur && ts - cur.last_stack_ts > 3000) {
+          flushSoak(tid)
+          cur = undefined
+        }
+        if (!cur) {
+          const st = aid === SPELL_STONE_VENOM_DEBUFF ? Math.max(1, ev.stack ?? 1) : 1
+          activeWinByTank.set(tid, { tank_id: tid, start_ts: ts, last_stack_ts: ts, stacks: st })
+        } else {
+          cur.last_stack_ts = ts
+          if (aid === SPELL_STONE_VENOM_DEBUFF) {
+            if (ev.stack !== undefined) cur.stacks = Math.max(cur.stacks, ev.stack)
+            else if (t === 'applydebuffstack') cur.stacks += 1
+          }
+        }
+      }
+    }
+    for (const tkId of Array.from(activeWinByTank.keys())) flushSoak(tkId)
+
+    const tankHpSamples = new Map<number, { ts: number; pct: number }[]>()
+    for (const srcList of [fevs, rawLow]) {
+      for (const ev of srcList) {
+        if (ev.type !== 'damage') continue
+        const tid = ev.targetID
+        if (tid === undefined || !tankIdSet.has(tid)) continue
+        if (ev.hitPoints !== undefined && ev.maxHitPoints && ev.maxHitPoints > 0) {
+          const list = tankHpSamples.get(tid) ?? []
+          list.push({ ts: ev.timestamp, pct: Math.round((ev.hitPoints / ev.maxHitPoints) * 1000) / 10 })
+          tankHpSamples.set(tid, list)
+        }
+      }
+    }
+
+    soakWindows.sort((a, b) => a.start_ts - b.start_ts)
+    for (const w of soakWindows) {
+      const tkId = w.tank_id
+      const wStart = w.start_ts
+      const wEnd = w.last_stack_ts + 5000
+      const hpVals = (tankHpSamples.get(tkId) ?? [])
+        .filter((s) => s.ts >= wStart && s.ts <= wEnd)
+        .map((s) => s.pct)
+      const minHpPct = hpVals.length > 0 ? Math.min(...hpVals) : null
+      const tankDied = (deathsByPlayer.get(tkId) ?? []).some((dts) => dts >= wStart && dts <= wEnd)
+
+      const soakRx: Record<string, unknown>[] = []
+      for (const hid of sortedHealerIds) {
+        if (isHealerDeadAt(hid, wStart)) continue
+        const matched = (healerTargetedHeals.get(hid) ?? []).filter(
+          (h) => h.target_id === tkId && h.cast_ts >= wStart - 1000 && h.cast_ts <= wEnd && h.start_ts <= wEnd,
+        )
+        const healed = matched.length > 0
+        const rxMs = healed ? Math.max(0, matched[0].start_ts - wStart) : null
+        const usedExt = matched.some((m) => m.is_external)
+        const uniqSpells: string[] = []
+        for (const m of matched) {
+          if (!uniqSpells.includes(m.spell)) uniqSpells.push(m.spell)
+          if (uniqSpells.length >= 4) break
+        }
+        soakRx.push({
+          healer: actors[hid].name,
+          healer_class: actors[hid].subType ?? '',
+          healer_spec: fightHealers.get(hid) ?? '',
+          healer_id: hid,
+          healed,
+          reaction_ms: rxMs,
+          heal_count: matched.length,
+          used_external: usedExt,
+          spells: uniqSpells,
+        })
+      }
+
+      if (soakRx.length === 0) continue
+
+      const healedList = soakRx.filter((r) => r.healed && r.reaction_ms !== null)
+      let fastestTk: Record<string, unknown> | null = null
+      for (const r of healedList) {
+        if (!fastestTk || (r.reaction_ms as number) < (fastestTk.reaction_ms as number)) fastestTk = r
+      }
+      const relMs = wStart - fStart
+      tankSoakEvents.push({
+        id: `${reportCode}-${fid}-${tkId}-${wStart}-hts`,
+        pull_num: pullNum,
+        fight_id: fid,
+        is_kill: isKill,
+        rel_time: formatRelTime(relMs),
+        rel_ms: relMs,
+        timestamp: wStart,
+        deaths_before: countDeathsBefore(wStart),
+        tank: actors[tkId].name,
+        tank_class: actors[tkId].subType ?? '',
+        tank_id: tkId,
+        stacks: w.stacks,
+        min_hp_pct: minHpPct,
+        tank_died: tankDied,
+        any_healed: healedList.length > 0,
+        healers_reacted_count: healedList.length,
+        fastest_reaction_ms: fastestTk ? (fastestTk.reaction_ms as number) : null,
+        fastest_healer: fastestTk ? (fastestTk.healer as string) : null,
+        reactions: soakRx,
+        events_url: buildEventsUrl(reportCode, fid, tkId, wStart, fStart, fEnd),
+        replay_url: buildReplayUrl(reportCode, fid, relMs),
+      })
+    }
+  })
+
+  emergencyEvents.sort(
+    (a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number),
+  )
+  tankSoakEvents.sort(
+    (a, b) => (a.pull_num as number) - (b.pull_num as number) || (a.timestamp as number) - (b.timestamp as number),
+  )
+  return { healersOut, healerEmergencyEvents: emergencyEvents, healerTankSoakEvents: tankSoakEvents }
 }

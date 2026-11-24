@@ -19,6 +19,7 @@ import { EggFailsTab } from './components/EggFailsTab'
 import { WaveFailsTab } from './components/WaveFailsTab'
 import { TankFailsTab } from './components/TankFailsTab'
 import { DefensivesTab } from './components/DefensivesTab'
+import { HealersTab } from './components/HealersTab'
 import { HeartPhaseTab } from './components/HeartPhaseTab'
 import { PhasesTab } from './components/PhasesTab'
 import { PullsTab } from './components/PullsTab'
@@ -29,6 +30,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'wave', label: 'Wave Fails' },
   { key: 'tank', label: 'Tank Fails' },
   { key: 'defensives', label: 'Def CD / Pot / HS' },
+  { key: 'healers', label: 'Heiler' },
   { key: 'heart', label: 'Herzphase' },
   { key: 'phases', label: 'P2 / P3 & Kicks' },
   { key: 'pulls', label: 'Try-Übersicht' },
@@ -58,6 +60,7 @@ export default function App() {
     wave: 4,
     tank: 4,
     defensives: 4,
+    healers: 4,
     heart: 4,
     phases: 4,
     pulls: 4,
@@ -508,6 +511,15 @@ export default function App() {
               )}
               {activeTab === 'defensives' && (
                 <DefensivesTab
+                  reports={activeReports}
+                  isMultiReport={isMultiReport}
+                  searchQuery={searchQuery}
+                  maxDeaths={currentMaxDeaths}
+                  pullRange={pullRange}
+                />
+              )}
+              {activeTab === 'healers' && (
+                <HealersTab
                   reports={activeReports}
                   isMultiReport={isMultiReport}
                   searchQuery={searchQuery}

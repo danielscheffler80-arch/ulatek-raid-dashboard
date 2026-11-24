@@ -41,6 +41,7 @@ from scripts.spells_config import (
     SPELL_STONE_VENOM_DMG,
     SPELL_VENOMOUS_HEART_BUFF,
     is_defensive_buff,
+    is_healer_tracked_cast,
     is_health_potion,
     is_healthstone,
     is_interrupt_spell,
@@ -264,7 +265,7 @@ class WCLClient:
         all_core_ids = sorted(set(CORE_MECHANIC_IDS) | set(p3_dynamic_ids))
         core_id_list = ", ".join(str(i) for i in all_core_ids)
         parts = [
-            f"ability.id in ({core_id_list})",
+            f'(type != "death" and ability.id in ({core_id_list}))',
             '(type = "damage" and ability.id = 1 and (source.name = "Ula\'tek" or source.name = "Gore Rattle"))',
             'type = "interrupt"',
             '(type = "death" and target.name = "Doomscale Warden")',
@@ -341,12 +342,135 @@ class WCLClient:
         extra_tables = self._fetch_phase_damage_tables(code, fights, actors, abilities, events_by_fight)
         extra_tables["ability_schools"] = ability_schools
 
+        # 5. Healer roles per fight + <35% damage events + healer cast/begincast events
+        healer_cast_ids = sorted(gid for gid, name in abilities.items() if is_healer_tracked_cast(name))
+        healer_bundle = self._fetch_healer_reaction_data(code, fights, min_start, max_end, fight_ids, healer_cast_ids)
+        extra_tables.update(healer_bundle)
+
         meta = {
             "title": report.get("title", code),
             "startTime": report.get("startTime", 0),
             "endTime": report.get("endTime", 0),
         }
         return meta, fights, actors, abilities, events_by_fight, extra_tables
+
+    def _fetch_healer_reaction_data(
+        self,
+        code: str,
+        fights: list[dict[str, Any]],
+        min_start: int,
+        max_end: int,
+        fight_ids: list[int],
+        healer_cast_ids: list[int],
+    ) -> dict[str, Any]:
+        """Fetch per-fight healer specs, all <35% HP damage events, and healer cast/begincast events."""
+        q_pd = f"""
+        query {{
+          reportData {{
+            report(code: "{code}") {{
+              playerDetails(fightIDs: {json.dumps(fight_ids)}, includeCombatantInfo: false)
+            }}
+          }}
+        }}
+        """
+        pd_root = (
+            (self.gql(q_pd).get("reportData") or {})
+            .get("report", {})
+            .get("playerDetails", {})
+            .get("data", {})
+            .get("playerDetails", {})
+        )
+        all_healers = pd_root.get("healers") or []
+        if not all_healers:
+            return {
+                "healers_by_fight": {},
+                "low_hp_damage_by_fight": {},
+                "healer_casts_by_fight": {},
+            }
+
+        healer_names = sorted({str(h["name"]) for h in all_healers if h.get("name")})
+        healers_by_fight: dict[int, dict[int, str]] = {}
+
+        # Check if every healer healed every fight; if someone role-swapped (e.g. Resto/Ele), query per-fight aliases
+        total_fights = len(fights)
+        needs_per_fight = any(
+            sum(int(s.get("count", 0) or 0) for s in (h.get("specs") or [])) < total_fights
+            for h in all_healers
+        )
+
+        if not needs_per_fight:
+            base_map: dict[int, str] = {}
+            for h in all_healers:
+                specs = h.get("specs") or []
+                spec_name = str(specs[0].get("spec", "")) if specs else ""
+                base_map[int(h["id"])] = spec_name
+            for fid in fight_ids:
+                healers_by_fight[fid] = dict(base_map)
+        else:
+            aliases = [
+                f"pd_{idx}: playerDetails(fightIDs: [{fid}], includeCombatantInfo: false)"
+                for idx, fid in enumerate(fight_ids)
+            ]
+            merged_pd: dict[str, Any] = {}
+            for i in range(0, len(aliases), 20):
+                chunk_str = "\n".join(aliases[i : i + 20])
+                q = f'query {{ reportData {{ report(code: "{code}") {{ {chunk_str} }} }} }}'
+                res = self.gql(q)["reportData"]["report"] or {}
+                merged_pd.update(res)
+            for idx, fid in enumerate(fight_ids):
+                f_pd = ((merged_pd.get(f"pd_{idx}") or {}).get("data") or {}).get("playerDetails") or {}
+                hmap: dict[int, str] = {}
+                for h in f_pd.get("healers") or []:
+                    specs = h.get("specs") or []
+                    hmap[int(h["id"])] = str(specs[0].get("spec", "")) if specs else ""
+                healers_by_fight[fid] = hmap
+
+        # All <35% HP damage events across all fights (2 pages for 40 pulls)
+        hp_expr = 'type = "damage" and resources.hitPoints > 0 and resources.hitPoints * 100 < resources.maxHitPoints * 35'
+        low_hp_events = self._fetch_events_paginated(
+            code,
+            min_start,
+            max_end,
+            fight_ids,
+            data_type="DamageTaken",
+            filter_expression=hp_expr,
+            include_resources=True,
+        )
+        low_hp_by_fight: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for ev in low_hp_events:
+            fid = ev.get("fight")
+            if fid is not None:
+                low_hp_by_fight[int(fid)].append(ev)
+
+        # Filtered healer casts & begincasts (only direct heals + tracked instant CDs -> 1-2 pages)
+        healer_casts_by_fight: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        if healer_cast_ids:
+            escaped_names = ", ".join(json.dumps(n) for n in healer_names)
+            hc_id_list = ", ".join(str(i) for i in healer_cast_ids)
+            casts_expr = (
+                f'(type = "cast" or type = "begincast") '
+                f"and source.name in ({escaped_names}) "
+                f"and ability.id in ({hc_id_list})"
+            )
+            healer_casts = self._fetch_events_paginated(
+                code,
+                min_start,
+                max_end,
+                fight_ids,
+                data_type="Casts",
+                filter_expression=casts_expr,
+                include_resources=False,
+            )
+            for ev in healer_casts:
+                fid = ev.get("fight")
+                if fid is not None:
+                    healer_casts_by_fight[int(fid)].append(ev)
+
+        return {
+            "healers_by_fight": healers_by_fight,
+            "low_hp_damage_by_fight": dict(low_hp_by_fight),
+            "healer_casts_by_fight": dict(healer_casts_by_fight),
+        }
 
     def _fetch_phase_damage_tables(
         self,

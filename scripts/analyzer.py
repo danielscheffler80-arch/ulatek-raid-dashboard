@@ -42,9 +42,13 @@ from scripts.spells_config import (
     ULATEK_ENCOUNTER_ID,
     defensive_mitigates,
     get_defensive_cooldown_ms,
+    get_healer_instant_specs,
     get_interrupt_cooldown_ms,
     infer_damage_school,
+    is_avoidable_defensive_death,
     is_defensive_buff,
+    is_healer_direct_heal,
+    is_healer_external_spell,
     is_health_potion,
     is_healthstone,
     is_interrupt_spell,
@@ -584,6 +588,7 @@ def analyze_report_events(
                 fight_players.add(int(pid))
         player_deaths: list[tuple[int, int, dict[str, Any]]] = []
         deaths_by_player: dict[int, list[int]] = defaultdict(list)
+        seen_death_keys: set[tuple[int, int]] = set()
 
         for ev in fevs:
             for key in ("sourceID", "targetID"):
@@ -594,8 +599,11 @@ def analyze_report_events(
                 tid = ev.get("targetID")
                 if tid in actors and actors[tid].get("type") == "Player":
                     ts = int(ev["timestamp"])
-                    player_deaths.append((ts, tid, ev))
-                    deaths_by_player[tid].append(ts)
+                    dkey = (tid, ts)
+                    if dkey not in seen_death_keys:
+                        seen_death_keys.add(dkey)
+                        player_deaths.append((ts, tid, ev))
+                        deaths_by_player[tid].append(ts)
 
         for pid in fight_players:
             player_pulls_present[pid] += 1
@@ -651,6 +659,7 @@ def analyze_report_events(
         last_def_used_ts: dict[int, dict[str, int]] = defaultdict(dict)
         last_pot_ts: dict[int, int] = {}
         last_hs_ts: dict[int, tuple[int, bool]] = {}
+        seen_def_death_keys: set[tuple[int, int]] = set()
 
         # Also track active defensive buff intervals per player via single pass
         active_tank_defs: dict[int, set[str]] = defaultdict(set)
@@ -1251,9 +1260,15 @@ def analyze_report_events(
                                 }
                             )
                 elif t == "death":
+                    dkey = (tid, ts)
+                    if dkey in seen_def_death_keys:
+                        continue
+                    seen_def_death_keys.add(dkey)
                     rel_ms = ts - f_start
                     kaid = ev.get("killingAbilityGameID")
                     kab_name = abilities.get(kaid, str(kaid)) if kaid else "Unbekannt"
+                    if is_avoidable_defensive_death(kaid, kab_name):
+                        continue
                     dmg_school = infer_damage_school(kaid, ability_schools)
                     defs_now = sorted(
                         d for d in active_all_defs[tid] if defensive_mitigates(d, dmg_school)
@@ -1790,6 +1805,9 @@ def analyze_report_events(
     egg_regular_carriers, egg_carrier_events = _build_egg_carrier_analysis(
         sorted_fights, actors, events_by_fight, egg_fails, report_code
     )
+    healers_out, healer_emergency_events, healer_tank_soak_events = _build_healer_analysis(
+        sorted_fights, actors, abilities, events_by_fight, tank_id_set, extra_tables, report_code
+    )
 
     return {
         "code": report_code,
@@ -1809,6 +1827,7 @@ def analyze_report_events(
             {"id": tid, "name": actors[tid]["name"], "class": actors[tid].get("subType", "")}
             for tid in tank_ids
         ],
+        "healers": healers_out,
         "players": players_out,
         "egg_regular_carriers": egg_regular_carriers,
         "removal_summary": {
@@ -1825,12 +1844,459 @@ def analyze_report_events(
         "wave_fails": sorted(wave_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
         "tank_fails": sorted(tank_fails, key=lambda x: (x["pull_num"], x["timestamp"])),
         "defensive_events": sorted(defensive_events, key=lambda x: (x["pull_num"], x["timestamp"])),
+        "healer_emergency_events": healer_emergency_events,
+        "healer_tank_soak_events": healer_tank_soak_events,
         "consumable_usage": consumable_usage,
         "heart_phases": sorted(heart_phases, key=lambda x: (x["pull_num"], x["window_num"])),
         "phase_events": sorted(phase_events, key=lambda x: (x["pull_num"], x["timestamp"])),
         "warden_summaries": sorted(warden_summaries, key=lambda x: x["pull_num"]),
         "p3_summaries": sorted(p3_summaries, key=lambda x: x["pull_num"]),
     }
+
+
+def _build_healer_analysis(
+    sorted_fights: list[dict[str, Any]],
+    actors: dict[int, dict[str, Any]],
+    abilities: dict[int, str],
+    events_by_fight: dict[int, list[dict[str, Any]]],
+    tank_id_set: set[int],
+    extra_tables: dict[str, Any] | None,
+    report_code: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compute separate Emergency-Heal (<35% single-target) & Boss-Tank Soak reactions per healer."""
+    et = extra_tables or {}
+    raw_hbf = et.get("healers_by_fight") or {}
+    healers_by_fight: dict[int, dict[int, str]] = {}
+    for fid_k, hmap in raw_hbf.items():
+        if not isinstance(hmap, dict):
+            continue
+        healers_by_fight[int(fid_k)] = {int(pid_k): str(spec or "") for pid_k, spec in hmap.items()}
+
+    if not healers_by_fight:
+        return [], [], []
+
+    raw_low_hp = et.get("low_hp_damage_by_fight") or {}
+    low_hp_by_fight: dict[int, list[dict[str, Any]]] = {
+        int(k): list(v or []) for k, v in raw_low_hp.items()
+    }
+    raw_hcasts = et.get("healer_casts_by_fight") or {}
+    hcasts_by_fight: dict[int, list[dict[str, Any]]] = {
+        int(k): list(v or []) for k, v in raw_hcasts.items()
+    }
+
+    # Pre-scan known spells cast by each healer across the entire report (for talented/optional instant CDs)
+    known_healer_spells: dict[int, set[str]] = defaultdict(set)
+    for fid, cevs in hcasts_by_fight.items():
+        for ev in cevs:
+            if ev.get("type") != "cast":
+                continue
+            src = ev.get("sourceID")
+            if src is None:
+                continue
+            aid = ev.get("abilityGameID")
+            ab_low = (abilities.get(aid, "") or "").strip().lower()
+            if ab_low:
+                known_healer_spells[int(src)].add(ab_low)
+
+    healer_pull_counts: Counter[int] = Counter()
+    healer_spec_counts: dict[int, Counter[str]] = defaultdict(Counter)
+    for fid, hmap in healers_by_fight.items():
+        for hid, spec in hmap.items():
+            if hid in actors and actors[hid].get("type") == "Player":
+                healer_pull_counts[hid] += 1
+                if spec:
+                    healer_spec_counts[hid][spec] += 1
+
+    healers_out = [
+        {
+            "id": hid,
+            "name": actors[hid]["name"],
+            "class": actors[hid].get("subType", ""),
+            "spec": healer_spec_counts[hid].most_common(1)[0][0] if healer_spec_counts[hid] else "",
+            "pulls": count,
+        }
+        for hid, count in sorted(healer_pull_counts.items(), key=lambda kv: actors[kv[0]]["name"])
+    ]
+
+    emergency_events: list[dict[str, Any]] = []
+    tank_soak_events: list[dict[str, Any]] = []
+
+    for pull_idx, fight in enumerate(sorted_fights, start=1):
+        fid = int(fight["id"])
+        f_start = int(fight["startTime"])
+        f_end = int(fight["endTime"])
+        is_kill = bool(fight.get("kill", False))
+        fight_healers = {
+            hid: spec
+            for hid, spec in healers_by_fight.get(fid, {}).items()
+            if hid in actors and actors[hid].get("type") == "Player"
+        }
+        if not fight_healers:
+            continue
+
+        fevs = sorted(events_by_fight.get(fid, []), key=lambda e: int(e["timestamp"]))
+
+        # Deduplicated deaths for this fight
+        player_deaths: list[tuple[int, int]] = []
+        deaths_by_player: dict[int, list[int]] = defaultdict(list)
+        seen_dk: set[tuple[int, int]] = set()
+        for ev in fevs:
+            if ev.get("type") == "death":
+                tid = ev.get("targetID")
+                if tid in actors and actors[tid].get("type") == "Player":
+                    ts = int(ev["timestamp"])
+                    if (tid, ts) not in seen_dk:
+                        seen_dk.add((tid, ts))
+                        player_deaths.append((ts, tid))
+                        deaths_by_player[tid].append(ts)
+
+        def count_deaths_before(ts_now: int) -> int:
+            return sum(1 for dts, _ in player_deaths if dts < ts_now)
+
+        # Index healer casts & begincasts for this fight
+        raw_casts = hcasts_by_fight.get(fid)
+        if raw_casts is None:
+            raw_casts = [
+                ev for ev in fevs if ev.get("type") in ("cast", "begincast") and ev.get("sourceID") in fight_healers
+            ]
+        sorted_casts = sorted(raw_casts, key=lambda e: int(e["timestamp"]))
+
+        recent_begincast: dict[tuple[int, int], int] = {}
+        healer_all_cast_ts: dict[int, list[int]] = defaultdict(list)
+        healer_cd_casts: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+        healer_targeted_heals: dict[int, list[dict[str, Any]]] = defaultdict(list)
+
+        for ev in sorted_casts:
+            src = ev.get("sourceID")
+            if src is None or int(src) not in fight_healers:
+                continue
+            hid = int(src)
+            ts = int(ev["timestamp"])
+            aid = int(ev.get("abilityGameID") or 0)
+            et = ev.get("type")
+            if et == "begincast":
+                recent_begincast[(hid, aid)] = ts
+                healer_all_cast_ts[hid].append(ts)
+                continue
+            if et != "cast":
+                continue
+
+            healer_all_cast_ts[hid].append(ts)
+            ab_name = (abilities.get(aid, "") or "").strip()
+            ab_low = ab_name.lower()
+            if ab_low:
+                healer_cd_casts[hid][ab_low].append(ts)
+
+            tid = ev.get("targetID")
+            if tid in actors and actors[tid].get("type") == "Player" and is_healer_direct_heal(ab_name):
+                bc_ts = recent_begincast.get((hid, aid))
+                if bc_ts is not None and 150 <= ts - bc_ts <= 3500:
+                    is_hardcast = True
+                    start_ts = bc_ts
+                else:
+                    is_hardcast = False
+                    start_ts = ts
+                healer_targeted_heals[hid].append(
+                    {
+                        "start_ts": start_ts,
+                        "cast_ts": ts,
+                        "target_id": int(tid),
+                        "spell": ab_name,
+                        "is_hardcast": is_hardcast,
+                        "is_external": is_healer_external_spell(ab_name),
+                    }
+                )
+
+        def is_healer_dead_at(hid: int, ts_now: int) -> bool:
+            dlist = [dts for dts in deaths_by_player.get(hid, []) if dts <= ts_now]
+            if not dlist:
+                return False
+            last_death = max(dlist)
+            # If healer cast anything after their last death (e.g. Battle Rez), they are alive again
+            return not any(last_death < cts <= ts_now for cts in healer_all_cast_ts.get(hid, []))
+
+        def compute_ready_instants(hid: int, ts_now: int) -> list[str]:
+            cls = actors[hid].get("subType", "")
+            spec = fight_healers.get(hid, "")
+            specs = get_healer_instant_specs(cls, spec)
+            ready: list[str] = []
+            for entry in specs:
+                sname = str(entry["name"])
+                slow = sname.lower()
+                if not entry.get("baseline") and slow not in known_healer_spells.get(hid, set()):
+                    continue
+                cd_ms = int(entry["cd_ms"])
+                charges = int(entry.get("charges", 1))
+                recharges: list[int] = []
+                for cts in healer_cd_casts[hid].get(slow, []):
+                    if cts >= ts_now:
+                        break
+                    recharges = [r for r in recharges if r > cts]
+                    base = recharges[-1] if recharges else cts
+                    recharges.append(base + cd_ms)
+                    if len(recharges) > charges:
+                        recharges = recharges[-charges:]
+                active_recharges = [r for r in recharges if r > ts_now]
+                if len(active_recharges) < charges:
+                    ready.append(sname)
+            return ready
+
+        # ---- Part A: Emergency Heals (isolated single-target <35% non-tank drops, <= 3 players low in +-2s) ----
+        raw_low = low_hp_by_fight.get(fid)
+        if raw_low is None:
+            raw_low = [ev for ev in fevs if ev.get("type") == "damage"]
+        low_hits: list[tuple[int, int, float, str]] = []
+        for ev in sorted(raw_low, key=lambda e: int(e["timestamp"])):
+            if ev.get("type") != "damage":
+                continue
+            tid = ev.get("targetID")
+            if tid not in actors or actors[tid].get("type") != "Player":
+                continue
+            hp = ev.get("hitPoints")
+            mhp = ev.get("maxHitPoints")
+            if hp is None or not mhp or mhp <= 0:
+                continue
+            hp_pct = round((hp / mhp) * 100.0, 1)
+            if 0.0 < hp_pct < 35.0:
+                aid = ev.get("abilityGameID")
+                ab_name = (abilities.get(aid, str(aid)) if aid else "Unbekannt") or "Unbekannt"
+                low_hits.append((int(ev["timestamp"]), int(tid), hp_pct, ab_name))
+
+        last_emerg_ts_by_victim: dict[int, int] = {}
+        for ts, tid, hp_pct, ab_name in low_hits:
+            if tid in tank_id_set:
+                continue
+            # Raid-wide drop check: count unique players <35% within +-2000ms
+            concurrent_low = {p for hts, p, _, _ in low_hits if ts - 2000 <= hts <= ts + 2000}
+            if len(concurrent_low) > 3:
+                continue
+            if ts - last_emerg_ts_by_victim.get(tid, -999999) < 4000:
+                continue
+            last_emerg_ts_by_victim[tid] = ts
+
+            target_died = any(0 <= dts - ts <= 4500 for dts in deaths_by_player.get(tid, []))
+            reactions: list[dict[str, Any]] = []
+
+            for hid in sorted(fight_healers.keys(), key=lambda x: actors[x]["name"]):
+                if hid == tid or is_healer_dead_at(hid, ts):
+                    continue
+                ready_inst = compute_ready_instants(hid, ts)
+                matched_heal = next(
+                    (
+                        h
+                        for h in healer_targeted_heals.get(hid, [])
+                        if h["target_id"] == tid
+                        and h["cast_ts"] >= ts
+                        and ts - 500 <= h["start_ts"] <= ts + 4000
+                    ),
+                    None,
+                )
+                if matched_heal is not None:
+                    rx_ms = max(0, int(matched_heal["start_ts"]) - ts)
+                    status = "cast_used" if matched_heal["is_hardcast"] else "instant_used"
+                    reactions.append(
+                        {
+                            "healer": actors[hid]["name"],
+                            "healer_class": actors[hid].get("subType", ""),
+                            "healer_spec": fight_healers[hid],
+                            "healer_id": hid,
+                            "status": status,
+                            "reaction_ms": rx_ms,
+                            "spell": matched_heal["spell"],
+                            "is_external": bool(matched_heal["is_external"]),
+                            "instant_was_ready": bool(ready_inst),
+                            "ready_instants": ready_inst,
+                            "covered_fast_by_other": False,
+                        }
+                    )
+                else:
+                    reactions.append(
+                        {
+                            "healer": actors[hid]["name"],
+                            "healer_class": actors[hid].get("subType", ""),
+                            "healer_spec": fight_healers[hid],
+                            "healer_id": hid,
+                            "status": "no_heal",
+                            "reaction_ms": None,
+                            "spell": None,
+                            "is_external": False,
+                            "instant_was_ready": bool(ready_inst),
+                            "ready_instants": ready_inst,
+                            "covered_fast_by_other": False,
+                        }
+                    )
+
+            if not reactions:
+                continue
+
+            reacted = [r for r in reactions if r["reaction_ms"] is not None]
+            fastest = min(reacted, key=lambda r: int(r["reaction_ms"])) if reacted else None
+            fastest_ms = int(fastest["reaction_ms"]) if fastest else None
+            fastest_healer = fastest["healer"] if fastest else None
+            fastest_healer_class = fastest["healer_class"] if fastest else None
+
+            if not target_died and fastest_ms is not None and fastest_ms <= 1200:
+                for r in reactions:
+                    if r["status"] == "no_heal":
+                        r["covered_fast_by_other"] = True
+
+            rel_ms = ts - f_start
+            emergency_events.append(
+                {
+                    "id": f"{report_code}-{fid}-{tid}-{ts}-hem",
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "rel_time": format_rel_time(rel_ms),
+                    "rel_ms": rel_ms,
+                    "timestamp": ts,
+                    "deaths_before": count_deaths_before(ts),
+                    "victim": actors[tid]["name"],
+                    "victim_class": actors[tid].get("subType", ""),
+                    "victim_id": tid,
+                    "trigger_ability": ab_name,
+                    "hp_pct": hp_pct,
+                    "concurrent_low_count": len(concurrent_low),
+                    "target_died": target_died,
+                    "fastest_reaction_ms": fastest_ms,
+                    "fastest_healer": fastest_healer,
+                    "fastest_healer_class": fastest_healer_class,
+                    "reactions": reactions,
+                    "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                    "replay_url": build_replay_url(report_code, fid, rel_ms),
+                }
+            )
+
+        # ---- Part B: Boss-Tank Soak Heal (Mother's Wrath / Stone Venom windows) ----
+        soak_windows: list[dict[str, Any]] = []
+        active_win_by_tank: dict[int, dict[str, Any]] = {}
+
+        def _flush_soak(tk_id: int) -> None:
+            w = active_win_by_tank.pop(tk_id, None)
+            if w is not None:
+                soak_windows.append(w)
+
+        for ev in fevs:
+            tid = ev.get("targetID")
+            if tid not in tank_id_set:
+                continue
+            t = ev.get("type")
+            aid = ev.get("abilityGameID")
+            ts = int(ev["timestamp"])
+            is_soak_ev = (aid == SPELL_STONE_VENOM_DEBUFF and t in ("applydebuff", "applydebuffstack")) or (
+                aid == SPELL_MOTHERS_WRATH_DMG and t == "damage"
+            )
+            if is_soak_ev:
+                cur = active_win_by_tank.get(tid)
+                if cur is not None and ts - int(cur["last_stack_ts"]) > 3000:
+                    _flush_soak(tid)
+                    cur = None
+                if cur is None:
+                    st = int(ev.get("stack", 1)) if aid == SPELL_STONE_VENOM_DEBUFF else 1
+                    active_win_by_tank[tid] = {
+                        "tank_id": int(tid),
+                        "start_ts": ts,
+                        "last_stack_ts": ts,
+                        "stacks": max(1, st),
+                    }
+                else:
+                    cur["last_stack_ts"] = ts
+                    if aid == SPELL_STONE_VENOM_DEBUFF:
+                        if "stack" in ev:
+                            cur["stacks"] = max(int(cur["stacks"]), int(ev["stack"]))
+                        elif t == "applydebuffstack":
+                            cur["stacks"] = int(cur["stacks"]) + 1
+
+        for tk_id in list(active_win_by_tank.keys()):
+            _flush_soak(tk_id)
+
+        # Collect all tank HP samples from fevs + low_hp_by_fight to find min_hp_pct in each soak window
+        tank_hp_samples: dict[int, list[tuple[int, float]]] = defaultdict(list)
+        for src_list in (fevs, raw_low):
+            for ev in src_list:
+                if ev.get("type") != "damage":
+                    continue
+                tid = ev.get("targetID")
+                if tid not in tank_id_set:
+                    continue
+                hp = ev.get("hitPoints")
+                mhp = ev.get("maxHitPoints")
+                if hp is not None and mhp and mhp > 0:
+                    tank_hp_samples[int(tid)].append((int(ev["timestamp"]), round((hp / mhp) * 100.0, 1)))
+
+        soak_windows.sort(key=lambda w: int(w["start_ts"]))
+        for w in soak_windows:
+            tk_id = int(w["tank_id"])
+            w_start = int(w["start_ts"])
+            w_end = int(w["last_stack_ts"]) + 5000
+            hp_vals = [pct for hts, pct in tank_hp_samples.get(tk_id, []) if w_start <= hts <= w_end]
+            min_hp_pct = min(hp_vals) if hp_vals else None
+            tank_died = any(w_start <= dts <= w_end for dts in deaths_by_player.get(tk_id, []))
+
+            soak_rx: list[dict[str, Any]] = []
+            for hid in sorted(fight_healers.keys(), key=lambda x: actors[x]["name"]):
+                if is_healer_dead_at(hid, w_start):
+                    continue
+                matched = [
+                    h
+                    for h in healer_targeted_heals.get(hid, [])
+                    if h["target_id"] == tk_id
+                    and w_start - 1000 <= h["cast_ts"] <= w_end
+                    and h["start_ts"] <= w_end
+                ]
+                healed = len(matched) > 0
+                rx_ms = max(0, int(matched[0]["start_ts"]) - w_start) if healed else None
+                used_ext = any(m["is_external"] for m in matched)
+                uniq_spells = list(dict.fromkeys(m["spell"] for m in matched))[:4]
+                soak_rx.append(
+                    {
+                        "healer": actors[hid]["name"],
+                        "healer_class": actors[hid].get("subType", ""),
+                        "healer_spec": fight_healers[hid],
+                        "healer_id": hid,
+                        "healed": healed,
+                        "reaction_ms": rx_ms,
+                        "heal_count": len(matched),
+                        "used_external": used_ext,
+                        "spells": uniq_spells,
+                    }
+                )
+
+            if not soak_rx:
+                continue
+
+            healed_list = [r for r in soak_rx if r["healed"] and r["reaction_ms"] is not None]
+            fastest_tk = min(healed_list, key=lambda r: int(r["reaction_ms"])) if healed_list else None
+            rel_ms = w_start - f_start
+            tank_soak_events.append(
+                {
+                    "id": f"{report_code}-{fid}-{tk_id}-{w_start}-hts",
+                    "pull_num": pull_idx,
+                    "fight_id": fid,
+                    "is_kill": is_kill,
+                    "rel_time": format_rel_time(rel_ms),
+                    "rel_ms": rel_ms,
+                    "timestamp": w_start,
+                    "deaths_before": count_deaths_before(w_start),
+                    "tank": actors[tk_id]["name"],
+                    "tank_class": actors[tk_id].get("subType", ""),
+                    "tank_id": tk_id,
+                    "stacks": int(w["stacks"]),
+                    "min_hp_pct": min_hp_pct,
+                    "tank_died": tank_died,
+                    "any_healed": len(healed_list) > 0,
+                    "healers_reacted_count": len(healed_list),
+                    "fastest_reaction_ms": int(fastest_tk["reaction_ms"]) if fastest_tk else None,
+                    "fastest_healer": fastest_tk["healer"] if fastest_tk else None,
+                    "reactions": soak_rx,
+                    "events_url": build_events_url(report_code, fid, tk_id, w_start, f_start, f_end),
+                    "replay_url": build_replay_url(report_code, fid, rel_ms),
+                }
+            )
+
+    emergency_events.sort(key=lambda x: (x["pull_num"], x["timestamp"]))
+    tank_soak_events.sort(key=lambda x: (x["pull_num"], x["timestamp"]))
+    return healers_out, emergency_events, tank_soak_events
 
 
 def merge_report_into_store(store: dict[str, Any] | None, new_report: dict[str, Any]) -> dict[str, Any]:
