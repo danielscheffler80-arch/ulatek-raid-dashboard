@@ -747,3 +747,135 @@ def test_egg_carrier_uptime_shell_dmg_and_missed_alive_vs_dead():
     # Carol is not a regular carrier -> never flagged with missed_alive
     assert not any(e["player"] == "Carol" for e in evs)
 
+
+def test_egg_collision_excludes_other_boss_dmg_and_flags_backup_when_all_regulars_alive():
+    meta = {"title": "Guard & Backup Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "Alice", "type": "Player", "subType": "Mage"},
+        2: {"id": 2, "name": "Bob", "type": "Player", "subType": "Warlock"},
+        3: {"id": 3, "name": "Carol", "type": "Player", "subType": "Warrior"},
+        10: {"id": 10, "name": "Spectral Coil", "type": "NPC", "subType": "NPC"},
+        11: {"id": 11, "name": "Gore Rattle", "type": "NPC", "subType": "NPC"},
+    }
+    abilities = {
+        1307612: "Noxious Shell",
+        1307617: "Noxious Shell",
+        1307635: "Noxious Splash",
+        1299010: "Spectral Coils",
+        1299206: "Rattler Slam",
+    }
+    fights = [
+        {"id": 1, "name": "Ula'tek", "startTime": 0, "endTime": 60000, "bossPercentage": 70.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+        {"id": 2, "name": "Ula'tek", "startTime": 100000, "endTime": 160000, "bossPercentage": 60.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+        {"id": 3, "name": "Ula'tek", "startTime": 200000, "endTime": 260000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2, 3]},
+    ]
+    events_by_fight = {
+        1: [
+            # Pull 1: Alice & Bob regular; Carol (non-regular) takes egg while ALL regulars are alive -> collides with Alice!
+            {"timestamp": 20000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 21000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 22000, "type": "applydebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 30000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 30001, "type": "damage", "sourceID": 10, "targetID": 1, "abilityGameID": 1307635, "amount": 350000, "fight": 1},
+            {"timestamp": 30010, "type": "removedebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 1},
+            {"timestamp": 30011, "type": "damage", "sourceID": 10, "targetID": 3, "abilityGameID": 1307635, "amount": 350000, "fight": 1},
+            {"timestamp": 40000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 1},
+            {"timestamp": 40000, "type": "removedebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 1},
+        ],
+        2: [
+            # Pull 2: Bob dies at 110s -> Carol takes egg at 120s as backup (Bob dead!). Also test Rattler Slam guard at 130s!
+            {"timestamp": 110000, "type": "death", "targetID": 2, "killerID": 11, "killingAbilityGameID": 1, "fight": 2},
+            {"timestamp": 120000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 2},
+            {"timestamp": 120000, "type": "applydebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 2},
+            # Rattler Slam hits both Alice and Carol at 130s -> must NOT be classified as egg_collision!
+            {"timestamp": 130000, "type": "damage", "sourceID": 11, "targetID": 1, "abilityGameID": 1299206, "amount": 400000, "fight": 2},
+            {"timestamp": 130001, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 2},
+            {"timestamp": 130002, "type": "damage", "sourceID": 10, "targetID": 1, "abilityGameID": 1307635, "amount": 300000, "fight": 2},
+            {"timestamp": 130005, "type": "damage", "sourceID": 11, "targetID": 3, "abilityGameID": 1299206, "amount": 400000, "fight": 2},
+            {"timestamp": 130006, "type": "removedebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 2},
+            {"timestamp": 130007, "type": "damage", "sourceID": 10, "targetID": 3, "abilityGameID": 1307635, "amount": 300000, "fight": 2},
+            {"timestamp": 140000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 2},
+        ],
+        3: [
+            # Pull 3: Alice & Bob regular carriers (so Alice=3/3, Bob=2/3 are regulars; Carol=2/3 -> wait add Pull 4 or keep Carol only in Pull 1 & 2 out of 5)
+            {"timestamp": 220000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 3},
+            {"timestamp": 220000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 3},
+            {"timestamp": 240000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": 3},
+            {"timestamp": 240000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": 3},
+            {"timestamp": 240000, "type": "removedebuff", "targetID": 2, "abilityGameID": 1307612, "fight": 3},
+        ],
+    }
+    # Add pulls 4 & 5 with Alice & Bob so Alice=5/5, Bob=4/5 are regulars and Carol=2/5 (40% -> add pull 6 so Carol=2/6=33% is non-regular!)
+    for pidx, fid in enumerate((4, 5, 6), start=3):
+        base = pidx * 100000
+        fights.append({"id": fid, "name": "Ula'tek", "startTime": base, "endTime": base + 60000, "bossPercentage": 50.0, "kill": False, "friendlyPlayers": [1, 2, 3]})
+        events_by_fight[fid] = [
+            {"timestamp": base + 20000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1307612, "fight": fid},
+            {"timestamp": base + 20000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1307612, "fight": fid},
+            {"timestamp": base + 40000, "type": "cast", "sourceID": 10, "abilityGameID": 1299010, "fight": fid},
+            {"timestamp": base + 40000, "type": "removedebuff", "targetID": 1, "abilityGameID": 1307612, "fight": fid},
+            {"timestamp": base + 40000, "type": "removedebuff", "targetID": 2, "abilityGameID": 1307612, "fight": fid},
+        ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, events_by_fight, "TESTGUARD1234567")
+    assert sorted(rep["egg_regular_carriers"]) == ["Alice", "Bob"]
+
+    # Pull 1 collision is valid (no other boss damage)
+    p1_cols = [e for e in rep["egg_fails"] if e["pull_num"] == 1 and e["kind"] == "egg_collision"]
+    assert len(p1_cols) == 2
+    carol_fail = next(e for e in p1_cols if e["player"] == "Carol")
+    assert carol_fail["is_regular"] is False
+    assert carol_fail["all_regulars_alive_at_pickup"] is True
+    assert carol_fail["dead_regulars_at_pickup"] == []
+
+    # Pull 2 Rattler Slam must NOT be counted as egg_collision!
+    p2_cols = [e for e in rep["egg_fails"] if e["pull_num"] == 2 and e["kind"] == "egg_collision"]
+    assert len(p2_cols) == 0
+
+    # Pull 2 Carol carrier event knows Bob was dead at pickup!
+    carol_p2 = next(e for e in rep["egg_carrier_events"] if e["pull_num"] == 2 and e["player"] == "Carol")
+    assert carol_p2["is_regular"] is False
+    assert carol_p2["all_regulars_alive_at_pickup"] is False
+    assert carol_p2["dead_regulars_at_pickup"] == ["Bob"]
+
+
+def test_heart_phase_switch_delay_relative_to_first_caster():
+    meta = {"title": "Heart Switch Delay", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "FastShaman", "type": "Player", "subType": "Shaman"},
+        2: {"id": 2, "name": "SlowHunter", "type": "Player", "subType": "Hunter"},
+        3: {"id": 3, "name": "NoSwitchLock", "type": "Player", "subType": "Warlock"},
+    }
+    abilities = {1001: "Tempest", 1002: "Aimed Shot"}
+    fights = [{"id": 41, "name": "Ula'tek", "startTime": 100000, "endTime": 300000, "bossPercentage": 30.0, "kill": False, "friendlyPlayers": [1, 2, 3]}]
+    extra = {
+        "heart_windows": [
+            {
+                "fight_id": 41,
+                "window_num": 1,
+                "start_time": 245000,
+                "end_time": 265000,
+                "heart_by_player": {1: 10_000_000, 2: 8_000_000, 3: 1_000_000},
+                "boss_by_player": {1: 2_000_000, 2: 2_000_000, 3: 9_000_000},
+                "total_by_player": {1: 12_000_000, 2: 10_000_000, 3: 10_000_000},
+                "first_cast_by_player": {
+                    1: {"ts": 245500, "ability_id": 1001},
+                    2: {"ts": 247200, "ability_id": 1002},
+                },
+            }
+        ]
+    }
+    rep = analyze_report_events(meta, fights, actors, abilities, {41: []}, "TESTHEARTSW12345", extra_tables=extra)
+    hw = rep["heart_phases"][0]
+    assert hw["first_switch_player"] == "FastShaman"
+    assert hw["first_switch_spell"] == "Tempest"
+    by_name = {p["player"]: p for p in hw["players"]}
+    assert by_name["FastShaman"]["switch_delay_ms"] == 0
+    assert by_name["FastShaman"]["first_heart_spell"] == "Tempest"
+    assert by_name["SlowHunter"]["switch_delay_ms"] == 1700
+    assert by_name["SlowHunter"]["first_heart_spell"] == "Aimed Shot"
+    assert by_name["NoSwitchLock"]["switch_delay_ms"] is None
+    assert by_name["NoSwitchLock"]["was_dead_at_heart"] is False
+
+
+

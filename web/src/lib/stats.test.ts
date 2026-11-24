@@ -221,9 +221,12 @@ describe('stats aggregation and maxDeaths filtering', () => {
           total_effective_dmg: 44_000_000,
           total_other_dmg: 500_000,
           debris_hits_total: 1,
+          first_switch_player: 'Narande',
+          first_switch_spell: 'Shadow Bolt',
+          first_switch_rel_time: '02:26.000',
           players: [
-            { player: 'Narande', class: 'Warlock', player_id: 3, heart_dmg: 20_000_000, heart_raw_dmg: 10_000_000, boss_dmg: 4_000_000, total_boss_dmg: 24_000_000, other_dmg: 500_000, heart_share_pct: 83.3, debris_hits: 0 },
-            { player: 'Betøng', class: 'Monk', player_id: 1, heart_dmg: 12_000_000, heart_raw_dmg: 6_000_000, boss_dmg: 8_000_000, total_boss_dmg: 20_000_000, other_dmg: 0, heart_share_pct: 60.0, debris_hits: 1 },
+            { player: 'Narande', class: 'Warlock', player_id: 3, heart_dmg: 20_000_000, heart_raw_dmg: 10_000_000, boss_dmg: 4_000_000, total_boss_dmg: 24_000_000, other_dmg: 500_000, heart_share_pct: 83.3, debris_hits: 0, switch_delay_ms: 0, first_heart_spell: 'Shadow Bolt', was_dead_at_heart: false },
+            { player: 'Betøng', class: 'Monk', player_id: 1, heart_dmg: 12_000_000, heart_raw_dmg: 6_000_000, boss_dmg: 8_000_000, total_boss_dmg: 20_000_000, other_dmg: 0, heart_share_pct: 60.0, debris_hits: 1, switch_delay_ms: 1400, first_heart_spell: 'Tiger Palm', was_dead_at_heart: false },
           ],
           events_url: 'https://wcl/hw1',
           replay_url: 'https://wcl/rhw1',
@@ -234,9 +237,13 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const res = aggregateHeartPhases([repWithHeart], 4, { from: 1, to: 2 })
     expect(res.windowCount).toBe(1)
     expect(res.totalEffectiveDmg).toBe(44_000_000)
+    expect(res.overallAvgSwitchDelayMs).toBe(700)
     expect(res.players[0].player).toBe('Narande')
     expect(res.players[0].totalBossDmg).toBe(24_000_000)
     expect(res.players[0].heartSharePct).toBe(83.3)
+    expect(res.players[0].avgSwitchDelayMs).toBe(0)
+    expect(res.players[0].firstSwitchCount).toBe(1)
+    expect(res.players[1].avgSwitchDelayMs).toBe(1400)
     expect(res.players[1].debrisHits).toBe(1)
 
     // maxDeaths = 0 excludes window with deaths_before=1

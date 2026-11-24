@@ -436,6 +436,9 @@ class WCLClient:
                 aliases.append(
                     f"hh_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {heart_actor_id})"
                 )
+                aliases.append(
+                    f"hc_{idx}: events(fightIDs: [{fid}], startTime: {max(0, hs - 1000)}, endTime: {he}, dataType: Casts, hostilityType: Friendlies, limit: 2000) {{ data }}"
+                )
             if boss_actor_id is not None:
                 aliases.append(
                     f"hb_{idx}: table(fightIDs: [{fid}], startTime: {hs}, endTime: {he}, dataType: DamageDone, hostilityType: Friendlies, targetID: {boss_actor_id})"
@@ -457,6 +460,36 @@ class WCLClient:
             res = self.gql(q)["reportData"]["report"] or {}
             merged_tables.update(res)
 
+        def _extract_first_heart_casts(ev_block: dict[str, Any] | None, hs: int) -> dict[int, dict[str, int]]:
+            if heart_actor_id is None or not ev_block:
+                return {}
+            data = ev_block.get("data") or []
+            sorted_evs = sorted(data, key=lambda e: int(e.get("timestamp", 0)))
+            # Track recent begincast timestamps per (player_id, ability_id) so casters get credit for cast start time!
+            recent_begincast: dict[tuple[int, int], int] = {}
+            first_by_player: dict[int, dict[str, int]] = {}
+            for ev in sorted_evs:
+                src = ev.get("sourceID")
+                if src is None or int(src) not in actors or actors[int(src)].get("type") != "Player":
+                    continue
+                pid = int(src)
+                aid = int(ev.get("abilityGameID") or 0)
+                if aid <= 1:
+                    continue
+                ts = int(ev.get("timestamp", 0))
+                et = ev.get("type")
+                if et == "begincast":
+                    recent_begincast[(pid, aid)] = ts
+                elif et in ("cast", "empowerstart") and ev.get("targetID") == heart_actor_id:
+                    if pid not in first_by_player:
+                        bc_ts = recent_begincast.get((pid, aid))
+                        if bc_ts is not None and 0 <= ts - bc_ts <= 4000 and bc_ts >= hs - 1500:
+                            start_ts = bc_ts
+                        else:
+                            start_ts = ts
+                        first_by_player[pid] = {"ts": start_ts, "ability_id": aid}
+            return first_by_player
+
         heart_windows_out: list[dict[str, Any]] = []
         for idx, (fid, wn, hs, he) in enumerate(heart_specs):
             heart_windows_out.append(
@@ -468,6 +501,7 @@ class WCLClient:
                     "total_by_player": _entries_to_map(merged_tables.get(f"ht_{idx}")),
                     "heart_by_player": _entries_to_map(merged_tables.get(f"hh_{idx}")),
                     "boss_by_player": _entries_to_map(merged_tables.get(f"hb_{idx}")),
+                    "first_cast_by_player": _extract_first_heart_casts(merged_tables.get(f"hc_{idx}"), hs),
                 }
             )
 

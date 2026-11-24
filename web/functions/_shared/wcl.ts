@@ -419,6 +419,9 @@ async function fetchPhaseDamageTables(
       aliases.push(
         `hh_${idx}: table(fightIDs: [${fid}], startTime: ${hs}, endTime: ${he}, dataType: DamageDone, hostilityType: Friendlies, targetID: ${heartActorId})`,
       )
+      aliases.push(
+        `hc_${idx}: events(fightIDs: [${fid}], startTime: ${Math.max(0, hs - 1000)}, endTime: ${he}, dataType: Casts, hostilityType: Friendlies, limit: 2000) { data }`,
+      )
     }
     if (bossActorId !== null) {
       aliases.push(
@@ -437,16 +440,15 @@ async function fetchPhaseDamageTables(
     )
   })
 
-  const mergedTables: Record<string, { data?: { entries?: { id?: number; total?: number }[] } }> = {}
-  const chunkPromises: Promise<Record<string, { data?: { entries?: { id?: number; total?: number }[] } }>>[] = []
+  const mergedTables: Record<string, { data?: unknown }> = {}
+  const chunkPromises: Promise<Record<string, { data?: unknown }>>[] = []
   for (let i = 0; i < aliases.length; i += 24) {
     const chunkStr = aliases.slice(i, i + 24).join('\n')
     const q = `query { reportData { report(code: "${code}") { ${chunkStr} } } }`
     chunkPromises.push(
-      gql<{ reportData?: { report?: Record<string, { data?: { entries?: { id?: number; total?: number }[] } }> } }>(
-        env,
-        q,
-      ).then((r) => r.reportData?.report ?? {}),
+      gql<{ reportData?: { report?: Record<string, { data?: unknown }> } }>(env, q).then(
+        (r) => r.reportData?.report ?? {},
+      ),
     )
   }
   const chunkResults = await Promise.all(chunkPromises)
@@ -454,9 +456,10 @@ async function fetchPhaseDamageTables(
     Object.assign(mergedTables, res)
   }
 
-  const entriesToMap = (tableObj?: { data?: { entries?: { id?: number; total?: number }[] } }) => {
+  const entriesToMap = (tableObj?: { data?: unknown }) => {
     const out: Record<number, number> = {}
-    for (const e of tableObj?.data?.entries ?? []) {
+    const entries = ((tableObj?.data as { entries?: { id?: number; total?: number }[] } | undefined)?.entries ?? [])
+    for (const e of entries) {
       const pid = e.id
       const tot = Number(e.total ?? 0)
       if (pid != null && tot > 0) {
@@ -464,6 +467,38 @@ async function fetchPhaseDamageTables(
       }
     }
     return out
+  }
+
+  const extractFirstHeartCasts = (
+    evBlock: { data?: unknown } | undefined,
+    hs: number,
+  ): Record<number, { ts: number; ability_id: number }> => {
+    if (heartActorId === null || !evBlock) return {}
+    const rawList = Array.isArray(evBlock.data) ? (evBlock.data as WclEvent[]) : []
+    const sortedEvs = [...rawList].sort((a, b) => Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0))
+    const recentBegincast = new Map<string, number>()
+    const firstByPlayer: Record<number, { ts: number; ability_id: number }> = {}
+    for (const ev of sortedEvs) {
+      const src = ev.sourceID
+      if (src == null || actors[Number(src)]?.type !== 'Player') continue
+      const pid = Number(src)
+      const aid = Number(ev.abilityGameID ?? 0)
+      if (aid <= 1) continue
+      const ts = Number(ev.timestamp ?? 0)
+      if (ev.type === 'begincast') {
+        recentBegincast.set(`${pid}:${aid}`, ts)
+      } else if ((ev.type === 'cast' || ev.type === 'empowerstart') && ev.targetID === heartActorId) {
+        if (!firstByPlayer[pid]) {
+          const bcTs = recentBegincast.get(`${pid}:${aid}`)
+          const startTs =
+            bcTs !== undefined && ts - bcTs >= 0 && ts - bcTs <= 4000 && bcTs >= hs - 1500
+              ? bcTs
+              : ts
+          firstByPlayer[pid] = { ts: startTs, ability_id: aid }
+        }
+      }
+    }
+    return firstByPlayer
   }
 
   const heartWindowsOut = heartSpecs.map(([fid, wn, hs, he], idx) => ({
@@ -474,6 +509,7 @@ async function fetchPhaseDamageTables(
     total_by_player: entriesToMap(mergedTables[`ht_${idx}`]),
     heart_by_player: entriesToMap(mergedTables[`hh_${idx}`]),
     boss_by_player: entriesToMap(mergedTables[`hb_${idx}`]),
+    first_cast_by_player: extractFirstHeartCasts(mergedTables[`hc_${idx}`], hs),
   }))
 
   const wardenDmgByFight: Record<number, Record<number, number>> = {}

@@ -69,6 +69,9 @@ export function computePhaseBuckets(items: { rel_ms: number }[]): PhaseBucket[] 
 export interface EggPlayerRow {
   player: string
   className: string
+  isRegular: boolean
+  takenWhileAllRegularsAliveCount: number
+  takenAsDeadBackupCount: number
   count: number
   waveCount: number
   collisionCount: number
@@ -80,6 +83,9 @@ export interface EggPlayerRow {
 export interface EggCollisionParticipant {
   player: string
   className: string
+  isRegular: boolean
+  allRegularsAliveAtPickup: boolean | null
+  deadRegularsAtPickup: string[]
   damage: number
   lethal: boolean
   events_url: string
@@ -112,10 +118,18 @@ export function aggregateEggFails(
   const rawFails: WithReport<EggFail>[] = []
   const rawSplashes: WithReport<EggFail>[] = []
   const playerClassMap: Record<string, string> = {}
+  const regularSet = new Set<string>()
+  const regularOrdered: string[] = []
 
   for (const rep of reports) {
     for (const pl of rep.players ?? []) {
       if (pl.name && pl.class) playerClassMap[pl.name] = pl.class
+    }
+    for (const rc of rep.egg_regular_carriers ?? []) {
+      if (!regularSet.has(rc)) {
+        regularSet.add(rc)
+        regularOrdered.push(rc)
+      }
     }
     const label = getReportDisplayName(rep)
     for (const item of rep.egg_fails) {
@@ -134,6 +148,12 @@ export function aggregateEggFails(
     }
   }
 
+  const hasRegularList = regularOrdered.length > 0
+  const regularCarriers = regularOrdered.map((name) => ({
+    name,
+    className: playerClassMap[name] ?? '',
+  }))
+
   const allFilteredFails = filterByPullRange(filterByMaxDeaths(rawFails, maxDeaths), pullRange)
   const filtered =
     subFilter === 'all' ? allFilteredFails : allFilteredFails.filter((x) => x.kind === subFilter)
@@ -141,11 +161,15 @@ export function aggregateEggFails(
   const byPlayer = new Map<string, EggPlayerRow & { totalDamage: number }>()
 
   for (const item of filtered) {
+    const isReg = hasRegularList ? (item.is_regular ?? regularSet.has(item.player)) : true
     let row = byPlayer.get(item.player)
     if (!row) {
       row = {
         player: item.player,
         className: item.class,
+        isRegular: isReg,
+        takenWhileAllRegularsAliveCount: 0,
+        takenAsDeadBackupCount: 0,
         count: 0,
         waveCount: 0,
         collisionCount: 0,
@@ -157,6 +181,10 @@ export function aggregateEggFails(
       byPlayer.set(item.player, row)
     }
     row.count++
+    if (!isReg) {
+      if (item.all_regulars_alive_at_pickup === true) row.takenWhileAllRegularsAliveCount++
+      else if (item.all_regulars_alive_at_pickup === false) row.takenAsDeadBackupCount++
+    }
     if (item.kind === 'caustic_waves') row.waveCount++
     if (item.kind === 'egg_collision') row.collisionCount++
     if (item.lethal) row.lethalCount++
@@ -205,10 +233,14 @@ export function aggregateEggFails(
       const participantMap = new Map<string, EggCollisionParticipant>()
       for (const ev of cluster) {
         const existing = participantMap.get(ev.player)
+        const evIsReg = hasRegularList ? (ev.is_regular ?? regularSet.has(ev.player)) : true
         if (!existing) {
           participantMap.set(ev.player, {
             player: ev.player,
             className: ev.class || playerClassMap[ev.player] || '',
+            isRegular: evIsReg,
+            allRegularsAliveAtPickup: evIsReg ? null : (ev.all_regulars_alive_at_pickup ?? null),
+            deadRegularsAtPickup: evIsReg ? [] : (ev.dead_regulars_at_pickup ?? []),
             damage: ev.damage,
             lethal: ev.lethal,
             events_url: ev.events_url,
@@ -222,9 +254,13 @@ export function aggregateEggFails(
       for (const ev of cluster) {
         for (const partnerName of ev.collision_partners ?? []) {
           if (!participantMap.has(partnerName)) {
+            const pIsReg = hasRegularList ? regularSet.has(partnerName) : true
             participantMap.set(partnerName, {
               player: partnerName,
               className: playerClassMap[partnerName] || '',
+              isRegular: pIsReg,
+              allRegularsAliveAtPickup: null,
+              deadRegularsAtPickup: [],
               damage: 0,
               lethal: false,
               events_url: ev.events_url,
@@ -285,6 +321,7 @@ export function aggregateEggFails(
     phases: computePhaseBuckets(filtered),
     wavePhases: computePhaseBuckets(waveItems),
     collisionPhases: computePhaseBuckets(collisionIncidents),
+    regularCarriers,
     playerClassMap,
     items: filtered,
     players,
@@ -319,6 +356,8 @@ export interface EggCarrierPlayerRow {
   lateHitCount: number
   missedAliveCount: number
   missedDeadCount: number
+  takenWhileAllRegularsAliveCount: number
+  takenAsDeadBackupCount: number
   items: EvaluatedEggCarrierEvent[]
 }
 
@@ -374,6 +413,8 @@ export function aggregateEggCarriers(
       lateHitCount: number
       missedAliveCount: number
       missedDeadCount: number
+      takenWhileAllRegularsAliveCount: number
+      takenAsDeadBackupCount: number
       items: EvaluatedEggCarrierEvent[]
     }
   >()
@@ -430,6 +471,8 @@ export function aggregateEggCarriers(
         lateHitCount: 0,
         missedAliveCount: 0,
         missedDeadCount: 0,
+        takenWhileAllRegularsAliveCount: 0,
+        takenAsDeadBackupCount: 0,
         items: [],
       }
       byPlayer.set(ev.player, row)
@@ -446,6 +489,10 @@ export function aggregateEggCarriers(
       if (isTooEarly) row.tooEarlyCount++
       if (ev.status === 'missed_break') row.missedBreakCount++
       if (isLateHit) row.lateHitCount++
+      if (!row.isRegular) {
+        if (ev.all_regulars_alive_at_pickup === true) row.takenWhileAllRegularsAliveCount++
+        else if (ev.all_regulars_alive_at_pickup === false) row.takenAsDeadBackupCount++
+      }
     } else if (ev.status === 'missed_alive') {
       row.missedAliveCount++
     } else if (ev.status === 'missed_dead') {
@@ -493,6 +540,8 @@ export function aggregateEggCarriers(
         lateHitCount: r.lateHitCount,
         missedAliveCount: r.missedAliveCount,
         missedDeadCount: r.missedDeadCount,
+        takenWhileAllRegularsAliveCount: r.takenWhileAllRegularsAliveCount,
+        takenAsDeadBackupCount: r.takenAsDeadBackupCount,
         items: r.items,
       }
     })
@@ -835,6 +884,10 @@ export interface HeartPlayerEntry {
   other_dmg: number
   heart_share_pct: number
   debris_hits: number
+  switch_delay_ms: number | null
+  first_heart_spell: string | null
+  was_dead_at_heart: boolean
+  first_switch_player: string | null
   events_url: string
   replay_url: string
 }
@@ -851,6 +904,10 @@ export interface HeartPlayerRow {
   otherDmg: number
   heartSharePct: number
   debrisHits: number
+  avgSwitchDelayMs: number | null
+  maxSwitchDelayMs: number | null
+  firstSwitchCount: number
+  noDirectCastCount: number
   entries: HeartPlayerEntry[]
 }
 
@@ -876,8 +933,16 @@ export function aggregateHeartPhases(
     (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.window_num - b.window_num,
   )
 
-  const byPlayer = new Map<string, HeartPlayerRow>()
+  const byPlayer = new Map<
+    string,
+    HeartPlayerRow & { delaySumMs: number; delaySamples: number }
+  >()
+  let allDelaySumMs = 0
+  let allDelaySamples = 0
+  let totalNoDirectCast = 0
+
   for (const hw of windows) {
+    const hasSwitchData = Boolean(hw.first_switch_player)
     for (const p of hw.players) {
       let row = byPlayer.get(p.player)
       if (!row) {
@@ -893,6 +958,12 @@ export function aggregateHeartPhases(
           otherDmg: 0,
           heartSharePct: 0,
           debrisHits: 0,
+          avgSwitchDelayMs: null,
+          maxSwitchDelayMs: null,
+          firstSwitchCount: 0,
+          noDirectCastCount: 0,
+          delaySumMs: 0,
+          delaySamples: 0,
           entries: [],
         }
         byPlayer.set(p.player, row)
@@ -904,6 +975,23 @@ export function aggregateHeartPhases(
       row.totalBossDmg += p.total_boss_dmg
       row.otherDmg += p.other_dmg
       row.debrisHits += p.debris_hits
+
+      const swDelay = p.switch_delay_ms ?? null
+      const wasDead = Boolean(p.was_dead_at_heart)
+      if (swDelay !== null) {
+        row.delaySumMs += swDelay
+        row.delaySamples++
+        if (row.maxSwitchDelayMs === null || swDelay > row.maxSwitchDelayMs) {
+          row.maxSwitchDelayMs = swDelay
+        }
+        if (swDelay === 0) row.firstSwitchCount++
+        allDelaySumMs += swDelay
+        allDelaySamples++
+      } else if (hasSwitchData && !wasDead) {
+        row.noDirectCastCount++
+        totalNoDirectCast++
+      }
+
       row.entries.push({
         reportCode: hw.reportCode,
         reportLabel: hw.reportLabel,
@@ -921,17 +1009,22 @@ export function aggregateHeartPhases(
         other_dmg: p.other_dmg,
         heart_share_pct: p.heart_share_pct,
         debris_hits: p.debris_hits,
+        switch_delay_ms: swDelay,
+        first_heart_spell: p.first_heart_spell ?? null,
+        was_dead_at_heart: wasDead,
+        first_switch_player: hw.first_switch_player ?? null,
         events_url: hw.events_url,
         replay_url: hw.replay_url,
       })
     }
   }
 
-  const players = Array.from(byPlayer.values())
-    .map((p) => ({
+  const players: HeartPlayerRow[] = Array.from(byPlayer.values())
+    .map(({ delaySumMs, delaySamples, ...p }) => ({
       ...p,
       avgBossDmg: p.windowsPresent > 0 ? Math.round(p.totalBossDmg / p.windowsPresent) : 0,
       heartSharePct: p.totalBossDmg > 0 ? Math.round((p.heartDmg / p.totalBossDmg) * 1000) / 10 : 0,
+      avgSwitchDelayMs: delaySamples > 0 ? Math.round(delaySumMs / delaySamples) : null,
     }))
     .sort((a, b) => b.totalBossDmg - a.totalBossDmg || a.player.localeCompare(b.player))
 
@@ -948,6 +1041,8 @@ export function aggregateHeartPhases(
     totalEffectiveDmg,
     avgEffectiveDmgPerWindow: windows.length > 0 ? Math.round(totalEffectiveDmg / windows.length) : 0,
     overallHeartSharePct: totalEffectiveDmg > 0 ? Math.round((totalHeartDmg / totalEffectiveDmg) * 1000) / 10 : 0,
+    overallAvgSwitchDelayMs: allDelaySamples > 0 ? Math.round(allDelaySumMs / allDelaySamples) : null,
+    totalNoDirectCast,
     totalOtherDmg,
     totalDebrisHits,
     windows,

@@ -247,6 +247,34 @@ export function EggFailsTab({
 
   return (
     <div className="space-y-4">
+      {/* Standard-Ei-Träger Übersicht (immer oben sichtbar) */}
+      {stats.regularCarriers.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] border border-[rgba(52,245,197,0.22)] bg-[rgba(10,16,24,0.85)] px-3.5 py-2.5 text-[12px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.5px] text-[#34f5c5]">
+              <Users className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+              Standard-Ei-Träger ({stats.regularCarriers.length}):
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {stats.regularCarriers.map((rc) => (
+                <span
+                  key={rc.name}
+                  className="inline-flex items-center gap-1.5 rounded-[6px] border border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.85)] px-2 py-0.5 text-[12px] font-semibold"
+                >
+                  <ClassDot className={rc.className} />
+                  <span style={{ color: WOW_CLASS_COLORS[rc.className] ?? '#ffffff' }}>
+                    {rc.name}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+          <span className="text-[11px] text-[#8b96a9]">
+            Andere Spieler werden markiert, falls alle Standard-Träger noch lebten.
+          </span>
+        </div>
+      )}
+
       {/* Top View Mode Switcher */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div
@@ -682,9 +710,21 @@ function EggCarrierPlayerRowView({
                 Stamm
               </span>
             ) : (
-              <span className="rounded-[5px] border border-[rgba(255,255,255,0.12)] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-[#8b96a9]">
-                Backup
-              </span>
+              <>
+                <span className="rounded-[5px] border border-[rgba(255,255,255,0.12)] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-[#8b96a9]">
+                  Backup
+                </span>
+                {row.takenWhileAllRegularsAliveCount > 0 && (
+                  <span className="rounded-[5px] border border-[rgba(239,68,68,0.38)] bg-[rgba(239,68,68,0.14)] px-1.5 py-0.5 text-[10px] font-semibold text-[#f87171]">
+                    {row.takenWhileAllRegularsAliveCount}× alle Stamm lebten!
+                  </span>
+                )}
+                {row.takenAsDeadBackupCount > 0 && (
+                  <span className="rounded-[5px] border border-[rgba(56,189,248,0.32)] bg-[rgba(56,189,248,0.12)] px-1.5 py-0.5 text-[10px] font-medium text-[#38bdf8]">
+                    {row.takenAsDeadBackupCount}× Ersatz (Stamm tot)
+                  </span>
+                )}
+              </>
             )}
           </button>
         </td>
@@ -820,6 +860,14 @@ function EggCarrierPlayerRowView({
                             ({formatDamage(item.unnecessaryDmg)} unnötig)
                           </span>
                         )}
+                        {!item.is_regular && item.all_regulars_alive_at_pickup === true && (
+                          <Pill variant="destructive">Alle Stamm-Träger lebten!</Pill>
+                        )}
+                        {!item.is_regular && item.all_regulars_alive_at_pickup === false && (
+                          <Pill variant="info">
+                            Ersatz ({(item.dead_regulars_at_pickup ?? []).join(', ') || 'Stamm'} tot)
+                          </Pill>
+                        )}
                       </>
                     )}
                     {item.deaths_before > 0 && (
@@ -877,6 +925,16 @@ function CollisionIncidentRow({
                 {p.lethal && (
                   <Skull className="h-3 w-3 text-[#f87171]" aria-label="gestorben" />
                 )}
+                {!p.isRegular && p.allRegularsAliveAtPickup === true && (
+                  <span className="rounded bg-[rgba(239,68,68,0.18)] px-1 py-0.2 text-[9.5px] font-semibold text-[#f87171]">
+                    alle Stamm lebten!
+                  </span>
+                )}
+                {!p.isRegular && p.allRegularsAliveAtPickup === false && (
+                  <span className="rounded bg-[rgba(56,189,248,0.16)] px-1 py-0.2 text-[9.5px] font-medium text-[#38bdf8]">
+                    Ersatz ({p.deadRegularsAtPickup.join(', ') || 'Stamm'} tot)
+                  </span>
+                )}
               </span>
             </Fragment>
           ))}
@@ -931,6 +989,21 @@ function EggPlayerRowView({
             )}
             <ClassDot className={row.className} />
             <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>{row.player}</span>
+            {!row.isRegular && (
+              row.takenWhileAllRegularsAliveCount > 0 ? (
+                <span className="rounded-[5px] border border-[rgba(239,68,68,0.38)] bg-[rgba(239,68,68,0.14)] px-1.5 py-0.5 text-[10px] font-semibold text-[#f87171]">
+                  Kein Stamm · {row.takenWhileAllRegularsAliveCount}× alle lebten!
+                </span>
+              ) : row.takenAsDeadBackupCount > 0 ? (
+                <span className="rounded-[5px] border border-[rgba(56,189,248,0.32)] bg-[rgba(56,189,248,0.12)] px-1.5 py-0.5 text-[10px] font-medium text-[#38bdf8]">
+                  Ersatz (Stamm tot)
+                </span>
+              ) : (
+                <span className="rounded-[5px] border border-[rgba(255,255,255,0.12)] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-[#8b96a9]">
+                  Kein Stamm
+                </span>
+              )
+            )}
           </button>
         </td>
         <td className="py-2.5 px-2 text-right font-mono-num text-[13px] font-semibold text-white">
@@ -1002,6 +1075,14 @@ function EggPlayerRowView({
                     </span>
                     {item.deaths_before > 0 && (
                       <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
+                    )}
+                    {item.is_regular === false && item.all_regulars_alive_at_pickup === true && (
+                      <Pill variant="destructive">Alle Stamm-Träger lebten!</Pill>
+                    )}
+                    {item.is_regular === false && item.all_regulars_alive_at_pickup === false && (
+                      <Pill variant="info">
+                        Ersatz ({(item.dead_regulars_at_pickup ?? []).join(', ') || 'Stamm'} tot)
+                      </Pill>
                     )}
                     {item.lethal && <Pill variant="destructive">Tödlich</Pill>}
                   </div>

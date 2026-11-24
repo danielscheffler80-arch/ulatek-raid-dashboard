@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Flame, Heart, Info, Mountain, Target } from 'lucide-react'
+import { ChevronDown, ChevronRight, Flame, Heart, Info, Target, Zap } from 'lucide-react'
 import type { ReportData } from '../types'
-import { aggregateHeartPhases, formatDamage } from '../lib/stats'
+import { aggregateHeartPhases, formatDamage, WOW_CLASS_COLORS } from '../lib/stats'
 import type { PullRange } from '../lib/stats'
 import {
   Card,
@@ -12,6 +12,19 @@ import {
   SubFilterPills,
   WclActionLinks,
 } from './ui'
+
+function formatDelaySec(ms: number | null): string {
+  if (ms === null || ms === undefined) return '—'
+  const sec = ms / 1000
+  return sec === 0 ? '0,0 s' : `+${sec.toFixed(2).replace('.', ',')} s`
+}
+
+function delayToneClass(ms: number | null): string {
+  if (ms === null || ms === undefined) return 'text-[#8b96a9]'
+  if (ms <= 1000) return 'text-[#34f5c5]'
+  if (ms <= 2500) return 'text-[#fbbf24]'
+  return 'text-[#f87171]'
+}
 
 export function HeartPhaseTab({
   reports,
@@ -64,7 +77,7 @@ export function HeartPhaseTab({
         <KpiCard
           label="Herzphasen-Fenster"
           value={stats.windowCount}
-          subtext={`Try ${pullRange.from}–${pullRange.to} · max. ${maxDeaths} Tode`}
+          subtext={`Try ${pullRange.from}–${pullRange.to} · ${stats.totalDebrisHits}× Falling Debris`}
           icon={<Heart className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.windowCount > 0 ? 'success' : 'default'}
         />
@@ -78,28 +91,41 @@ export function HeartPhaseTab({
         <KpiCard
           label="Herz-Anteil (2× Amp)"
           value={`${stats.overallHeartSharePct.toFixed(1)}%`}
-          subtext={`Herz ${formatDamage(stats.totalHeartDmg)} · Boss ${formatDamage(stats.totalBossDmg)}`}
+          subtext={`Herz ${formatDamage(stats.totalHeartDmg)} · Adds ${formatDamage(stats.totalOtherDmg)}`}
           icon={<Target className="h-4 w-4" strokeWidth={1.75} />}
           tone={stats.overallHeartSharePct >= 75 ? 'success' : 'warning'}
         />
         <KpiCard
-          label="Falling Debris Treffer"
-          value={stats.totalDebrisHits}
-          subtext={`Nebenziele-DMG im Fenster: ${formatDamage(stats.totalOtherDmg)}`}
-          icon={<Mountain className="h-4 w-4" strokeWidth={1.75} />}
-          tone={stats.totalDebrisHits > 0 ? 'warning' : 'success'}
+          label="Ø Herz-Switch-Delay"
+          value={formatDelaySec(stats.overallAvgSwitchDelayMs)}
+          subtext={
+            stats.overallAvgSwitchDelayMs !== null
+              ? `Ab 1. Spieler-Cast aufs Herz · ${stats.totalNoDirectCast}× ohne direkten Cast`
+              : 'Keine Cast-Daten im Filter'
+          }
+          icon={<Zap className="h-4 w-4" strokeWidth={1.75} />}
+          tone={
+            stats.overallAvgSwitchDelayMs === null
+              ? 'default'
+              : stats.overallAvgSwitchDelayMs <= 1200
+                ? 'success'
+                : stats.overallAvgSwitchDelayMs <= 2500
+                  ? 'warning'
+                  : 'destructive'
+          }
         />
       </div>
 
-      {/* Info Banner explaining the 2x Heart Multiplier */}
+      {/* Info Banner explaining the 2x Heart Multiplier + Switch Delay */}
       <div className="flex items-start gap-2.5 rounded-[12px] border border-[rgba(52,245,197,0.24)] bg-[rgba(52,245,197,0.06)] px-3.5 py-2.5 text-[12px] text-[#c5cdd9]">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#34f5c5]" strokeWidth={1.8} aria-hidden="true" />
         <div>
-          <strong className="text-white">Herzphasen-Rechnung (20 s Rage of the Shackled):</strong>{' '}
+          <strong className="text-white">Herzphasen-Rechnung &amp; Switch-Delay:</strong>{' '}
           WarcraftLogs loggt den <strong className="text-[#34f5c5]">+100 %-Multiplikator (2×)</strong> auf{' '}
-          <span className="font-mono-num text-white">Venomous Heart</span> bereits im Schaden.{' '}
-          <strong className="text-white">Gesamt auf Boss = Herz-DMG (inkl. 2×) + Boss-DMG (1×)</strong>.
-          Der zugrunde liegende Rohschaden aufs Herz (<span className="font-mono-num">÷ 2</span>) wird zur besseren Einordnung zusätzlich angezeigt.
+          <span className="font-mono-num text-white">Venomous Heart</span> bereits im Schaden (Gesamt = Herz 2× + Boss 1×).{' '}
+          <strong className="text-white">Switch-Delay</strong> misst die Verzögerung bis zum ersten direkten Cast/Spell jedes Spielers aufs Herz{' '}
+          <strong className="text-[#34f5c5]">ab dem Moment, in dem der erste Spieler im Raid seinen Cast aufs Herz startet</strong>{' '}
+          (inkl. <code className="font-mono-num text-white">begincast</code>-Startzeit für Caster).
         </div>
       </div>
 
@@ -107,10 +133,10 @@ export function HeartPhaseTab({
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
           <div>
             <h2 className="text-[14px] font-semibold text-white">
-              Herzphasen-Schaden — Gesamt auf den Boss (Herz + Ula&apos;tek)
+              Herzphasen-Schaden &amp; Target-Switch-Verzögerung
             </h2>
             <p className="text-[12px] text-[#8b96a9]">
-              Sortiert nach effektivem Gesamtschaden auf den Boss. Klicke auf einen Spieler für jedes einzelne 20s-Herzfenster inkl. WCL-Direktlink.
+              Sortiert nach effektivem Gesamtschaden auf den Boss. Klicke auf einen Spieler für jedes einzelne 20s-Herzfenster inkl. erstem Spell &amp; WCL-Link.
             </p>
           </div>
           <SubFilterPills
@@ -135,6 +161,7 @@ export function HeartPhaseTab({
                 <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
                   <th className="py-2.5 pl-4 pr-2">Spieler</th>
                   <th className="py-2.5 px-2 text-right">Fenster</th>
+                  <th className="py-2.5 px-2 text-right">Ø Switch-Delay</th>
                   <th className="py-2.5 px-2 text-right">Herz (2×)</th>
                   <th className="py-2.5 px-2 text-right">Roh Herz (÷2)</th>
                   <th className="py-2.5 px-2 text-right">Boss (1×)</th>
@@ -191,6 +218,12 @@ export function HeartPhaseTab({
                       </span>
                       <Pill variant="success">Gesamt: {formatDamage(hw.total_effective_dmg)}</Pill>
                       <Pill variant="info">Herz {share}%</Pill>
+                      {hw.first_switch_player && (
+                        <Pill variant="success">
+                          1. Cast: {hw.first_switch_player}
+                          {hw.first_switch_spell ? ` (${hw.first_switch_spell})` : ''}
+                        </Pill>
+                      )}
                       {hw.debris_hits_total > 0 && (
                         <Pill variant="warning">{hw.debris_hits_total}× Debris</Pill>
                       )}
@@ -206,6 +239,7 @@ export function HeartPhaseTab({
                         <thead>
                           <tr className="border-b border-[rgba(255,255,255,0.07)] text-[10.5px] uppercase tracking-wider text-[#8b96a9]">
                             <th className="py-2 pl-3 pr-2">Spieler</th>
+                            <th className="py-2 px-2">Switch-Delay &amp; 1. Spell</th>
                             <th className="py-2 px-2 text-right">Herz (2×)</th>
                             <th className="py-2 px-2 text-right">Boss (1×)</th>
                             <th className="py-2 px-2 text-right">Gesamt Boss</th>
@@ -214,34 +248,62 @@ export function HeartPhaseTab({
                           </tr>
                         </thead>
                         <tbody>
-                          {hw.players.map((p) => (
-                            <tr
-                              key={p.player}
-                              className="border-b border-[rgba(255,255,255,0.04)] last:border-0"
-                            >
-                              <td className="py-1.5 pl-3 pr-2">
-                                <span className="inline-flex items-center gap-1.5 text-white">
-                                  <ClassDot className={p.class} />
-                                  {p.player}
-                                </span>
-                              </td>
-                              <td className="py-1.5 px-2 text-right font-mono-num text-[#34f5c5]">
-                                {formatDamage(p.heart_dmg)}
-                              </td>
-                              <td className="py-1.5 px-2 text-right font-mono-num text-[#c5cdd9]">
-                                {formatDamage(p.boss_dmg)}
-                              </td>
-                              <td className="py-1.5 px-2 text-right font-mono-num font-semibold text-white">
-                                {formatDamage(p.total_boss_dmg)}
-                              </td>
-                              <td className="py-1.5 px-2 text-right font-mono-num text-[#c5cdd9]">
-                                {p.heart_share_pct.toFixed(1)}%
-                              </td>
-                              <td className="py-1.5 pl-2 pr-3 text-right font-mono-num text-[#8b96a9]">
-                                {p.other_dmg > 0 ? formatDamage(p.other_dmg) : '—'}
-                              </td>
-                            </tr>
-                          ))}
+                          {hw.players.map((p) => {
+                            const sw = p.switch_delay_ms ?? null
+                            return (
+                              <tr
+                                key={p.player}
+                                className="border-b border-[rgba(255,255,255,0.04)] last:border-0"
+                              >
+                                <td className="py-1.5 pl-3 pr-2">
+                                  <span className="inline-flex items-center gap-1.5 font-semibold">
+                                    <ClassDot className={p.class} />
+                                    <span style={{ color: WOW_CLASS_COLORS[p.class] ?? '#ffffff' }}>
+                                      {p.player}
+                                    </span>
+                                  </span>
+                                </td>
+                                <td className="py-1.5 px-2 whitespace-nowrap">
+                                  {sw !== null ? (
+                                    <span className="inline-flex items-center gap-1.5">
+                                      <span className={`font-mono-num font-semibold ${delayToneClass(sw)}`}>
+                                        {formatDelaySec(sw)}
+                                      </span>
+                                      {sw === 0 && (
+                                        <span className="rounded bg-[rgba(52,245,197,0.16)] px-1 py-0.2 text-[9.5px] font-semibold text-[#34f5c5]">
+                                          Erster
+                                        </span>
+                                      )}
+                                      {p.first_heart_spell && (
+                                        <span className="text-[11px] text-[#8b96a9]">{p.first_heart_spell}</span>
+                                      )}
+                                    </span>
+                                  ) : p.was_dead_at_heart ? (
+                                    <span className="text-[11px] text-[#8b96a9]">Tot</span>
+                                  ) : hw.first_switch_player ? (
+                                    <span className="text-[11px] font-medium text-[#f87171]">Kein direkter Cast</span>
+                                  ) : (
+                                    <span className="text-[11px] text-[#8b96a9]">—</span>
+                                  )}
+                                </td>
+                                <td className="py-1.5 px-2 text-right font-mono-num text-[#34f5c5]">
+                                  {formatDamage(p.heart_dmg)}
+                                </td>
+                                <td className="py-1.5 px-2 text-right font-mono-num text-[#c5cdd9]">
+                                  {formatDamage(p.boss_dmg)}
+                                </td>
+                                <td className="py-1.5 px-2 text-right font-mono-num font-semibold text-white">
+                                  {formatDamage(p.total_boss_dmg)}
+                                </td>
+                                <td className="py-1.5 px-2 text-right font-mono-num text-[#c5cdd9]">
+                                  {p.heart_share_pct.toFixed(1)}%
+                                </td>
+                                <td className="py-1.5 pl-2 pr-3 text-right font-mono-num text-[#8b96a9]">
+                                  {p.other_dmg > 0 ? formatDamage(p.other_dmg) : '—'}
+                                </td>
+                              </tr>
+                            )
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -282,7 +344,7 @@ function HeartPlayerRowView({
             type="button"
             onClick={onToggle}
             aria-expanded={isOpen}
-            className="flex items-center gap-2 text-left text-[13px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
+            className="flex items-center gap-2 text-left text-[13px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60 rounded"
           >
             {isOpen ? (
               <ChevronDown className="h-3.5 w-3.5 text-[#34f5c5]" />
@@ -290,11 +352,34 @@ function HeartPlayerRowView({
               <ChevronRight className="h-3.5 w-3.5 text-[#8b96a9]" />
             )}
             <ClassDot className={row.className} />
-            <span>{row.player}</span>
+            <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>{row.player}</span>
           </button>
         </td>
         <td className="py-2.5 px-2 text-right font-mono-num text-[12px] text-[#c5cdd9]">
           {row.windowsPresent}×
+        </td>
+        <td className="py-2.5 px-2 text-right font-mono-num text-[12.5px] whitespace-nowrap">
+          {row.avgSwitchDelayMs !== null ? (
+            <div>
+              <span className={`font-semibold ${delayToneClass(row.avgSwitchDelayMs)}`}>
+                {formatDelaySec(row.avgSwitchDelayMs)}
+              </span>
+              <div className="text-[10.5px] text-[#8b96a9]">
+                {row.firstSwitchCount > 0
+                  ? `${row.firstSwitchCount}× Erster · Max ${formatDelaySec(row.maxSwitchDelayMs)}`
+                  : `Max ${formatDelaySec(row.maxSwitchDelayMs)}`}
+                {row.noDirectCastCount > 0 && (
+                  <span className="ml-1 text-[#f87171] font-medium">
+                    · {row.noDirectCastCount}× kein Cast
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : row.noDirectCastCount > 0 ? (
+            <Pill variant="destructive">{row.noDirectCastCount}× kein Cast</Pill>
+          ) : (
+            <span className="text-[#8b96a9]">—</span>
+          )}
         </td>
         <td className="py-2.5 px-2 text-right font-mono-num text-[12.5px] text-[#34f5c5]">
           {formatDamage(row.heartDmg)}
@@ -325,7 +410,7 @@ function HeartPlayerRowView({
       </tr>
       {isOpen && (
         <tr className="border-b border-[rgba(255,255,255,0.09)] bg-[rgba(5,9,17,0.7)]">
-          <td colSpan={9} className="px-4 py-3">
+          <td colSpan={10} className="px-4 py-3">
             <div className="space-y-1.5 max-h-[340px] overflow-y-auto pr-1">
               {row.entries.map((entry) => (
                 <div
@@ -338,6 +423,25 @@ function HeartPlayerRowView({
                       Try {entry.pull_num} · Herz #{entry.window_num}
                     </span>
                     <span className="font-mono-num text-[#34f5c5]">{entry.start_rel_time}</span>
+                    {entry.switch_delay_ms !== null ? (
+                      <Pill
+                        variant={
+                          entry.switch_delay_ms <= 1000
+                            ? 'success'
+                            : entry.switch_delay_ms <= 2500
+                              ? 'warning'
+                              : 'destructive'
+                        }
+                      >
+                        Switch {formatDelaySec(entry.switch_delay_ms)}
+                        {entry.switch_delay_ms === 0 ? ' (Erster)' : ''}
+                        {entry.first_heart_spell ? ` · ${entry.first_heart_spell}` : ''}
+                      </Pill>
+                    ) : entry.was_dead_at_heart ? (
+                      <Pill>Tot</Pill>
+                    ) : entry.first_switch_player ? (
+                      <Pill variant="destructive">Kein direkter Cast aufs Herz</Pill>
+                    ) : null}
                     <Pill variant="success">Gesamt: {formatDamage(entry.total_boss_dmg)}</Pill>
                     <span className="font-mono-num text-[11.5px] text-[#c5cdd9]">
                       Herz {formatDamage(entry.heart_dmg)} ({entry.heart_share_pct.toFixed(1)}%) · Boss {formatDamage(entry.boss_dmg)}

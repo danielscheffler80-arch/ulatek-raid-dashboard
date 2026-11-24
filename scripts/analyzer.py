@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -25,13 +26,16 @@ from scripts.spells_config import (
     SPELL_MALICE_DMG,
     SPELL_MELEE,
     SPELL_MOTHERS_WRATH_DMG,
+    SPELL_NECROTIC_VAPORS,
     SPELL_NOXIOUS_SHELL_DEBUFF,
     SPELL_NOXIOUS_SHELL_DMG,
     SPELL_NOXIOUS_SPLASH,
     SPELL_PUTRID_MEMBRANE_DEBUFF,
+    SPELL_PUTRID_MEMBRANE_DMG,
     SPELL_RANCID_YOLK,
     SPELL_SOUL_CONSTRICTOR,
     SPELL_SPECTRAL_COILS_CAST,
+    SPELL_SPECTRAL_COILS_DMG,
     SPELL_STONE_VENOM_DEBUFF,
     SPELL_STONE_VENOM_DMG,
     TANK_DEFAULT_INTERRUPT,
@@ -259,7 +263,7 @@ def _build_egg_carrier_analysis(
     if pulls_with_rounds <= 1:
         min_regular_pulls = 1
     else:
-        min_regular_pulls = max(2, int(round(pulls_with_rounds * 0.4)))
+        min_regular_pulls = max(2, math.ceil(pulls_with_rounds * 0.4))
 
     regular_carrier_ids = sorted(
         (pid for pid, cnt in carrier_pull_counts.items() if cnt >= min_regular_pulls),
@@ -324,6 +328,7 @@ def _build_egg_carrier_analysis(
 
         # Track which regular carriers participated in each round
         carried_in_round: dict[int, set[int]] = defaultdict(set)
+        friendly_ids = {int(x) for x in (fight.get("friendlyPlayers") or []) if int(x) in actors}
 
         for iv_idx, (pid, st, en, ended_at_wipe) in enumerate(intervals):
             duration_ms = max(0, en - st)
@@ -412,6 +417,25 @@ def _build_egg_carrier_analysis(
 
             pickup_rel_ms = max(0, st - f_start)
             end_rel_ms = max(0, en - f_start)
+            is_reg = pid in regular_carrier_set
+            if is_reg:
+                dead_regs_at_pickup: list[str] = []
+                all_regs_alive: bool | None = None
+            else:
+                dead_regs_at_pickup = sorted(
+                    actors[rpid]["name"]
+                    for rpid in regular_carrier_ids
+                    if (not friendly_ids or rpid in friendly_ids)
+                    and any(dts < st for dts in deaths_by_player.get(rpid, []))
+                )
+                all_regs_alive = len(dead_regs_at_pickup) == 0
+
+            # Enrich matched egg_fail (caustic_waves or egg_collision) with backup/regular-alive metadata
+            if matched_fail is not None:
+                matched_fail["is_regular"] = is_reg
+                matched_fail["all_regulars_alive_at_pickup"] = all_regs_alive
+                matched_fail["dead_regulars_at_pickup"] = dead_regs_at_pickup
+
             carrier_events.append(
                 {
                     "id": f"{report_code}-{fid}-{pid}-{st}-{iv_idx}-ec",
@@ -422,7 +446,9 @@ def _build_egg_carrier_analysis(
                     "player": player_name,
                     "class": player_class,
                     "target_id": pid,
-                    "is_regular": pid in regular_carrier_set,
+                    "is_regular": is_reg,
+                    "all_regulars_alive_at_pickup": all_regs_alive,
+                    "dead_regulars_at_pickup": dead_regs_at_pickup,
                     "status": status,
                     "break_reason": break_reason,
                     "player_was_dead": False,
@@ -445,7 +471,6 @@ def _build_egg_carrier_analysis(
             )
 
         # Check missed pickups for regular carriers on every completed Spectral Coils round
-        friendly_ids = {int(x) for x in (fight.get("friendlyPlayers") or []) if int(x) in actors}
         for r_i, r_coils in enumerate(rounds):
             r_num = r_i + 1
             first_coil = r_coils[0]
@@ -471,6 +496,8 @@ def _build_egg_carrier_analysis(
                         "class": actors[pid].get("subType", ""),
                         "target_id": pid,
                         "is_regular": True,
+                        "all_regulars_alive_at_pickup": None,
+                        "dead_regulars_at_pickup": [],
                         "status": "missed_dead" if was_dead else "missed_alive",
                         "break_reason": "missed_dead" if was_dead else "missed_alive",
                         "player_was_dead": was_dead,
@@ -578,12 +605,23 @@ def analyze_report_events(
 
         # ---- 1. Index events for Egg Fails & Wave Fails ----
         coils_casts: list[int] = []
+        coils_dmg_by_p: dict[int, list[int]] = defaultdict(list)
         cw_hits_by_p: dict[int, list[dict[str, Any]]] = defaultdict(list)
         splash_by_p: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        other_boss_dmg_by_p: dict[int, list[tuple[int, str]]] = defaultdict(list)
         constrictor_by_p: dict[int, list[int]] = defaultdict(list)
         putrid_by_p: dict[int, list[int]] = defaultdict(list)
         rancid_by_p: dict[int, list[int]] = defaultdict(list)
         shell_removes: list[dict[str, Any]] = []
+
+        PASSIVE_NON_SHELL_BREAK_DMG = {
+            SPELL_NOXIOUS_SPLASH,
+            SPELL_NOXIOUS_SHELL_DMG,
+            SPELL_CAUSTIC_WAVES,
+            SPELL_NECROTIC_VAPORS,
+            SPELL_PUTRID_MEMBRANE_DMG,
+            SPELL_STONE_VENOM_DMG,
+        }
 
         # Track consumables & active defensive buffs across the fight
         pot_counts: Counter[int] = Counter()
@@ -744,12 +782,25 @@ def analyze_report_events(
 
             if aid == SPELL_SPECTRAL_COILS_CAST and t == "cast":
                 coils_casts.append(ts)
+            elif aid == SPELL_SPECTRAL_COILS_DMG and t == "damage":
+                if tid in actors and actors[tid].get("type") == "Player":
+                    coils_dmg_by_p[tid].append(ts)
             elif aid == SPELL_CAUSTIC_WAVES and t == "damage" and not ev.get("tick"):
                 if tid in actors and actors[tid].get("type") == "Player":
                     cw_hits_by_p[tid].append(ev)
             elif aid == SPELL_NOXIOUS_SPLASH and t == "damage":
                 if tid in actors and actors[tid].get("type") == "Player":
                     splash_by_p[tid].append(ev)
+            elif (
+                t == "damage"
+                and not ev.get("tick")
+                and tid in actors
+                and actors[tid].get("type") == "Player"
+                and src_id != tid
+                and aid not in PASSIVE_NON_SHELL_BREAK_DMG
+                and aid != SPELL_SPECTRAL_COILS_DMG
+            ):
+                other_boss_dmg_by_p[tid].append((ts, ab_name or str(aid)))
             elif aid == SPELL_SOUL_CONSTRICTOR and t == "applydebuff":
                 constrictor_by_p[tid].append(ts)
             elif aid == SPELL_PUTRID_MEMBRANE_DEBUFF and t in ("applydebuff", "applydebuffstack"):
@@ -1319,10 +1370,34 @@ def analyze_report_events(
             h_map = {int(k): int(v) for k, v in (hw.get("heart_by_player") or {}).items()}
             b_map = {int(k): int(v) for k, v in (hw.get("boss_by_player") or {}).items()}
             t_map = {int(k): int(v) for k, v in (hw.get("total_by_player") or {}).items()}
+            fc_map = {
+                int(k): {"ts": int(v["ts"]), "ability_id": int(v.get("ability_id", 0))}
+                for k, v in (hw.get("first_cast_by_player") or {}).items()
+                if int(k) in actors and actors[int(k)].get("type") == "Player"
+            }
+            first_raid_ts = min((v["ts"] for v in fc_map.values()), default=None)
+            first_switch_pid = (
+                min(fc_map.keys(), key=lambda p: (fc_map[p]["ts"], actors[p]["name"]))
+                if fc_map
+                else None
+            )
+            first_switch_player = actors[first_switch_pid]["name"] if first_switch_pid is not None else None
+            first_switch_spell = (
+                abilities.get(fc_map[first_switch_pid]["ability_id"], "")
+                if first_switch_pid is not None
+                else None
+            )
+            first_switch_rel_time = (
+                format_rel_time(max(0, first_raid_ts - f_start)) if first_raid_ts is not None else None
+            )
+
             debris_counts: Counter[int] = Counter(
                 dpid for dpid, dts in debris_hits_in_fight if hs - 500 <= dts <= he + 500
             )
-            pids = sorted((set(h_map) | set(b_map) | set(t_map) | set(debris_counts)) & {pid for pid, a in actors.items() if a.get("type") == "Player"})
+            pids = sorted(
+                (set(h_map) | set(b_map) | set(t_map) | set(debris_counts) | set(fc_map))
+                & {pid for pid, a in actors.items() if a.get("type") == "Player"}
+            )
             p_rows: list[dict[str, Any]] = []
             for pid in pids:
                 hd = h_map.get(pid, 0)
@@ -1331,6 +1406,14 @@ def analyze_report_events(
                 tot = max(eff, t_map.get(pid, eff))
                 other = max(0, tot - eff)
                 share = round((hd / eff) * 100.0, 1) if eff > 0 else 0.0
+                was_dead = any(dts < hs for dts in deaths_by_player.get(pid, []))
+                fc_info = fc_map.get(pid)
+                if fc_info is not None and first_raid_ts is not None:
+                    sw_delay: int | None = max(0, fc_info["ts"] - first_raid_ts)
+                    sw_spell: str | None = abilities.get(fc_info["ability_id"], "") or str(fc_info["ability_id"])
+                else:
+                    sw_delay = None
+                    sw_spell = None
                 p_rows.append(
                     {
                         "player": actors[pid]["name"],
@@ -1343,6 +1426,9 @@ def analyze_report_events(
                         "other_dmg": other,
                         "heart_share_pct": share,
                         "debris_hits": debris_counts.get(pid, 0),
+                        "switch_delay_ms": sw_delay,
+                        "first_heart_spell": sw_spell,
+                        "was_dead_at_heart": was_dead,
                     }
                 )
             p_rows.sort(key=lambda r: (-r["total_boss_dmg"], r["player"]))
@@ -1358,6 +1444,9 @@ def analyze_report_events(
                     "start_rel_ms": start_rel,
                     "duration_ms": max(0, he - hs),
                     "deaths_before": count_deaths_before(hs),
+                    "first_switch_player": first_switch_player,
+                    "first_switch_spell": first_switch_spell,
+                    "first_switch_rel_time": first_switch_rel_time,
                     "total_heart_dmg": sum(r["heart_dmg"] for r in p_rows),
                     "total_boss_dmg": sum(r["boss_dmg"] for r in p_rows),
                     "total_effective_dmg": sum(r["total_boss_dmg"] for r in p_rows),
@@ -1443,10 +1532,13 @@ def analyze_report_events(
             if tid not in actors or actors[tid].get("type") != "Player":
                 continue
             rts = int(rem["timestamp"])
-            is_coils = any(abs(rts - cc) <= 5 for cc in coils_casts)
+            is_coils = any(abs(rts - cc) <= 5 for cc in coils_casts) or any(
+                -50 <= cd - rts <= 50 for cd in coils_dmg_by_p[tid]
+            )
             has_constrictor = any(0 <= ct - rts <= 50 for ct in constrictor_by_p[tid])
             cw_near = [e for e in cw_hits_by_p[tid] if -50 <= int(e["timestamp"]) - rts <= 50]
             splash_near = [e for e in splash_by_p[tid] if -50 <= int(e["timestamp"]) - rts <= 50]
+            other_dmg_near = [ab for dts, ab in other_boss_dmg_by_p[tid] if -50 <= dts - rts <= 50]
             death_near = [dt for dt in deaths_by_player[tid] if -50 <= dt - rts <= 150]
             putrid_near = [pt for pt in putrid_by_p[tid] if -50 <= pt - rts <= 50]
             rancid_near = [rt for rt in rancid_by_p[tid] if -50 <= rt - rts <= 50]
@@ -1483,10 +1575,16 @@ def analyze_report_events(
                         "has_rancid": bool(rancid_near),
                         "collision_partners": [],
                         "collision_gap_ms": None,
+                        "is_regular": True,
+                        "all_regulars_alive_at_pickup": None,
+                        "dead_regulars_at_pickup": [],
                         "events_url": build_events_url(report_code, fid, tid, cts, f_start, f_end),
                         "replay_url": build_replay_url(report_code, fid, rel_ms),
                     }
                 )
+            elif other_dmg_near:
+                # Another direct boss/add hit triggered the shell break -> NOT an egg collision!
+                removal_summary["other"] += 1
             elif splash_near:
                 first_sp = min(splash_near, key=lambda e: int(e["timestamp"]))
                 sts = int(first_sp["timestamp"])
@@ -1515,6 +1613,9 @@ def analyze_report_events(
                         "has_rancid": bool(rancid_near),
                         "collision_partners": [],
                         "collision_gap_ms": None,
+                        "is_regular": True,
+                        "all_regulars_alive_at_pickup": None,
+                        "dead_regulars_at_pickup": [],
                         "events_url": build_events_url(report_code, fid, tid, sts, f_start, f_end),
                         "replay_url": build_replay_url(report_code, fid, rel_ms),
                     }

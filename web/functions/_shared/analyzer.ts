@@ -18,13 +18,16 @@ import {
   SPELL_MALICE_DMG,
   SPELL_MELEE,
   SPELL_MOTHERS_WRATH_DMG,
+  SPELL_NECROTIC_VAPORS,
   SPELL_NOXIOUS_SHELL_DEBUFF,
   SPELL_NOXIOUS_SHELL_DMG,
   SPELL_NOXIOUS_SPLASH,
   SPELL_PUTRID_MEMBRANE_DEBUFF,
+  SPELL_PUTRID_MEMBRANE_DMG,
   SPELL_RANCID_YOLK,
   SPELL_SOUL_CONSTRICTOR,
   SPELL_SPECTRAL_COILS_CAST,
+  SPELL_SPECTRAL_COILS_DMG,
   SPELL_STONE_VENOM_DEBUFF,
   SPELL_STONE_VENOM_DMG,
   TANK_DEFAULT_INTERRUPT,
@@ -90,6 +93,7 @@ export interface ExtraTables {
     heart_by_player: Record<number, number>
     boss_by_player: Record<number, number>
     total_by_player: Record<number, number>
+    first_cast_by_player?: Record<number, { ts: number; ability_id: number }>
   }[]
   warden_dmg_by_fight?: Record<number, Record<number, number>>
   p3_boss_dmg_by_fight?: Record<number, Record<number, number>>
@@ -203,7 +207,7 @@ function buildEggCarrierAnalysis(
     }
   }
 
-  const minRegularPulls = pullsWithRounds <= 1 ? 1 : Math.max(2, Math.round(pullsWithRounds * 0.4))
+  const minRegularPulls = pullsWithRounds <= 1 ? 1 : Math.max(2, Math.ceil(pullsWithRounds * 0.4))
   const regularCarrierIds = Array.from(carrierPullCounts.entries())
     .filter(([, cnt]) => cnt >= minRegularPulls)
     .sort((a, b) => b[1] - a[1] || actors[a[0]].name.localeCompare(actors[b[0]].name))
@@ -282,6 +286,7 @@ function buildEggCarrierAnalysis(
     }
 
     const carriedInRound = new Map<number, Set<number>>()
+    const friendlyIds = new Set((fight.friendlyPlayers ?? []).map(Number).filter((id) => Boolean(actors[id])))
 
     intervals.forEach(([pid, st, en, endedAtWipe], ivIdx) => {
       const durationMs = Math.max(0, en - st)
@@ -368,6 +373,25 @@ function buildEggCarrierAnalysis(
 
       const pickupRelMs = Math.max(0, st - fStart)
       const endRelMs = Math.max(0, en - fStart)
+      const isReg = regularCarrierSet.has(pid)
+      const deadRegsAtPickup = isReg
+        ? []
+        : regularCarrierIds
+            .filter(
+              (rpid) =>
+                (friendlyIds.size === 0 || friendlyIds.has(rpid)) &&
+                (deathsByPlayer.get(rpid) ?? []).some((dts) => dts < st),
+            )
+            .map((rpid) => actors[rpid].name)
+            .sort((a, b) => a.localeCompare(b))
+      const allRegsAlive: boolean | null = isReg ? null : deadRegsAtPickup.length === 0
+
+      if (matchedFail) {
+        matchedFail.is_regular = isReg
+        matchedFail.all_regulars_alive_at_pickup = allRegsAlive
+        matchedFail.dead_regulars_at_pickup = deadRegsAtPickup
+      }
+
       carrierEvents.push({
         id: `${reportCode}-${fid}-${pid}-${st}-${ivIdx}-ec`,
         pull_num: pullNum,
@@ -377,7 +401,9 @@ function buildEggCarrierAnalysis(
         player: playerName,
         class: playerClass,
         target_id: pid,
-        is_regular: regularCarrierSet.has(pid),
+        is_regular: isReg,
+        all_regulars_alive_at_pickup: allRegsAlive,
+        dead_regulars_at_pickup: deadRegsAtPickup,
         status,
         break_reason: breakReason,
         player_was_dead: false,
@@ -399,7 +425,6 @@ function buildEggCarrierAnalysis(
       })
     })
 
-    const friendlyIds = new Set((fight.friendlyPlayers ?? []).map(Number).filter((id) => Boolean(actors[id])))
     rounds.forEach((rCoils, rI) => {
       const rNum = rI + 1
       const firstCoil = rCoils[0]
@@ -422,6 +447,8 @@ function buildEggCarrierAnalysis(
           class: actors[pid].subType ?? '',
           target_id: pid,
           is_regular: true,
+          all_regulars_alive_at_pickup: null,
+          dead_regulars_at_pickup: [],
           status: wasDead ? 'missed_dead' : 'missed_alive',
           break_reason: wasDead ? 'missed_dead' : 'missed_alive',
           player_was_dead: wasDead,
@@ -658,12 +685,22 @@ export function analyzeReportEventsTS(
     }
 
     const coilsCasts: number[] = []
+    const coilsDmgByP = new Map<number, number[]>()
     const cwHitsByP = new Map<number, WclEvent[]>()
     const splashByP = new Map<number, WclEvent[]>()
+    const otherBossDmgByP = new Map<number, [number, string][]>()
     const constrictorByP = new Map<number, number[]>()
     const putridByP = new Map<number, number[]>()
     const rancidByP = new Map<number, number[]>()
     const shellRemoves: WclEvent[] = []
+    const passiveNonShellBreakDmg = new Set<number>([
+      SPELL_NOXIOUS_SPLASH,
+      SPELL_NOXIOUS_SHELL_DMG,
+      SPELL_CAUSTIC_WAVES,
+      SPELL_NECROTIC_VAPORS,
+      SPELL_PUTRID_MEMBRANE_DMG,
+      SPELL_STONE_VENOM_DMG,
+    ])
 
     const potCounts = new Map<number, number>()
     const hsCounts = new Map<number, number>()
@@ -783,7 +820,11 @@ export function analyzeReportEventsTS(
       }
 
       if (aid === SPELL_SPECTRAL_COILS_CAST && t === 'cast') coilsCasts.push(ts)
-      else if (aid === SPELL_CAUSTIC_WAVES && t === 'damage' && !ev.tick && tid !== undefined && actors[tid]?.type === 'Player') {
+      else if (aid === SPELL_SPECTRAL_COILS_DMG && t === 'damage' && tid !== undefined && actors[tid]?.type === 'Player') {
+        const list = coilsDmgByP.get(tid) ?? []
+        list.push(ts)
+        coilsDmgByP.set(tid, list)
+      } else if (aid === SPELL_CAUSTIC_WAVES && t === 'damage' && !ev.tick && tid !== undefined && actors[tid]?.type === 'Player') {
         const list = cwHitsByP.get(tid) ?? []
         list.push(ev)
         cwHitsByP.set(tid, list)
@@ -791,6 +832,19 @@ export function analyzeReportEventsTS(
         const list = splashByP.get(tid) ?? []
         list.push(ev)
         splashByP.set(tid, list)
+      } else if (
+        t === 'damage' &&
+        !ev.tick &&
+        tid !== undefined &&
+        actors[tid]?.type === 'Player' &&
+        src !== tid &&
+        aid !== undefined &&
+        !passiveNonShellBreakDmg.has(aid) &&
+        aid !== SPELL_SPECTRAL_COILS_DMG
+      ) {
+        const list = otherBossDmgByP.get(tid) ?? []
+        list.push([ts, abName || String(aid)])
+        otherBossDmgByP.set(tid, list)
       } else if (aid === SPELL_SOUL_CONSTRICTOR && t === 'applydebuff' && tid !== undefined) {
         const list = constrictorByP.get(tid) ?? []
         list.push(ts)
@@ -1366,6 +1420,33 @@ export function analyzeReportEventsTS(
           debrisCounts.set(dh.pid, (debrisCounts.get(dh.pid) ?? 0) + 1)
         }
       }
+      const fcMap = new Map<number, { ts: number; ability_id: number }>()
+      for (const [k, v] of Object.entries(hw.first_cast_by_player ?? {})) {
+        const pid = Number(k)
+        if (actors[pid]?.type === 'Player') {
+          fcMap.set(pid, { ts: Number(v.ts), ability_id: Number(v.ability_id ?? 0) })
+        }
+      }
+      let firstRaidTs: number | null = null
+      let firstSwitchPid: number | null = null
+      for (const [pid, info] of fcMap.entries()) {
+        if (
+          firstRaidTs === null ||
+          info.ts < firstRaidTs ||
+          (info.ts === firstRaidTs && firstSwitchPid !== null && actors[pid].name.localeCompare(actors[firstSwitchPid].name) < 0)
+        ) {
+          firstRaidTs = info.ts
+          firstSwitchPid = pid
+        }
+      }
+      const firstSwitchPlayer = firstSwitchPid !== null ? actors[firstSwitchPid].name : null
+      const firstSwitchSpell =
+        firstSwitchPid !== null
+          ? abilities[fcMap.get(firstSwitchPid)!.ability_id] ?? ''
+          : null
+      const firstSwitchRelTime =
+        firstRaidTs !== null ? formatRelTime(Math.max(0, firstRaidTs - fStart)) : null
+
       const pidSet = new Set<number>()
       for (const mapObj of [hw.heart_by_player, hw.boss_by_player, hw.total_by_player]) {
         for (const k of Object.keys(mapObj)) {
@@ -1374,6 +1455,8 @@ export function analyzeReportEventsTS(
         }
       }
       for (const pid of debrisCounts.keys()) if (actors[pid]?.type === 'Player') pidSet.add(pid)
+      for (const pid of fcMap.keys()) pidSet.add(pid)
+
       const pRows = Array.from(pidSet)
         .map((pid) => {
           const hd = hw.heart_by_player[pid] ?? 0
@@ -1382,6 +1465,12 @@ export function analyzeReportEventsTS(
           const tot = Math.max(eff, hw.total_by_player[pid] ?? eff)
           const other = Math.max(0, tot - eff)
           const share = eff > 0 ? Math.round((hd / eff) * 1000) / 10 : 0
+          const wasDead = (deathsByPlayer.get(pid) ?? []).some((dts) => dts < hw.start_time)
+          const fcInfo = fcMap.get(pid)
+          const swDelay =
+            fcInfo !== undefined && firstRaidTs !== null ? Math.max(0, fcInfo.ts - firstRaidTs) : null
+          const swSpell =
+            fcInfo !== undefined ? abilities[fcInfo.ability_id] || String(fcInfo.ability_id) : null
           return {
             player: actors[pid].name,
             class: actors[pid].subType ?? '',
@@ -1393,6 +1482,9 @@ export function analyzeReportEventsTS(
             other_dmg: other,
             heart_share_pct: share,
             debris_hits: debrisCounts.get(pid) ?? 0,
+            switch_delay_ms: swDelay,
+            first_heart_spell: swSpell,
+            was_dead_at_heart: wasDead,
           }
         })
         .sort((a, b) => b.total_boss_dmg - a.total_boss_dmg || a.player.localeCompare(b.player))
@@ -1407,6 +1499,9 @@ export function analyzeReportEventsTS(
         start_rel_ms: startRel,
         duration_ms: Math.max(0, hw.end_time - hw.start_time),
         deaths_before: countDeathsBefore(hw.start_time),
+        first_switch_player: firstSwitchPlayer,
+        first_switch_spell: firstSwitchSpell,
+        first_switch_rel_time: firstSwitchRelTime,
         total_heart_dmg: pRows.reduce((s, r) => s + r.heart_dmg, 0),
         total_boss_dmg: pRows.reduce((s, r) => s + r.boss_dmg, 0),
         total_effective_dmg: pRows.reduce((s, r) => s + r.total_boss_dmg, 0),
@@ -1475,10 +1570,13 @@ export function analyzeReportEventsTS(
       const tid = rem.targetID
       if (tid === undefined || actors[tid]?.type !== 'Player') continue
       const rts = rem.timestamp
-      const isCoils = coilsCasts.some((cc) => Math.abs(rts - cc) <= 5)
+      const isCoils =
+        coilsCasts.some((cc) => Math.abs(rts - cc) <= 5) ||
+        (coilsDmgByP.get(tid) ?? []).some((cd) => cd - rts >= -50 && cd - rts <= 50)
       const hasConstrictor = (constrictorByP.get(tid) ?? []).some((ct) => ct - rts >= 0 && ct - rts <= 50)
       const cwNear = (cwHitsByP.get(tid) ?? []).filter((e) => e.timestamp - rts >= -50 && e.timestamp - rts <= 50)
       const splashNear = (splashByP.get(tid) ?? []).filter((e) => e.timestamp - rts >= -50 && e.timestamp - rts <= 50)
+      const otherDmgNear = (otherBossDmgByP.get(tid) ?? []).filter(([dts]) => dts - rts >= -50 && dts - rts <= 50)
       const deathNear = (deathsByPlayer.get(tid) ?? []).some((dt) => dt - rts >= -50 && dt - rts <= 150)
       const hasPutrid = (putridByP.get(tid) ?? []).some((pt) => pt - rts >= -50 && pt - rts <= 50)
       const hasRancid = (rancidByP.get(tid) ?? []).some((rt) => rt - rts >= -50 && rt - rts <= 50)
@@ -1513,9 +1611,14 @@ export function analyzeReportEventsTS(
           has_rancid: hasRancid,
           collision_partners: [],
           collision_gap_ms: null,
+          is_regular: true,
+          all_regulars_alive_at_pickup: null,
+          dead_regulars_at_pickup: [],
           events_url: buildEventsUrl(reportCode, fid, tid, cts, fStart, fEnd),
           replay_url: buildReplayUrl(reportCode, fid, relMs),
         })
+      } else if (otherDmgNear.length > 0) {
+        removalSummary.other++
       } else if (splashNear.length > 0) {
         const firstSp = splashNear.reduce((a, b) => (a.timestamp <= b.timestamp ? a : b))
         const sts = firstSp.timestamp
@@ -1542,6 +1645,9 @@ export function analyzeReportEventsTS(
           has_rancid: hasRancid,
           collision_partners: [],
           collision_gap_ms: null,
+          is_regular: true,
+          all_regulars_alive_at_pickup: null,
+          dead_regulars_at_pickup: [],
           events_url: buildEventsUrl(reportCode, fid, tid, sts, fStart, fEnd),
           replay_url: buildReplayUrl(reportCode, fid, relMs),
         })

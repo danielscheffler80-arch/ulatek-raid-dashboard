@@ -51,6 +51,9 @@ export interface EggFail {
   has_rancid: boolean
   collision_partners?: string[]
   collision_gap_ms?: number | null
+  is_regular?: boolean
+  all_regulars_alive_at_pickup?: boolean | null
+  dead_regulars_at_pickup?: string[]
   events_url: string
   replay_url: string
 }
@@ -74,6 +77,8 @@ export interface EggCarrierEvent {
   class: string
   target_id: number
   is_regular: boolean
+  all_regulars_alive_at_pickup?: boolean | null
+  dead_regulars_at_pickup?: string[]
   status: EggCarrierStatus
   break_reason: string
   player_was_dead: boolean
@@ -195,6 +200,9 @@ export interface HeartPlayerDamage {
   other_dmg: number
   heart_share_pct: number
   debris_hits: number
+  switch_delay_ms?: number | null
+  first_heart_spell?: string | null
+  was_dead_at_heart?: boolean
 }
 
 export interface HeartPhaseWindow {
@@ -207,6 +215,9 @@ export interface HeartPhaseWindow {
   start_rel_ms: number
   duration_ms: number
   deaths_before: number
+  first_switch_player?: string | null
+  first_switch_spell?: string | null
+  first_switch_rel_time?: string | null
   total_heart_dmg: number
   total_boss_dmg: number
   total_effective_dmg: number
