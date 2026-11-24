@@ -164,6 +164,16 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(tanksAll.stoneVenomCount).toBe(1)
     expect(tanksAll.stoneVenomLethalCount).toBe(1)
 
+    // Dead tank tentacle aggro is NOT a fail and must be excluded
+    const withDeadTank: ReportData = {
+      ...mockReport,
+      tank_fails: [
+        ...mockReport.tank_fails,
+        { ...mockReport.tank_fails[0], id: 't-dead-tank', tank_was_dead: true },
+      ],
+    }
+    expect(aggregateTankFails([withDeadTank], null).total).toBe(2)
+
     const tanksZero = aggregateTankFails([mockReport], 0)
     expect(tanksZero.total).toBe(1)
     expect(tanksZero.players[0].tank).toBe('Barrumir')

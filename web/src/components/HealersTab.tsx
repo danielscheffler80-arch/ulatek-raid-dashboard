@@ -283,9 +283,9 @@ export function HealersTab({
               tone={emergency.targetDiedCount > 0 ? 'destructive' : 'default'}
             />
             <KpiCard
-              label="Ø Schnellste Reaktion"
+              label="Ø Zeit bis 1. Heal"
               value={formatReactionSec(emergency.avgFastestMs)}
-              subtext={`Median: ${formatReactionSec(emergency.medianFastestMs)} bis erster Heiler ansetzt`}
+              subtext={`Median: ${formatReactionSec(emergency.medianFastestMs)} (je Drop der erste Heiler)`}
               icon={<Clock className="h-4 w-4" strokeWidth={1.75} />}
               tone={
                 emergency.avgFastestMs !== null && emergency.avgFastestMs <= 1200
@@ -408,7 +408,7 @@ export function HealersTab({
               tone={tankSoaks.soaksWithHealRatePct >= 80 ? 'success' : 'warning'}
             />
             <KpiCard
-              label="Ø Schnellste Tank-Reaktion"
+              label="Ø Zeit bis 1. Tank-Heal"
               value={formatReactionSec(tankSoaks.avgFastestMs)}
               subtext="Ab erstem Mother's Wrath / Stone Venom Hit"
               icon={<Clock className="h-4 w-4" strokeWidth={1.75} />}

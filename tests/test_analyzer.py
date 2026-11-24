@@ -167,6 +167,9 @@ def test_tank_fails_tentacle_aggro_and_stone_venom_under_30():
         {"timestamp": 173000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298418, "amount": 95000, "hitPoints": 306000, "maxHitPoints": 1700000, "fight": 41},
         {"timestamp": 174500, "type": "death", "targetID": 2, "killerID": 152, "killingAbilityGameID": 1298418, "fight": 41},
         {"timestamp": 174500, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 41},
+        # After Barrumir died at 174500, Betøng tanks Ula'tek at 179000 and Gore Rattle kills Narande at 180000 -> Barrumir was DEAD, NOT a tank fail!
+        {"timestamp": 179000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200000, "fight": 41},
+        {"timestamp": 180000, "type": "death", "targetID": 3, "killerID": 176, "killingAbilityGameID": 1, "fight": 41},
     ]
 
     rep = analyze_report_events(meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7")

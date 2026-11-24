@@ -675,6 +675,7 @@ export function aggregateTankFails(
   for (const rep of reports) {
     const label = getReportDisplayName(rep)
     for (const item of rep.tank_fails) {
+      if (item.tank_was_dead) continue
       if (subFilter !== 'all' && item.kind !== subFilter) continue
       raw.push({ ...item, reportCode: rep.code, reportLabel: label, reportDate: rep.date_iso })
     }

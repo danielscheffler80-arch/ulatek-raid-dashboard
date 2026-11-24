@@ -838,9 +838,17 @@ export async function fetchAndAnalyzeReport(
   // Keep includeResources: true ONLY for <35% damage (covers all low_hp_spike, tank <30%, and healer emergency drops in ~2 pages!)
   // plus Stone Venom / Mother's Wrath on tanks (~1 page for full tank-soak min_hp_pct).
   // All remaining damage/debuff/cast mechanic events use includeResources: false (full 10k-event pages) to stay well under Cloudflare's 50-subrequest limit!
+  // Exclude damage IDs that are ONLY evaluated at <35% HP (already fetched with HP in lowHpEvents)
+  // or fetched with full HP in tankHpEvents — eliminates ~20k+ unnecessary raid-tick events from JSON.parse CPU!
   const tankSoakHpIds = [SPELL_STONE_VENOM_DMG, SPELL_MOTHERS_WRATH_DMG]
-  const tankSoakHpIdSet = new Set<number>(tankSoakHpIds)
-  const nonHpDamageIds = allCoreIds.filter((id) => !tankSoakHpIdSet.has(id))
+  const skipNonHpDamageIdSet = new Set<number>([
+    ...tankSoakHpIds,
+    SPELL_PUTRID_MEMBRANE_DMG,
+    SPELL_NECROTIC_VAPORS,
+    SPELL_RAGE_OF_THE_SHACKLED_DMG,
+    SPELL_BLIGHT_VEIN_DMG,
+  ])
+  const nonHpDamageIds = allCoreIds.filter((id) => !skipNonHpDamageIdSet.has(id))
 
   const lowHpExpr =
     'type = "damage" and resources.hitPoints > 0 and resources.hitPoints * 100 < resources.maxHitPoints * 35'

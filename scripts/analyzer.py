@@ -1174,38 +1174,40 @@ def analyze_report_events(
                     if failed_tank_id is not None:
                         tank_was_dead = any(dts < ts for dts in deaths_by_player.get(failed_tank_id, []))
 
-                    rel_ms = ts - f_start
-                    tank_fails.append(
-                        {
-                            "id": f"{report_code}-{fid}-{tid}-{ts}-ta",
-                            "kind": "tentacle_aggro",
-                            "tank": actors[failed_tank_id]["name"] if failed_tank_id else "Unbekannt",
-                            "tank_class": actors[failed_tank_id].get("subType", "") if failed_tank_id else "",
-                            "tank_id": failed_tank_id or 0,
-                            "victim": actors[tid]["name"],
-                            "victim_class": actors[tid].get("subType", ""),
-                            "other_tank": actors[other_tank_id]["name"] if other_tank_id else None,
-                            "tank_was_dead": tank_was_dead,
-                            "min_hp_pct": None,
-                            "stacks": None,
-                            "lethal": True,
-                            "death_rel_time": format_rel_time(rel_ms),
-                            "death_ability": "Gore Rattle Melee",
-                            "ready_defs": [],
-                            "pot_ready": False,
-                            "hs_ready": False,
-                            "any_ready": False,
-                            "pull_num": pull_idx,
-                            "fight_id": fid,
-                            "is_kill": is_kill,
-                            "rel_time": format_rel_time(rel_ms),
-                            "rel_ms": rel_ms,
-                            "timestamp": ts,
-                            "deaths_before": count_deaths_before(ts),
-                            "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
-                            "replay_url": build_replay_url(report_code, fid, rel_ms),
-                        }
-                    )
+                    # If the responsible tank was already dead, this is not a tank fail
+                    if not tank_was_dead:
+                        rel_ms = ts - f_start
+                        tank_fails.append(
+                            {
+                                "id": f"{report_code}-{fid}-{tid}-{ts}-ta",
+                                "kind": "tentacle_aggro",
+                                "tank": actors[failed_tank_id]["name"] if failed_tank_id else "Unbekannt",
+                                "tank_class": actors[failed_tank_id].get("subType", "") if failed_tank_id else "",
+                                "tank_id": failed_tank_id or 0,
+                                "victim": actors[tid]["name"],
+                                "victim_class": actors[tid].get("subType", ""),
+                                "other_tank": actors[other_tank_id]["name"] if other_tank_id else None,
+                                "tank_was_dead": False,
+                                "min_hp_pct": None,
+                                "stacks": None,
+                                "lethal": True,
+                                "death_rel_time": format_rel_time(rel_ms),
+                                "death_ability": "Gore Rattle Melee",
+                                "ready_defs": [],
+                                "pot_ready": False,
+                                "hs_ready": False,
+                                "any_ready": False,
+                                "pull_num": pull_idx,
+                                "fight_id": fid,
+                                "is_kill": is_kill,
+                                "rel_time": format_rel_time(rel_ms),
+                                "rel_ms": rel_ms,
+                                "timestamp": ts,
+                                "deaths_before": count_deaths_before(ts),
+                                "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                                "replay_url": build_replay_url(report_code, fid, rel_ms),
+                            }
+                        )
 
             # Defensive / Low-HP spike & Death tracking
             if tid in actors and actors[tid].get("type") == "Player":

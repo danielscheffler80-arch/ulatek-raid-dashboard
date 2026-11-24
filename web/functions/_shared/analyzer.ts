@@ -615,7 +615,8 @@ export function analyzeReportEventsTS(
     const fStart = fight.startTime
     const fEnd = fight.endTime
     const isKill = Boolean(fight.kill)
-    const fevs = [...(eventsByFight[fid] ?? [])].sort((a, b) => a.timestamp - b.timestamp)
+    const fevs = eventsByFight[fid] ?? []
+    fevs.sort((a, b) => a.timestamp - b.timestamp)
 
     const fightPlayers = new Set<number>()
     for (const pid of fight.friendlyPlayers ?? []) {
@@ -1233,36 +1234,39 @@ export function analyzeReportEventsTS(
           const otherTankId = bossTankId ?? tankIds[1]
           const tankWasDead =
             failedTankId !== undefined && (deathsByPlayer.get(failedTankId) ?? []).some((dt) => dt < ts)
-          const relMs = ts - fStart
-          tankFails.push({
-            id: `${reportCode}-${fid}-${tid}-${ts}-ta`,
-            kind: 'tentacle_aggro',
-            tank: failedTankId !== undefined ? actors[failedTankId].name : 'Unbekannt',
-            tank_class: failedTankId !== undefined ? actors[failedTankId].subType ?? '' : '',
-            tank_id: failedTankId ?? 0,
-            victim: actors[tid].name,
-            victim_class: actors[tid].subType ?? '',
-            other_tank: otherTankId !== undefined ? actors[otherTankId].name : null,
-            tank_was_dead: tankWasDead,
-            min_hp_pct: null,
-            stacks: null,
-            lethal: true,
-            death_rel_time: formatRelTime(relMs),
-            death_ability: 'Gore Rattle Melee',
-            ready_defs: [],
-            pot_ready: false,
-            hs_ready: false,
-            any_ready: false,
-            pull_num: pullNum,
-            fight_id: fid,
-            is_kill: isKill,
-            rel_time: formatRelTime(relMs),
-            rel_ms: relMs,
-            timestamp: ts,
-            deaths_before: countDeathsBefore(ts),
-            events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
-            replay_url: buildReplayUrl(reportCode, fid, relMs),
-          })
+          // If the responsible tank was already dead, this is not a tank fail
+          if (!tankWasDead) {
+            const relMs = ts - fStart
+            tankFails.push({
+              id: `${reportCode}-${fid}-${tid}-${ts}-ta`,
+              kind: 'tentacle_aggro',
+              tank: failedTankId !== undefined ? actors[failedTankId].name : 'Unbekannt',
+              tank_class: failedTankId !== undefined ? actors[failedTankId].subType ?? '' : '',
+              tank_id: failedTankId ?? 0,
+              victim: actors[tid].name,
+              victim_class: actors[tid].subType ?? '',
+              other_tank: otherTankId !== undefined ? actors[otherTankId].name : null,
+              tank_was_dead: false,
+              min_hp_pct: null,
+              stacks: null,
+              lethal: true,
+              death_rel_time: formatRelTime(relMs),
+              death_ability: 'Gore Rattle Melee',
+              ready_defs: [],
+              pot_ready: false,
+              hs_ready: false,
+              any_ready: false,
+              pull_num: pullNum,
+              fight_id: fid,
+              is_kill: isKill,
+              rel_time: formatRelTime(relMs),
+              rel_ms: relMs,
+              timestamp: ts,
+              deaths_before: countDeathsBefore(ts),
+              events_url: buildEventsUrl(reportCode, fid, tid, ts, fStart, fEnd),
+              replay_url: buildReplayUrl(reportCode, fid, relMs),
+            })
+          }
         }
       }
 
@@ -1985,30 +1989,87 @@ function buildHealerAnalysis(
     }
     if (fightHealers.size === 0) return
 
-    const fevs = [...(eventsByFight[fid] ?? [])].sort((a, b) => a.timestamp - b.timestamp)
+    const fevs = eventsByFight[fid] ?? []
 
-    // Deduplicated deaths
+    // Single pass over fevs: deduplicated deaths, tank soak windows, and tank HP samples
+    interface SoakWindow {
+      tank_id: number
+      start_ts: number
+      last_stack_ts: number
+      stacks: number
+    }
     const playerDeaths: { ts: number; tid: number }[] = []
     const deathsByPlayer = new Map<number, number[]>()
     const seenDk = new Set<string>()
-    for (const ev of fevs) {
-      if (ev.type === 'death' && ev.targetID !== undefined && actors[ev.targetID]?.type === 'Player') {
-        const dk = `${ev.targetID}:${ev.timestamp}`
+    const soakWindows: SoakWindow[] = []
+    const activeWinByTank = new Map<number, SoakWindow>()
+    const tankHpSamples = new Map<number, { ts: number; pct: number }[]>()
+    const flushSoak = (tkId: number) => {
+      const w = activeWinByTank.get(tkId)
+      if (w) {
+        activeWinByTank.delete(tkId)
+        soakWindows.push(w)
+      }
+    }
+
+    for (let i = 0; i < fevs.length; i++) {
+      const ev = fevs[i]
+      const et = ev.type
+      const tid = ev.targetID
+      if (tid === undefined) continue
+      if (et === 'death' && actors[tid]?.type === 'Player') {
+        const dk = `${tid}:${ev.timestamp}`
         if (!seenDk.has(dk)) {
           seenDk.add(dk)
-          playerDeaths.push({ ts: ev.timestamp, tid: ev.targetID })
-          const list = deathsByPlayer.get(ev.targetID) ?? []
+          playerDeaths.push({ ts: ev.timestamp, tid })
+          const list = deathsByPlayer.get(tid) ?? []
           list.push(ev.timestamp)
-          deathsByPlayer.set(ev.targetID, list)
+          deathsByPlayer.set(tid, list)
+        }
+      } else if (tankIdSet.has(tid)) {
+        const aid = ev.abilityGameID
+        const ts = ev.timestamp
+        if (
+          (aid === SPELL_STONE_VENOM_DEBUFF && (et === 'applydebuff' || et === 'applydebuffstack')) ||
+          (aid === SPELL_MOTHERS_WRATH_DMG && et === 'damage')
+        ) {
+          let cur = activeWinByTank.get(tid)
+          if (cur && ts - cur.last_stack_ts > 3000) {
+            flushSoak(tid)
+            cur = undefined
+          }
+          if (!cur) {
+            const st = aid === SPELL_STONE_VENOM_DEBUFF ? Math.max(1, ev.stack ?? 1) : 1
+            activeWinByTank.set(tid, { tank_id: tid, start_ts: ts, last_stack_ts: ts, stacks: st })
+          } else {
+            cur.last_stack_ts = ts
+            if (aid === SPELL_STONE_VENOM_DEBUFF) {
+              if (ev.stack !== undefined) cur.stacks = Math.max(cur.stacks, ev.stack)
+              else if (et === 'applydebuffstack') cur.stacks += 1
+            }
+          }
+        }
+        if (et === 'damage' && ev.hitPoints !== undefined && ev.maxHitPoints && ev.maxHitPoints > 0) {
+          const list = tankHpSamples.get(tid) ?? []
+          list.push({ ts, pct: Math.round((ev.hitPoints / ev.maxHitPoints) * 1000) / 10 })
+          tankHpSamples.set(tid, list)
         }
       }
     }
-    const countDeathsBefore = (tsNow: number) => playerDeaths.reduce((c, d) => c + (d.ts < tsNow ? 1 : 0), 0)
+    for (const tkId of Array.from(activeWinByTank.keys())) flushSoak(tkId)
+
+    const countDeathsBefore = (tsNow: number) => {
+      let c = 0
+      for (let i = 0; i < playerDeaths.length; i++) {
+        if (playerDeaths[i].ts < tsNow) c++
+      }
+      return c
+    }
 
     const rawCasts =
       hcastsByFight.get(fid) ??
       fevs.filter((ev) => (ev.type === 'cast' || ev.type === 'begincast') && ev.sourceID !== undefined && fightHealers.has(ev.sourceID))
-    const sortedCasts = [...rawCasts].sort((a, b) => a.timestamp - b.timestamp)
+    if (rawCasts.length > 1) rawCasts.sort((a, b) => a.timestamp - b.timestamp)
 
     const recentBegincast = new Map<string, number>()
     const healerAllCastTs = new Map<number, number[]>()
@@ -2021,34 +2082,47 @@ function buildHealerAnalysis(
       is_hardcast: boolean
       is_external: boolean
     }
-    const healerTargetedHeals = new Map<number, TargetedHeal[]>()
+    const healerHealsByTarget = new Map<string, TargetedHeal[]>()
 
-    for (const ev of sortedCasts) {
+    for (let i = 0; i < rawCasts.length; i++) {
+      const ev = rawCasts[i]
       const src = ev.sourceID
       if (src === undefined || !fightHealers.has(src)) continue
       const ts = ev.timestamp
       const aid = ev.abilityGameID ?? 0
       if (ev.type === 'begincast') {
         recentBegincast.set(`${src}:${aid}`, ts)
-        const allList = healerAllCastTs.get(src) ?? []
+        let allList = healerAllCastTs.get(src)
+        if (!allList) {
+          allList = []
+          healerAllCastTs.set(src, allList)
+        }
         allList.push(ts)
-        healerAllCastTs.set(src, allList)
         continue
       }
       if (ev.type !== 'cast') continue
 
-      const allList = healerAllCastTs.get(src) ?? []
+      let allList = healerAllCastTs.get(src)
+      if (!allList) {
+        allList = []
+        healerAllCastTs.set(src, allList)
+      }
       allList.push(ts)
-      healerAllCastTs.set(src, allList)
 
       const abName = (abilities[aid] ?? '').trim()
       const abLow = abName.toLowerCase()
       if (abLow) {
-        const cdMap = healerCdCasts.get(src) ?? new Map<string, number[]>()
-        const tsList = cdMap.get(abLow) ?? []
+        let cdMap = healerCdCasts.get(src)
+        if (!cdMap) {
+          cdMap = new Map<string, number[]>()
+          healerCdCasts.set(src, cdMap)
+        }
+        let tsList = cdMap.get(abLow)
+        if (!tsList) {
+          tsList = []
+          cdMap.set(abLow, tsList)
+        }
         tsList.push(ts)
-        cdMap.set(abLow, tsList)
-        healerCdCasts.set(src, cdMap)
       }
 
       const tid = ev.targetID
@@ -2060,7 +2134,12 @@ function buildHealerAnalysis(
           isHardcast = true
           startTs = bcTs
         }
-        const hList = healerTargetedHeals.get(src) ?? []
+        const hKey = `${src}:${tid}`
+        let hList = healerHealsByTarget.get(hKey)
+        if (!hList) {
+          hList = []
+          healerHealsByTarget.set(hKey, hList)
+        }
         hList.push({
           start_ts: startTs,
           cast_ts: ts,
@@ -2069,41 +2148,74 @@ function buildHealerAnalysis(
           is_hardcast: isHardcast,
           is_external: isHealerExternalSpell(abName),
         })
-        healerTargetedHeals.set(src, hList)
       }
     }
 
     const isHealerDeadAt = (hid: number, tsNow: number): boolean => {
-      const dlist = (deathsByPlayer.get(hid) ?? []).filter((dts) => dts <= tsNow)
-      if (dlist.length === 0) return false
-      const lastDeath = Math.max(...dlist)
-      return !(healerAllCastTs.get(hid) ?? []).some((cts) => cts > lastDeath && cts <= tsNow)
+      const dAll = deathsByPlayer.get(hid)
+      if (!dAll || dAll.length === 0) return false
+      let lastDeath = -1
+      for (let i = 0; i < dAll.length; i++) {
+        if (dAll[i] <= tsNow && dAll[i] > lastDeath) lastDeath = dAll[i]
+      }
+      if (lastDeath < 0) return false
+      const casts = healerAllCastTs.get(hid)
+      if (!casts) return true
+      for (let i = 0; i < casts.length; i++) {
+        if (casts[i] > lastDeath && casts[i] <= tsNow) return false
+      }
+      return true
     }
 
     const computeReadyInstants = (hid: number, tsNow: number): string[] => {
       const cls = actors[hid].subType ?? ''
       const spec = fightHealers.get(hid) ?? ''
       const specs = getHealerInstantSpecs(cls, spec)
-      const known = knownHealerSpells.get(hid) ?? new Set<string>()
+      const known = knownHealerSpells.get(hid)
       const cdMap = healerCdCasts.get(hid)
       const ready: string[] = []
-      for (const entry of specs) {
+      for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+        const entry = specs[sIdx]
         const sname = entry.name
         const slow = sname.toLowerCase()
-        if (!entry.baseline && !known.has(slow)) continue
-        let recharges: number[] = []
-        for (const cts of cdMap?.get(slow) ?? []) {
-          if (cts >= tsNow) break
-          recharges = recharges.filter((r) => r > cts)
-          const base = recharges.length > 0 ? recharges[recharges.length - 1] : cts
-          recharges.push(base + entry.cd_ms)
-          if (recharges.length > entry.charges) {
-            recharges = recharges.slice(-entry.charges)
-          }
-        }
-        const activeRecharges = recharges.filter((r) => r > tsNow)
-        if (activeRecharges.length < entry.charges) {
+        if (!entry.baseline && (!known || !known.has(slow))) continue
+        const castTimes = cdMap?.get(slow)
+        if (!castTimes || castTimes.length === 0) {
           ready.push(sname)
+          continue
+        }
+        if (entry.charges <= 1) {
+          let lastEnd = -1
+          for (let j = 0; j < castTimes.length; j++) {
+            const cts = castTimes[j]
+            if (cts >= tsNow) break
+            lastEnd = (lastEnd > cts ? lastEnd : cts) + entry.cd_ms
+          }
+          if (lastEnd <= tsNow) ready.push(sname)
+        } else {
+          // 2-charge sequential recharge without per-cast array allocations
+          let r0 = -1
+          let r1 = -1
+          for (let j = 0; j < castTimes.length; j++) {
+            const cts = castTimes[j]
+            if (cts >= tsNow) break
+            if (r0 <= cts) {
+              r0 = r1 > cts ? r1 : -1
+              r1 = -1
+            }
+            const base = r1 > cts ? r1 : r0 > cts ? r0 : cts
+            const nextEnd = base + entry.cd_ms
+            if (r0 <= cts) {
+              r0 = nextEnd
+            } else if (r1 <= cts) {
+              r1 = nextEnd
+            } else {
+              r0 = r1
+              r1 = nextEnd
+            }
+          }
+          const active = (r0 > tsNow ? 1 : 0) + (r1 > tsNow ? 1 : 0)
+          if (active < entry.charges) ready.push(sname)
         }
       }
       return ready
@@ -2115,8 +2227,10 @@ function buildHealerAnalysis(
 
     // ---- Part A: Emergency Heals (isolated non-tank <35% drops, <= 3 unique players low in +-2s) ----
     const rawLow = lowHpByFight.get(fid) ?? fevs.filter((ev) => ev.type === 'damage')
+    if (rawLow.length > 1) rawLow.sort((a, b) => a.timestamp - b.timestamp)
     const lowHits: { ts: number; tid: number; hpPct: number; abName: string }[] = []
-    for (const ev of [...rawLow].sort((a, b) => a.timestamp - b.timestamp)) {
+    for (let i = 0; i < rawLow.length; i++) {
+      const ev = rawLow[i]
       if (ev.type !== 'damage') continue
       const tid = ev.targetID
       if (tid === undefined || actors[tid]?.type !== 'Player') continue
@@ -2124,6 +2238,11 @@ function buildHealerAnalysis(
       const mhp = ev.maxHitPoints
       if (hp === undefined || !mhp || mhp <= 0) continue
       const hpPct = Math.round((hp / mhp) * 1000) / 10
+      if (tankIdSet.has(tid)) {
+        const list = tankHpSamples.get(tid) ?? []
+        list.push({ ts: ev.timestamp, pct: hpPct })
+        tankHpSamples.set(tid, list)
+      }
       if (hpPct > 0.0 && hpPct < 35.0) {
         const aid = ev.abilityGameID
         const abName = (aid !== undefined ? abilities[aid] ?? String(aid) : 'Unbekannt') || 'Unbekannt'
@@ -2134,8 +2253,8 @@ function buildHealerAnalysis(
     const lastEmergTsByVictim = new Map<number, number>()
     let winL = 0
     let winR = 0
-    for (const hit of lowHits) {
-      const { ts, tid, hpPct, abName } = hit
+    for (let hIdx = 0; hIdx < lowHits.length; hIdx++) {
+      const { ts, tid, hpPct, abName } = lowHits[hIdx]
       if (tankIdSet.has(tid)) continue
       while (winL < lowHits.length && lowHits[winL].ts < ts - 2000) winL++
       while (winR < lowHits.length && lowHits[winR].ts <= ts + 2000) winR++
@@ -2147,19 +2266,35 @@ function buildHealerAnalysis(
       if (ts - (lastEmergTsByVictim.get(tid) ?? -999_999) < 4000) continue
       lastEmergTsByVictim.set(tid, ts)
 
-      const nextDeaths = (deathsByPlayer.get(tid) ?? [])
-        .filter((dts) => dts >= ts)
-        .map((dts) => dts - ts)
-      const timeToDeathMs = nextDeaths.length > 0 ? Math.min(...nextDeaths) : null
+      const dList = deathsByPlayer.get(tid)
+      let timeToDeathMs: number | null = null
+      if (dList) {
+        for (let di = 0; di < dList.length; di++) {
+          const diff = dList[di] - ts
+          if (diff >= 0 && (timeToDeathMs === null || diff < timeToDeathMs)) {
+            timeToDeathMs = diff
+          }
+        }
+      }
       const targetDied = timeToDeathMs !== null && timeToDeathMs <= 4500
       const reactions: Record<string, unknown>[] = []
 
-      for (const hid of sortedHealerIds) {
+      for (let hi = 0; hi < sortedHealerIds.length; hi++) {
+        const hid = sortedHealerIds[hi]
         if (hid === tid || isHealerDeadAt(hid, ts)) continue
         const readyInst = computeReadyInstants(hid, ts)
-        const matchedHeal = (healerTargetedHeals.get(hid) ?? []).find(
-          (h) => h.target_id === tid && h.cast_ts >= ts && h.start_ts >= ts - 500 && h.start_ts <= ts + 4000,
-        )
+        const targetHeals = healerHealsByTarget.get(`${hid}:${tid}`)
+        let matchedHeal: TargetedHeal | undefined
+        if (targetHeals) {
+          for (let j = 0; j < targetHeals.length; j++) {
+            const h = targetHeals[j]
+            if (h.start_ts > ts + 4000) break
+            if (h.cast_ts >= ts && h.start_ts >= ts - 500) {
+              matchedHeal = h
+              break
+            }
+          }
+        }
         if (matchedHeal) {
           const rxMs = Math.max(0, matchedHeal.start_ts - ts)
           reactions.push({
@@ -2194,15 +2329,17 @@ function buildHealerAnalysis(
 
       if (reactions.length === 0) continue
 
-      const reacted = reactions.filter((r) => r.reaction_ms !== null)
       let fastest: Record<string, unknown> | null = null
-      for (const r of reacted) {
-        if (!fastest || (r.reaction_ms as number) < (fastest.reaction_ms as number)) fastest = r
+      for (let ri = 0; ri < reactions.length; ri++) {
+        const r = reactions[ri]
+        if (r.reaction_ms !== null && (!fastest || (r.reaction_ms as number) < (fastest.reaction_ms as number))) {
+          fastest = r
+        }
       }
       const fastestMs = fastest ? (fastest.reaction_ms as number) : null
       if (!targetDied && fastestMs !== null && fastestMs <= 1200) {
-        for (const r of reactions) {
-          if (r.status === 'no_heal') r.covered_fast_by_other = true
+        for (let ri = 0; ri < reactions.length; ri++) {
+          if (reactions[ri].status === 'no_heal') reactions[ri].covered_fast_by_other = true
         }
       }
 
@@ -2234,88 +2371,46 @@ function buildHealerAnalysis(
     }
 
     // ---- Part B: Boss-Tank Soak Heal (Mother's Wrath / Stone Venom windows) ----
-    interface SoakWindow {
-      tank_id: number
-      start_ts: number
-      last_stack_ts: number
-      stacks: number
-    }
-    const soakWindows: SoakWindow[] = []
-    const activeWinByTank = new Map<number, SoakWindow>()
-    const flushSoak = (tkId: number) => {
-      const w = activeWinByTank.get(tkId)
-      if (w) {
-        activeWinByTank.delete(tkId)
-        soakWindows.push(w)
-      }
-    }
-
-    for (const ev of fevs) {
-      const tid = ev.targetID
-      if (tid === undefined || !tankIdSet.has(tid)) continue
-      const t = ev.type
-      const aid = ev.abilityGameID
-      const ts = ev.timestamp
-      const isSoakEv =
-        (aid === SPELL_STONE_VENOM_DEBUFF && (t === 'applydebuff' || t === 'applydebuffstack')) ||
-        (aid === SPELL_MOTHERS_WRATH_DMG && t === 'damage')
-      if (isSoakEv) {
-        let cur = activeWinByTank.get(tid)
-        if (cur && ts - cur.last_stack_ts > 3000) {
-          flushSoak(tid)
-          cur = undefined
-        }
-        if (!cur) {
-          const st = aid === SPELL_STONE_VENOM_DEBUFF ? Math.max(1, ev.stack ?? 1) : 1
-          activeWinByTank.set(tid, { tank_id: tid, start_ts: ts, last_stack_ts: ts, stacks: st })
-        } else {
-          cur.last_stack_ts = ts
-          if (aid === SPELL_STONE_VENOM_DEBUFF) {
-            if (ev.stack !== undefined) cur.stacks = Math.max(cur.stacks, ev.stack)
-            else if (t === 'applydebuffstack') cur.stacks += 1
-          }
-        }
-      }
-    }
-    for (const tkId of Array.from(activeWinByTank.keys())) flushSoak(tkId)
-
-    const tankHpSamples = new Map<number, { ts: number; pct: number }[]>()
-    for (const srcList of [fevs, rawLow]) {
-      for (const ev of srcList) {
-        if (ev.type !== 'damage') continue
-        const tid = ev.targetID
-        if (tid === undefined || !tankIdSet.has(tid)) continue
-        if (ev.hitPoints !== undefined && ev.maxHitPoints && ev.maxHitPoints > 0) {
-          const list = tankHpSamples.get(tid) ?? []
-          list.push({ ts: ev.timestamp, pct: Math.round((ev.hitPoints / ev.maxHitPoints) * 1000) / 10 })
-          tankHpSamples.set(tid, list)
-        }
-      }
-    }
-
     soakWindows.sort((a, b) => a.start_ts - b.start_ts)
-    for (const w of soakWindows) {
+    for (let wi = 0; wi < soakWindows.length; wi++) {
+      const w = soakWindows[wi]
       const tkId = w.tank_id
       const wStart = w.start_ts
       const wEnd = w.last_stack_ts + 5000
-      const hpVals = (tankHpSamples.get(tkId) ?? [])
-        .filter((s) => s.ts >= wStart && s.ts <= wEnd)
-        .map((s) => s.pct)
-      const minHpPct = hpVals.length > 0 ? Math.min(...hpVals) : null
+      let minHpPct: number | null = null
+      const samples = tankHpSamples.get(tkId)
+      if (samples) {
+        for (let si = 0; si < samples.length; si++) {
+          const s = samples[si]
+          if (s.ts >= wStart && s.ts <= wEnd && (minHpPct === null || s.pct < minHpPct)) {
+            minHpPct = s.pct
+          }
+        }
+      }
       const tankDied = (deathsByPlayer.get(tkId) ?? []).some((dts) => dts >= wStart && dts <= wEnd)
 
       const soakRx: Record<string, unknown>[] = []
-      for (const hid of sortedHealerIds) {
+      for (let hi = 0; hi < sortedHealerIds.length; hi++) {
+        const hid = sortedHealerIds[hi]
         if (isHealerDeadAt(hid, wStart)) continue
-        const matched = (healerTargetedHeals.get(hid) ?? []).filter(
-          (h) => h.target_id === tkId && h.cast_ts >= wStart - 1000 && h.cast_ts <= wEnd && h.start_ts <= wEnd,
-        )
+        const targetHeals = healerHealsByTarget.get(`${hid}:${tkId}`)
+        const matched: TargetedHeal[] = []
+        if (targetHeals) {
+          for (let j = 0; j < targetHeals.length; j++) {
+            const h = targetHeals[j]
+            if (h.start_ts > wEnd) break
+            if (h.cast_ts >= wStart - 1000 && h.cast_ts <= wEnd) {
+              matched.push(h)
+            }
+          }
+        }
         const healed = matched.length > 0
         const rxMs = healed ? Math.max(0, matched[0].start_ts - wStart) : null
         const usedExt = matched.some((m) => m.is_external)
         const uniqSpells: string[] = []
-        for (const m of matched) {
-          if (!uniqSpells.includes(m.spell)) uniqSpells.push(m.spell)
+        for (let mi = 0; mi < matched.length; mi++) {
+          const sp = matched[mi].spell
+          if (!uniqSpells.includes(sp)) uniqSpells.push(sp)
           if (uniqSpells.length >= 4) break
         }
         soakRx.push({
@@ -2335,7 +2430,8 @@ function buildHealerAnalysis(
 
       const healedList = soakRx.filter((r) => r.healed && r.reaction_ms !== null)
       let fastestTk: Record<string, unknown> | null = null
-      for (const r of healedList) {
+      for (let ri = 0; ri < healedList.length; ri++) {
+        const r = healedList[ri]
         if (!fastestTk || (r.reaction_ms as number) < (fastestTk.reaction_ms as number)) fastestTk = r
       }
       const relMs = wStart - fStart
