@@ -1172,6 +1172,22 @@ export interface KickPlayerRow {
   pulls: number[]
 }
 
+export interface KickSidePlayerRow {
+  player: string
+  className: string
+  kicks: number
+  missedReady: number
+  pulls: number[]
+}
+
+export interface KickSideGroup {
+  side: string
+  tankClass: string
+  totalKicks: number
+  missedCasts: number
+  players: KickSidePlayerRow[]
+}
+
 function groupPhaseEventsByPlayer(items: WithReport<PhaseEvent>[]): PhasePlayerCountRow[] {
   const map = new Map<string, PhasePlayerCountRow>()
   for (const item of items) {
@@ -1285,31 +1301,59 @@ export function aggregatePhaseAnalysis(
     return row
   }
 
+  const sideTotalKicks = new Map<string, number>()
+  const sideMissedCasts = new Map<string, number>()
+  const sidePlayerMap = new Map<
+    string,
+    Map<string, { player: string; className: string; kicks: number; missedReady: number; pullSet: Set<number> }>
+  >()
+
+  const ensureSidePlayer = (side: string, player: string, className: string) => {
+    let pmap = sidePlayerMap.get(side)
+    if (!pmap) {
+      pmap = new Map()
+      sidePlayerMap.set(side, pmap)
+    }
+    let row = pmap.get(player)
+    if (!row) {
+      row = { player, className, kicks: 0, missedReady: 0, pullSet: new Set<number>() }
+      pmap.set(player, row)
+    } else if (!row.className && className) {
+      row.className = className
+    }
+    return row
+  }
+
   for (const k of allKicks) {
     const side = k.side || 'Unbekannt'
     sideSet.add(side)
     if (k.side_tank_class) kickSideTankClass[side] = k.side_tank_class
+    sideTotalKicks.set(side, (sideTotalKicks.get(side) ?? 0) + 1)
+
     const row = ensureKickPlayer(k.player, k.class)
     row.totalKicks++
     row.kicksBySide[side] = (row.kicksBySide[side] ?? 0) + 1
     row.pullSet.add(k.pull_num)
-    for (const rk of k.ready_kickers ?? []) {
-      const other = ensureKickPlayer(rk.player, rk.class)
-      other.unusedReadyCount++
-      other.unusedReadyBySide[side] = (other.unusedReadyBySide[side] ?? 0) + 1
-      other.pullSet.add(k.pull_num)
-    }
+
+    const sp = ensureSidePlayer(side, k.player, k.class)
+    sp.kicks++
+    sp.pullSet.add(k.pull_num)
   }
 
   for (const m of allMissed) {
     const side = m.side || 'Unbekannt'
     sideSet.add(side)
     if (m.side_tank_class) kickSideTankClass[side] = m.side_tank_class
+    sideMissedCasts.set(side, (sideMissedCasts.get(side) ?? 0) + 1)
     for (const rk of m.ready_kickers ?? []) {
       const row = ensureKickPlayer(rk.player, rk.class)
       row.missedReadyCount++
       row.missedBySide[side] = (row.missedBySide[side] ?? 0) + 1
       row.pullSet.add(m.pull_num)
+
+      const sp = ensureSidePlayer(side, rk.player, rk.class)
+      sp.missedReady++
+      sp.pullSet.add(m.pull_num)
     }
   }
 
@@ -1323,9 +1367,32 @@ export function aggregatePhaseAnalysis(
       (a, b) =>
         b.missedReadyCount - a.missedReadyCount ||
         b.totalKicks - a.totalKicks ||
-        b.unusedReadyCount - a.unusedReadyCount ||
         a.player.localeCompare(b.player),
     )
+
+  const kickGroups: KickSideGroup[] = kickSides.map((side) => {
+    const pmap = sidePlayerMap.get(side)
+    const players: KickSidePlayerRow[] = pmap
+      ? Array.from(pmap.values())
+          .map(({ pullSet, ...rest }) => ({
+            ...rest,
+            pulls: Array.from(pullSet).sort((a, b) => a - b),
+          }))
+          .sort(
+            (a, b) =>
+              b.missedReady - a.missedReady ||
+              b.kicks - a.kicks ||
+              a.player.localeCompare(b.player),
+          )
+      : []
+    return {
+      side,
+      tankClass: kickSideTankClass[side] ?? '',
+      totalKicks: sideTotalKicks.get(side) ?? 0,
+      missedCasts: sideMissedCasts.get(side) ?? 0,
+      players,
+    }
+  })
 
   return {
     blightOverlaps,
@@ -1340,6 +1407,7 @@ export function aggregatePhaseAnalysis(
     kickSides,
     kickSideTankClass,
     kickPlayers,
+    kickGroups,
     p2Avoidables,
     p3Avoidables,
     avoidablePlayers: groupPhaseEventsByPlayer([...p2Avoidables, ...p3Avoidables]),

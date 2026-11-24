@@ -358,12 +358,23 @@ describe('stats aggregation and maxDeaths filtering', () => {
     const betongK = res.kickPlayers.find((p) => p.player === 'Betøng')!
     expect(betongK.totalKicks).toBe(1)
     expect(betongK.kicksBySide['Betøng Seite']).toBe(1)
-    const narandeK = res.kickPlayers.find((p) => p.player === 'Narande')!
-    expect(narandeK.unusedReadyCount).toBe(1)
-    expect(narandeK.unusedReadyBySide['Betøng Seite']).toBe(1)
+    // Narande only had kick rdy on a cast that Betøng already kicked -> MUST be excluded!
+    expect(res.kickPlayers.find((p) => p.player === 'Narande')).toBeUndefined()
     const barrumirK = res.kickPlayers.find((p) => p.player === 'Barrumir')!
     expect(barrumirK.missedReadyCount).toBe(1)
     expect(barrumirK.missedBySide['Barrumir Seite']).toBe(1)
+    // Grouped by side
+    expect(res.kickGroups).toHaveLength(2)
+    const betongGrp = res.kickGroups.find((g) => g.side === 'Betøng Seite')!
+    expect(betongGrp.totalKicks).toBe(1)
+    expect(betongGrp.missedCasts).toBe(0)
+    expect(betongGrp.players.map((p) => p.player)).toEqual(['Betøng'])
+    const barrumirGrp = res.kickGroups.find((g) => g.side === 'Barrumir Seite')!
+    expect(barrumirGrp.totalKicks).toBe(0)
+    expect(barrumirGrp.missedCasts).toBe(1)
+    expect(barrumirGrp.players).toEqual([
+      expect.objectContaining({ player: 'Barrumir', kicks: 0, missedReady: 1 }),
+    ])
     expect(res.wardenPlayers[0].player).toBe('Narande')
     expect(res.wardenPlayers[0].totalDamage).toBe(25_000_000)
     expect(res.wardenPulls[0].kill_sync_delta_ms).toBe(3500)

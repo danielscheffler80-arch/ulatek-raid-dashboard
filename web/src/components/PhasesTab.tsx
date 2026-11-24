@@ -194,9 +194,104 @@ export function PhasesTab({
           )
         )}
 
-        {/* 2. KICKS & MISSED CASTS (MIT SEITEN-ZUORDNUNG, KLASSENFARBEN & KICK-READY-CHECK) */}
+        {/* 2. KICKS & MISSED CASTS (NACH GRUPPEN/SEITEN AUFGETEILT — NUR KICKS & RDY BEI DURCHGEGANGENEM CAST) */}
         {subTab === 'kicks' && (
           <div className="p-4 space-y-5">
+            {/* Grouped Kick Statistics by Side (Barrumir Seite vs. Betøng Seite) */}
+            <div>
+              <h3 className="mb-2.5 text-[12.5px] font-semibold uppercase tracking-wider text-[#34f5c5]">
+                Kicks nach Gruppe / Seite ({totalKicks} Kicks · {totalMissedKicks} durch)
+              </h3>
+              {stats.kickGroups.length === 0 ? (
+                <div className="text-[12px] text-[#8b96a9]">
+                  Keine Malice-/Vicious-Echoes-Kicks im gewählten Filter.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  {stats.kickGroups.map((grp) => {
+                    const visiblePlayers = grp.players.filter((p) => matchName(p.player))
+                    return (
+                      <div
+                        key={grp.side}
+                        className="overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.8)] px-3.5 py-2.5">
+                          <div className="text-[13px] font-semibold">
+                            <SideLabel side={grp.side} tankClass={grp.tankClass} />
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Pill variant="success">{grp.totalKicks}× gekickt</Pill>
+                            <Pill variant={grp.missedCasts > 0 ? 'destructive' : 'neutral'}>
+                              {grp.missedCasts}× durch
+                            </Pill>
+                          </div>
+                        </div>
+
+                        {visiblePlayers.length === 0 ? (
+                          <div className="px-3.5 py-3 text-[12px] text-[#8b96a9]">
+                            Keine Kicks oder verpassten Casts mit bereitem Kick auf dieser Seite.
+                          </div>
+                        ) : (
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-[rgba(255,255,255,0.06)] text-[10.5px] font-medium uppercase tracking-wider text-[#8b96a9]">
+                                <th className="py-2 pl-3.5 pr-2">Spieler</th>
+                                <th className="py-2 px-2 text-right">Gekickt</th>
+                                {grp.missedCasts > 0 && (
+                                  <th className="py-2 px-2 text-right text-[#f87171]">
+                                    Rdy (Cast durch)
+                                  </th>
+                                )}
+                                <th className="py-2 pl-2 pr-3.5 text-right">Trys</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visiblePlayers.map((row) => (
+                                <tr
+                                  key={`${grp.side}-${row.player}`}
+                                  className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors"
+                                >
+                                  <td className="py-2 pl-3.5 pr-2">
+                                    <span className="inline-flex items-center gap-2 text-[13px] font-semibold">
+                                      <ClassDot className={row.className} />
+                                      <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
+                                        {row.player}
+                                      </span>
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-2 text-right font-mono-num text-[13px]">
+                                    {row.kicks > 0 ? (
+                                      <span className="font-semibold text-[#34f5c5]">{row.kicks}×</span>
+                                    ) : (
+                                      <span className="text-[#8b96a9]">0</span>
+                                    )}
+                                  </td>
+                                  {grp.missedCasts > 0 && (
+                                    <td className="py-2 px-2 text-right font-mono-num text-[13px]">
+                                      {row.missedReady > 0 ? (
+                                        <span className="font-semibold text-[#f87171]">
+                                          {row.missedReady}×
+                                        </span>
+                                      ) : (
+                                        <span className="text-[#34f5c5]">0</span>
+                                      )}
+                                    </td>
+                                  )}
+                                  <td className="py-2 pl-2 pr-3.5 text-right font-mono-num text-[11.5px] text-[#8b96a9]">
+                                    {row.pulls.map((p) => `Try ${p}`).join(', ')}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
             {/* Missed Casts with per-side Ready Kickers */}
             <div>
               <div className="mb-2 flex items-center justify-between">
@@ -296,166 +391,49 @@ export function PhasesTab({
               )}
             </div>
 
-            {/* Kicks & Ready-Unused per Player and Side */}
-            <div>
-              <h3 className="mb-2 text-[12.5px] font-semibold uppercase tracking-wider text-[#34f5c5]">
-                Kicks &amp; bereite Kicks pro Spieler und Seite ({totalKicks} Kicks)
-              </h3>
-              {stats.kickPlayers.filter((r) => matchName(r.player)).length === 0 ? (
-                <div className="text-[12px] text-[#8b96a9]">
-                  Keine Malice-/Vicious-Echoes-Kicks im gewählten Filter.
+            {/* Chronological successful kicks (clean — no unused-ready noise) */}
+            {totalKicks > 0 && (
+              <div className="space-y-2">
+                <div className="text-[11.5px] font-semibold uppercase tracking-wider text-[#8b96a9]">
+                  Einzelne Kicks ({totalKicks})
                 </div>
-              ) : (
-                <div className="overflow-x-auto rounded-[10px] border border-[rgba(255,255,255,0.08)]">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                        <th className="py-2.5 pl-3 pr-2">Spieler</th>
-                        <th className="py-2.5 px-2 text-right">Kicks gesamt</th>
-                        {stats.kickSides.map((side) => (
-                          <th key={side} className="py-2.5 px-2 text-right">
-                            <SideLabel side={side} tankClass={stats.kickSideTankClass[side]} />
-                          </th>
-                        ))}
-                        <th className="py-2.5 px-2 text-right text-[#f87171]">Rdy (Cast durch)</th>
-                        <th className="py-2.5 px-2 text-right text-[#fbbf24]">Rdy (nicht genutzt)</th>
-                        <th className="py-2.5 pl-2 pr-3 text-right">Trys</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stats.kickPlayers
-                        .filter((r) => matchName(r.player))
-                        .map((row) => (
-                          <tr
-                            key={row.player}
-                            className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors"
-                          >
-                            <td className="py-2 pl-3 pr-2">
-                              <span className="inline-flex items-center gap-2 text-[13px] font-semibold">
-                                <ClassDot className={row.className} />
-                                <span style={{ color: WOW_CLASS_COLORS[row.className] ?? '#ffffff' }}>
-                                  {row.player}
-                                </span>
-                              </span>
-                            </td>
-                            <td className="py-2 px-2 text-right font-mono-num text-[13px] font-semibold text-[#34f5c5]">
-                              {row.totalKicks > 0 ? `${row.totalKicks}×` : <span className="text-[#8b96a9]">0</span>}
-                            </td>
-                            {stats.kickSides.map((side) => {
-                              const kSide = row.kicksBySide[side] ?? 0
-                              const mSide = row.missedBySide[side] ?? 0
-                              const uSide = row.unusedReadyBySide[side] ?? 0
-                              return (
-                                <td key={side} className="py-2 px-2 text-right font-mono-num text-[12px]">
-                                  {kSide > 0 || mSide > 0 || uSide > 0 ? (
-                                    <span className="inline-flex items-center justify-end gap-1">
-                                      <span className={kSide > 0 ? 'text-[#34f5c5] font-semibold' : 'text-[#8b96a9]'}>
-                                        {kSide}×
-                                      </span>
-                                      {mSide > 0 && (
-                                        <span className="text-[#f87171] text-[11px]" title="Cast durch, Kick war rdy">
-                                          ({mSide} durch)
-                                        </span>
-                                      )}
-                                      {uSide > 0 && (
-                                        <span className="text-[#fbbf24] text-[11px]" title="Kick war rdy, anderer Spieler kickte">
-                                          ({uSide} rdy)
-                                        </span>
-                                      )}
-                                    </span>
-                                  ) : (
-                                    <span className="text-[#8b96a9]">—</span>
-                                  )}
-                                </td>
-                              )
-                            })}
-                            <td className="py-2 px-2 text-right font-mono-num text-[13px]">
-                              {row.missedReadyCount > 0 ? (
-                                <span className="text-[#f87171] font-semibold">{row.missedReadyCount}×</span>
-                              ) : (
-                                <span className="text-[#34f5c5]">0</span>
-                              )}
-                            </td>
-                            <td className="py-2 px-2 text-right font-mono-num text-[12px]">
-                              {row.unusedReadyCount > 0 ? (
-                                <span className="text-[#fbbf24] font-semibold">{row.unusedReadyCount}×</span>
-                              ) : (
-                                <span className="text-[#8b96a9]">0</span>
-                              )}
-                            </td>
-                            <td className="py-2 pl-2 pr-3 text-right font-mono-num text-[11.5px] text-[#8b96a9]">
-                              {row.pulls.map((p) => `Try ${p}`).join(', ')}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Chronological successful kicks with who else had kick ready */}
-              {totalKicks > 0 && (
-                <div className="mt-4 space-y-2">
-                  <div className="text-[11.5px] font-semibold uppercase tracking-wider text-[#8b96a9]">
-                    Einzelne Kicks — wer hat gekickt &amp; wer hatte den Kick noch rdy?
+                {[...stats.maliceKicks, ...stats.viciousKicks].map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px]"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isMultiReport && <Pill>{item.reportDate}</Pill>}
+                      <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
+                      <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
+                      {item.side && (
+                        <Pill>
+                          <SideLabel
+                            side={item.side}
+                            tankClass={item.side_tank_class || stats.kickSideTankClass[item.side]}
+                          />
+                        </Pill>
+                      )}
+                      <Pill variant="success">
+                        <ClassDot className={item.class} />
+                        <span
+                          className="font-semibold"
+                          style={{ color: WOW_CLASS_COLORS[item.class] ?? '#34f5c5' }}
+                        >
+                          {item.player}
+                        </span>
+                        <span>gekickt ({item.detail})</span>
+                      </Pill>
+                    </div>
+                    <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
                   </div>
-                  {[...stats.maliceKicks, ...stats.viciousKicks].map((item) => {
-                    const rdy = item.ready_kickers ?? []
-                    return (
-                      <div
-                        key={item.id}
-                        className="rounded-[8px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.8)] px-3 py-2 text-[12px] space-y-1.5"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                            <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
-                            <span className="font-mono-num text-[#34f5c5]">{item.rel_time}</span>
-                            {item.side && (
-                              <Pill>
-                                <SideLabel
-                                  side={item.side}
-                                  tankClass={item.side_tank_class || stats.kickSideTankClass[item.side]}
-                                />
-                              </Pill>
-                            )}
-                            <Pill variant="success">
-                              <ClassDot className={item.class} />
-                              <span
-                                className="font-semibold"
-                                style={{ color: WOW_CLASS_COLORS[item.class] ?? '#34f5c5' }}
-                              >
-                                {item.player}
-                              </span>
-                              <span>gekickt ({item.detail})</span>
-                            </Pill>
-                          </div>
-                          <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
-                        </div>
-                        {rdy.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] text-[#8b96a9]">Auch rdy (nicht genutzt):</span>
-                            {rdy.map((k) => (
-                              <Pill key={`${item.id}-also-${k.player}`}>
-                                <ClassDot className={k.class} />
-                                <span style={{ color: WOW_CLASS_COLORS[k.class] ?? '#ffffff' }}>
-                                  {k.player}
-                                </span>
-                                <span className="text-[#8b96a9]">({k.spell})</span>
-                              </Pill>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+                ))}
+              </div>
+            )}
 
-              <p className="mt-2.5 text-[11px] text-[#8b96a9]">
-                Seiten-Zuordnung pro Try erfolgt automatisch anhand des Schadens auf den jeweiligen <strong className="text-[#c5cdd9]">Doomscale Warden</strong> (benannt nach dem Tank der Seite). Es werden nur lebende Spieler mit Interrupt-Fähigkeit gezählt.
-              </p>
-            </div>
+            <p className="text-[11px] text-[#8b96a9]">
+              Seiten-Zuordnung pro Try erfolgt automatisch anhand des Schadens auf den jeweiligen <strong className="text-[#c5cdd9]">Doomscale Warden</strong> (benannt nach dem Tank der Seite). Es werden ausschließlich ausgeführte Kicks sowie bereite Kicks bei tatsächlich durchgegangenen Casts gelistet.
+            </p>
           </div>
         )}
 
