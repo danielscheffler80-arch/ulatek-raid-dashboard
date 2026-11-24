@@ -586,6 +586,16 @@ export interface PhaseDamageRankRow {
   avgDamage: number
 }
 
+export interface KickPlayerRow {
+  player: string
+  className: string
+  totalKicks: number
+  kicksBySide: Record<string, number>
+  missedReadyCount: number
+  missedBySide: Record<string, number>
+  pulls: number[]
+}
+
 function groupPhaseEventsByPlayer(items: WithReport<PhaseEvent>[]): PhasePlayerCountRow[] {
   const map = new Map<string, PhasePlayerCountRow>()
   for (const item of items) {
@@ -668,6 +678,64 @@ export function aggregatePhaseAnalysis(
       .sort((a, b) => b.totalDamage - a.totalDamage || a.player.localeCompare(b.player))
   }
 
+  const allKicks = [...maliceKicks, ...viciousKicks]
+  const allMissed = [...maliceMissed, ...viciousMissed]
+  const sideSet = new Set<string>()
+  const kickPlayerMap = new Map<string, KickPlayerRow & { pullSet: Set<number> }>()
+
+  const ensureKickPlayer = (player: string, className: string) => {
+    let row = kickPlayerMap.get(player)
+    if (!row) {
+      row = {
+        player,
+        className,
+        totalKicks: 0,
+        kicksBySide: {},
+        missedReadyCount: 0,
+        missedBySide: {},
+        pulls: [],
+        pullSet: new Set<number>(),
+      }
+      kickPlayerMap.set(player, row)
+    } else if (!row.className && className) {
+      row.className = className
+    }
+    return row
+  }
+
+  for (const k of allKicks) {
+    const side = k.side || 'Unbekannt'
+    sideSet.add(side)
+    const row = ensureKickPlayer(k.player, k.class)
+    row.totalKicks++
+    row.kicksBySide[side] = (row.kicksBySide[side] ?? 0) + 1
+    row.pullSet.add(k.pull_num)
+  }
+
+  for (const m of allMissed) {
+    const side = m.side || 'Unbekannt'
+    sideSet.add(side)
+    for (const rk of m.ready_kickers ?? []) {
+      const row = ensureKickPlayer(rk.player, rk.class)
+      row.missedReadyCount++
+      row.missedBySide[side] = (row.missedBySide[side] ?? 0) + 1
+      row.pullSet.add(m.pull_num)
+    }
+  }
+
+  const kickSides = Array.from(sideSet).sort((a, b) => a.localeCompare(b))
+  const kickPlayers: KickPlayerRow[] = Array.from(kickPlayerMap.values())
+    .map(({ pullSet, ...rest }) => ({
+      ...rest,
+      pulls: Array.from(pullSet).sort((a, b) => a - b),
+    }))
+    .sort(
+      (a, b) =>
+        b.missedReadyCount - a.missedReadyCount ||
+        b.totalKicks - a.totalKicks ||
+        a.player.localeCompare(b.player),
+    )
+
   return {
     blightOverlaps,
     blightOverlapPlayers: groupPhaseEventsByPlayer(blightOverlaps),
@@ -677,6 +745,8 @@ export function aggregatePhaseAnalysis(
     viciousKicks,
     viciousKickPlayers: groupPhaseEventsByPlayer(viciousKicks),
     viciousMissed,
+    kickSides,
+    kickPlayers,
     p2Avoidables,
     p3Avoidables,
     avoidablePlayers: groupPhaseEventsByPlayer([...p2Avoidables, ...p3Avoidables]),

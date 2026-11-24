@@ -9,6 +9,7 @@ from typing import Any
 
 from scripts.spells_config import (
     CLASS_BASELINE_DEFS,
+    CLASS_DEFAULT_INTERRUPT,
     DEMONIC_HEALTHSTONE_CD_SEC,
     DEMONIC_HEALTHSTONE_ID,
     HEALTH_POTION_CD_SEC,
@@ -32,13 +33,16 @@ from scripts.spells_config import (
     SPELL_SPECTRAL_COILS_CAST,
     SPELL_STONE_VENOM_DEBUFF,
     SPELL_STONE_VENOM_DMG,
+    TANK_DEFAULT_INTERRUPT,
     ULATEK_ENCOUNTER_ID,
     defensive_mitigates,
     get_defensive_cooldown_ms,
+    get_interrupt_cooldown_ms,
     infer_damage_school,
     is_defensive_buff,
     is_health_potion,
     is_healthstone,
+    is_interrupt_spell,
     is_trackable_personal_def,
 )
 
@@ -172,6 +176,40 @@ def _build_player_known_defs(
     return known
 
 
+def _build_player_interrupts(
+    actors: dict[int, dict[str, Any]],
+    abilities: dict[int, str],
+    events_by_fight: dict[int, list[dict[str, Any]]],
+    tank_id_set: set[int],
+) -> dict[int, tuple[str, int]]:
+    """Map each player with an interrupt to (spell_name, cooldown_ms) via class defaults + observed casts/interrupts."""
+    kit: dict[int, tuple[str, int]] = {}
+    for pid, actor in actors.items():
+        if actor.get("type") != "Player":
+            continue
+        cls = actor.get("subType", "")
+        if cls in CLASS_DEFAULT_INTERRUPT:
+            sp, cd = CLASS_DEFAULT_INTERRUPT[cls]
+            kit[pid] = (sp, cd * 1000)
+        elif pid in tank_id_set and cls in TANK_DEFAULT_INTERRUPT:
+            sp, cd = TANK_DEFAULT_INTERRUPT[cls]
+            kit[pid] = (sp, cd * 1000)
+
+    # Also auto-discover players of hybrid classes who actually cast/interrupted with a kick spell in the report
+    for fevs in events_by_fight.values():
+        for ev in fevs:
+            t = ev.get("type")
+            if t not in ("interrupt", "cast"):
+                continue
+            src = ev.get("sourceID")
+            if src not in actors or actors[src].get("type") != "Player":
+                continue
+            ab_name = (abilities.get(ev.get("abilityGameID"), "") or "").strip()
+            if is_interrupt_spell(ab_name):
+                kit[src] = (ab_name, get_interrupt_cooldown_ms(ab_name))
+    return kit
+
+
 def analyze_report_events(
     meta: dict[str, Any],
     fights: list[dict[str, Any]],
@@ -189,6 +227,7 @@ def analyze_report_events(
     tank_ids = _detect_tanks(actors, events_by_fight)
     tank_id_set = set(tank_ids)
     player_known_defs = _build_player_known_defs(actors, abilities, events_by_fight)
+    player_interrupts = _build_player_interrupts(actors, abilities, events_by_fight, tank_id_set)
     extra = extra_tables or {}
     ability_schools: dict[int, int] = {
         int(k): int(v) for k, v in (extra.get("ability_schools") or {}).items()
@@ -277,10 +316,69 @@ def analyze_report_events(
         # Heart Phase & P2/P3 tracking per fight
         debris_hits_in_fight: list[tuple[int, int]] = []  # (player_id, ts)
         fang_breaks: list[tuple[int, int]] = []  # (ts, player_id)
-        malice_missed_casts: list[int] = []
+        malice_missed_casts: list[tuple[int, int, str, list[dict[str, str]], list[dict[str, str]]]] = []
+        last_malice_miss_by_inst: dict[int, int] = {}
         malice_dmg_events: list[tuple[int, int]] = []  # (ts, amount)
-        vicious_missed_casts: list[int] = []
+        vicious_missed_casts: list[tuple[int, list[dict[str, str]], list[dict[str, str]]]] = []
+        last_vicious_miss_ts = -999999
         warden_death_ts: list[int] = []
+        last_kick_ts: dict[int, int] = {}
+        last_player_activity_ts: dict[int, int] = {}
+
+        # Pre-scan P2 Doomscale Warden damage & interrupts per instance -> exact Side 1 vs Side 2 player mapping
+        warden_dmg_by_inst: dict[int, Counter[int]] = defaultdict(Counter)
+        for ev in fevs:
+            et = ev.get("type")
+            esrc = ev.get("sourceID")
+            etgt = ev.get("targetID")
+            if esrc not in actors or actors[esrc].get("type") != "Player":
+                continue
+            if etgt in actors and actors[etgt].get("name") == "Doomscale Warden":
+                inst = int(ev.get("targetInstance") or 1)
+                if et == "damage":
+                    warden_dmg_by_inst[inst][esrc] += max(1, int(ev.get("amount", 0) or 0))
+                elif et == "interrupt":
+                    warden_dmg_by_inst[inst][esrc] += 1000
+
+        side_players: dict[int, set[int]] = defaultdict(set)
+        all_warden_players: set[int] = set()
+        for inst, pmap in warden_dmg_by_inst.items():
+            all_warden_players.update(pmap.keys())
+        for pid in all_warden_players:
+            best_inst = max(warden_dmg_by_inst.keys(), key=lambda i: warden_dmg_by_inst[i].get(pid, 0))
+            if warden_dmg_by_inst[best_inst].get(pid, 0) > 0:
+                side_players[best_inst].add(pid)
+
+        inst_to_side: dict[int, str] = {}
+        for inst in sorted(warden_dmg_by_inst.keys()):
+            side_tanks = [tk for tk in tank_ids if tk in side_players[inst]]
+            if side_tanks:
+                inst_to_side[inst] = f"Seite {actors[side_tanks[0]]['name']}"
+            else:
+                inst_to_side[inst] = f"Warden #{inst}"
+
+        def compute_kick_readiness(
+            candidate_pids: set[int], ts_now: int
+        ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+            rdy_list: list[dict[str, str]] = []
+            cd_list: list[dict[str, str]] = []
+            for pid in sorted(candidate_pids, key=lambda x: actors[x]["name"]):
+                if pid not in player_interrupts:
+                    continue
+                # Skip players who are currently dead (died before ts_now and no activity after death)
+                prev_deaths = [dt for dt in deaths_by_player.get(pid, []) if dt < ts_now]
+                if prev_deaths:
+                    last_dt = max(prev_deaths)
+                    if last_player_activity_ts.get(pid, -1) <= last_dt:
+                        continue
+                sp_name, cd_ms = player_interrupts[pid]
+                entry = {"player": actors[pid]["name"], "class": actors[pid].get("subType", ""), "spell": sp_name}
+                used_at = last_kick_ts.get(pid)
+                if used_at is None or (ts_now - used_at) >= cd_ms:
+                    rdy_list.append(entry)
+                else:
+                    cd_list.append(entry)
+            return rdy_list, cd_list
 
         def compute_readiness(
             pid: int, ts_now: int, dmg_school: str = "all"
@@ -494,17 +592,24 @@ def analyze_report_events(
                 if not any(-100 <= dt - ts <= 150 for dt in deaths_by_player[tid]):
                     fang_breaks.append((ts, tid))
 
+            if src_id in actors and actors[src_id].get("type") == "Player" and t in ("damage", "cast", "interrupt", "heal"):
+                last_player_activity_ts[src_id] = ts
+
             if t == "interrupt" and src_id in actors and actors[src_id].get("type") == "Player":
+                last_kick_ts[src_id] = ts
                 ex_aid = ev.get("extraAbilityGameID")
                 ex_name = (abilities.get(ex_aid, "") or "").strip()
                 ex_low = ex_name.lower()
                 if ex_aid == SPELL_MALICE_CAST or "malice" in ex_low:
                     rel_ms = ts - f_start
+                    t_inst = int(ev.get("targetInstance") or 1)
+                    side_label = inst_to_side.get(t_inst, f"Warden #{t_inst}")
                     phase_events.append(
                         {
                             "id": f"{report_code}-{fid}-{src_id}-{ts}-mkick",
                             "kind": "malice_kick",
                             "phase": "p2",
+                            "side": side_label,
                             "player": actors[src_id]["name"],
                             "class": actors[src_id].get("subType", ""),
                             "target_id": src_id,
@@ -531,6 +636,7 @@ def analyze_report_events(
                             "id": f"{report_code}-{fid}-{src_id}-{ts}-vkick",
                             "kind": "vicious_echoes_kick",
                             "phase": "p3",
+                            "side": "Phase 3",
                             "player": actors[src_id]["name"],
                             "class": actors[src_id].get("subType", ""),
                             "target_id": src_id,
@@ -552,12 +658,20 @@ def analyze_report_events(
                     )
 
             if t == "cast":
+                if src_id in actors and actors[src_id].get("type") == "Player" and is_interrupt_spell(ab_name):
+                    last_kick_ts[src_id] = ts
                 if aid == SPELL_MALICE_CAST:
-                    if not malice_missed_casts or (ts - malice_missed_casts[-1]) >= 2500:
-                        malice_missed_casts.append(ts)
+                    s_inst = int(ev.get("sourceInstance") or 1)
+                    if (ts - last_malice_miss_by_inst.get(s_inst, -999999)) >= 2500:
+                        last_malice_miss_by_inst[s_inst] = ts
+                        side_label = inst_to_side.get(s_inst, f"Warden #{s_inst}")
+                        rdy_k, cd_k = compute_kick_readiness(side_players.get(s_inst, set()), ts)
+                        malice_missed_casts.append((ts, s_inst, side_label, rdy_k, cd_k))
                 elif any(s in ab_low for s in P3_KICK_SPELL_NAMES):
-                    if not vicious_missed_casts or (ts - vicious_missed_casts[-1]) >= 2500:
-                        vicious_missed_casts.append(ts)
+                    if (ts - last_vicious_miss_ts) >= 2500:
+                        last_vicious_miss_ts = ts
+                        rdy_k, cd_k = compute_kick_readiness(fight_players, ts)
+                        vicious_missed_casts.append((ts, rdy_k, cd_k))
 
             if t == "death" and tid in actors and actors[tid].get("name") == "Doomscale Warden":
                 warden_death_ts.append(ts)
@@ -834,19 +948,22 @@ def analyze_report_events(
                 )
 
         # Missed Malice casts (P2)
-        for mts in malice_missed_casts:
+        for mts, s_inst, side_label, rdy_k, cd_k in malice_missed_casts:
             rel_ms = mts - f_start
             total_malice_dmg = sum(amt for dts, amt in malice_dmg_events if mts <= dts <= mts + 5000)
             phase_events.append(
                 {
-                    "id": f"{report_code}-{fid}-{mts}-mmiss",
+                    "id": f"{report_code}-{fid}-{mts}-{s_inst}-mmiss",
                     "kind": "malice_missed",
                     "phase": "p2",
-                    "player": "Raid (nicht gekickt)",
+                    "side": side_label,
+                    "player": f"{side_label} (nicht gekickt)",
                     "class": "",
                     "target_id": 0,
                     "ability": "Malice",
                     "detail": "Cast durchgekommen",
+                    "ready_kickers": rdy_k,
+                    "on_cd_kickers": cd_k,
                     "gap_ms": None,
                     "damage": total_malice_dmg,
                     "lethal": False,
@@ -863,18 +980,21 @@ def analyze_report_events(
             )
 
         # Missed Vicious Echoes casts (P3)
-        for vts in vicious_missed_casts:
+        for vts, rdy_k, cd_k in vicious_missed_casts:
             rel_ms = vts - f_start
             phase_events.append(
                 {
                     "id": f"{report_code}-{fid}-{vts}-vmiss",
                     "kind": "vicious_echoes_missed",
                     "phase": "p3",
+                    "side": "Phase 3",
                     "player": "Raid (nicht gekickt)",
                     "class": "",
                     "target_id": 0,
                     "ability": "Vicious Echoes",
                     "detail": "Raid-Stun durchgekommen",
+                    "ready_kickers": rdy_k,
+                    "on_cd_kickers": cd_k,
                     "gap_ms": None,
                     "damage": 0,
                     "lethal": False,

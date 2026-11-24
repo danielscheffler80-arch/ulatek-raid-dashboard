@@ -194,14 +194,14 @@ export function PhasesTab({
           )
         )}
 
-        {/* 2. KICKS & MISSED CASTS */}
+        {/* 2. KICKS & MISSED CASTS (MIT SEITEN-ZUORDNUNG & KICK-READY-CHECK) */}
         {subTab === 'kicks' && (
-          <div className="p-4 space-y-4">
-            {/* Missed Casts */}
+          <div className="p-4 space-y-5">
+            {/* Missed Casts with per-side Ready Kickers */}
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-[12.5px] font-semibold uppercase tracking-wider text-[#f87171]">
-                  Durchgekommene Casts ({totalMissedKicks})
+                  Durchgekommene Casts &amp; wer seinen Kick rdy hatte ({totalMissedKicks})
                 </h3>
               </div>
               {totalMissedKicks === 0 ? (
@@ -209,71 +209,147 @@ export function PhasesTab({
                   Kein Malice- oder Vicious-Echoes-Cast im aktuellen Filter durchgekommen.
                 </div>
               ) : (
-                <div className="space-y-1.5">
-                  {[...stats.maliceMissed, ...stats.viciousMissed].map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[rgba(239,68,68,0.28)] bg-[rgba(239,68,68,0.08)] px-3 py-2 text-[12px]"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        {isMultiReport && <Pill>{item.reportDate}</Pill>}
-                        <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
-                        <span className="font-mono-num text-[#f87171]">{item.rel_time}</span>
-                        <Pill variant="destructive">{item.ability} nicht gekickt</Pill>
-                        {item.damage > 0 && (
-                          <span className="font-mono-num text-[#c5cdd9]">
-                            {formatDamage(item.damage)} Raid-Schaden
+                <div className="space-y-2.5">
+                  {[...stats.maliceMissed, ...stats.viciousMissed].map((item) => {
+                    const rdy = item.ready_kickers ?? []
+                    const onCd = item.on_cd_kickers ?? []
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-[10px] border border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.07)] px-3.5 py-3 text-[12px] space-y-2"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isMultiReport && <Pill>{item.reportDate}</Pill>}
+                            <span className="font-mono-num font-semibold text-white">Try {item.pull_num}</span>
+                            <span className="font-mono-num text-[#f87171]">{item.rel_time}</span>
+                            {item.side && <Pill variant="info">{item.side}</Pill>}
+                            <Pill variant="destructive">{item.ability} nicht gekickt</Pill>
+                            {item.damage > 0 && (
+                              <span className="font-mono-num text-[#c5cdd9]">
+                                {formatDamage(item.damage)} Raid-Schaden
+                              </span>
+                            )}
+                            {item.deaths_before > 0 && (
+                              <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
+                            )}
+                          </div>
+                          <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-[#f87171] mr-1">
+                            Kick rdy (nicht genutzt):
                           </span>
-                        )}
-                        {item.deaths_before > 0 && (
-                          <Pill>nach {item.deaths_before} {item.deaths_before === 1 ? 'Tod' : 'Toden'}</Pill>
+                          {rdy.length === 0 ? (
+                            <span className="text-[11.5px] text-[#8b96a9]">
+                              Kein lebender Spieler mit bereitem Kick auf dieser Seite erkannt
+                            </span>
+                          ) : (
+                            rdy.map((k) => (
+                              <Pill key={`${item.id}-rdy-${k.player}`} variant="destructive">
+                                <ClassDot className={k.class} />
+                                <span>{k.player}</span>
+                                <span className="opacity-75">({k.spell})</span>
+                              </Pill>
+                            ))
+                          )}
+                        </div>
+
+                        {onCd.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-medium uppercase tracking-wide text-[#8b96a9] mr-1">
+                              Auf dieser Seite auf CD:
+                            </span>
+                            {onCd.map((k) => (
+                              <Pill key={`${item.id}-cd-${k.player}`}>
+                                <ClassDot className={k.class} />
+                                <span>{k.player}</span>
+                                <span className="opacity-70">({k.spell})</span>
+                              </Pill>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      <WclActionLinks eventsUrl={item.events_url} replayUrl={item.replay_url} />
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
 
-            {/* Successful Kicks by Player */}
+            {/* Kicks & Missed-while-ready per Player and Side */}
             <div>
               <h3 className="mb-2 text-[12.5px] font-semibold uppercase tracking-wider text-[#34f5c5]">
-                Erfolgreiche Kicks pro Spieler ({totalKicks})
+                Kicks &amp; verpasste Kicks pro Spieler und Seite ({totalKicks} Kicks)
               </h3>
-              {totalKicks === 0 ? (
+              {stats.kickPlayers.filter((r) => matchName(r.player)).length === 0 ? (
                 <div className="text-[12px] text-[#8b96a9]">
-                  Keine Malice-/Vicious-Echoes-Interrupts im gewählten Filter.
+                  Keine Malice-/Vicious-Echoes-Kicks im gewählten Filter.
                 </div>
               ) : (
                 <div className="overflow-x-auto rounded-[10px] border border-[rgba(255,255,255,0.08)]">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="border-b border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.75)] text-[11px] font-medium uppercase tracking-wider text-[#c5cdd9]">
-                        <th className="py-2 pl-3 pr-2">Spieler</th>
-                        <th className="py-2 px-2 text-right">Kicks</th>
-                        <th className="py-2 pl-2 pr-3 text-right">Trys</th>
+                        <th className="py-2.5 pl-3 pr-2">Spieler</th>
+                        <th className="py-2.5 px-2 text-right">Kicks gesamt</th>
+                        {stats.kickSides.map((side) => (
+                          <th key={side} className="py-2.5 px-2 text-right text-[#38bdf8]">
+                            {side}
+                          </th>
+                        ))}
+                        <th className="py-2.5 px-2 text-right text-[#f87171]">Kick rdy verpasst</th>
+                        <th className="py-2.5 pl-2 pr-3 text-right">Trys</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {[...stats.maliceKickPlayers, ...stats.viciousKickPlayers]
+                      {stats.kickPlayers
                         .filter((r) => matchName(r.player))
                         .map((row) => (
                           <tr
-                            key={`${row.player}-${row.items[0]?.kind}`}
-                            className="border-b border-[rgba(255,255,255,0.05)] last:border-0"
+                            key={row.player}
+                            className="border-b border-[rgba(255,255,255,0.05)] last:border-0 hover:bg-[rgba(52,245,197,0.055)] transition-colors"
                           >
                             <td className="py-2 pl-3 pr-2">
-                              <span className="inline-flex items-center gap-2 text-[13px] text-white">
+                              <span className="inline-flex items-center gap-2 text-[13px] font-medium text-white">
                                 <ClassDot className={row.className} />
                                 {row.player}
                               </span>
                             </td>
                             <td className="py-2 px-2 text-right font-mono-num text-[13px] font-semibold text-[#34f5c5]">
-                              {row.count}×
+                              {row.totalKicks > 0 ? `${row.totalKicks}×` : <span className="text-[#8b96a9]">0</span>}
+                            </td>
+                            {stats.kickSides.map((side) => {
+                              const kSide = row.kicksBySide[side] ?? 0
+                              const mSide = row.missedBySide[side] ?? 0
+                              return (
+                                <td key={side} className="py-2 px-2 text-right font-mono-num text-[12px]">
+                                  {kSide > 0 || mSide > 0 ? (
+                                    <span className="inline-flex items-center justify-end gap-1">
+                                      <span className={kSide > 0 ? 'text-[#34f5c5] font-semibold' : 'text-[#8b96a9]'}>
+                                        {kSide}×
+                                      </span>
+                                      {mSide > 0 && (
+                                        <span className="text-[#f87171] text-[11px]" title="Kick rdy nicht genutzt auf dieser Seite">
+                                          ({mSide} rdy)
+                                        </span>
+                                      )}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[#8b96a9]">—</span>
+                                  )}
+                                </td>
+                              )
+                            })}
+                            <td className="py-2 px-2 text-right font-mono-num text-[13px]">
+                              {row.missedReadyCount > 0 ? (
+                                <span className="text-[#f87171] font-semibold">{row.missedReadyCount}×</span>
+                              ) : (
+                                <span className="text-[#34f5c5]">0</span>
+                              )}
                             </td>
                             <td className="py-2 pl-2 pr-3 text-right font-mono-num text-[11.5px] text-[#8b96a9]">
-                              {Array.from(new Set(row.items.map((i) => `Try ${i.pull_num}`))).join(', ')}
+                              {row.pulls.map((p) => `Try ${p}`).join(', ')}
                             </td>
                           </tr>
                         ))}
@@ -281,6 +357,9 @@ export function PhasesTab({
                   </table>
                 </div>
               )}
+              <p className="mt-2 text-[11px] text-[#8b96a9]">
+                Seiten-Zuordnung pro Try erfolgt automatisch anhand des Schadens auf den jeweiligen <strong className="text-[#c5cdd9]">Doomscale Warden</strong> (benannt nach dem Tank der Seite). Es werden nur lebende Spieler mit Interrupt-Fähigkeit gezählt.
+              </p>
             </div>
           </div>
         )}

@@ -186,15 +186,24 @@ export type PhaseEventKind =
   | 'p2_avoidable'
   | 'p3_avoidable'
 
+export interface KickerRef {
+  player: string
+  class: string
+  spell: string
+}
+
 export interface PhaseEvent {
   id: string
   kind: PhaseEventKind
   phase: 'heart' | 'p2' | 'p3'
+  side?: string | null
   player: string
   class: string
   target_id: number
   ability: string
   detail: string | null
+  ready_kickers?: KickerRef[]
+  on_cd_kickers?: KickerRef[]
   gap_ms: number | null
   damage: number
   lethal: boolean

@@ -539,3 +539,80 @@ def test_stone_venom_only_checks_boss_cast_plus_5s_window():
     monk_fail = next(t for t in sv_fails if t["tank"] == "Betøng")
     assert monk_fail["lethal"] is True
     assert monk_fail["death_rel_time"] == "01:46.500"
+
+
+def test_p2_malice_side_attribution_and_ready_kickers():
+    actors = _base_actors()
+    actors[6] = {"id": 6, "name": "Schurke", "type": "Player", "subType": "Rogue"}
+    actors[198] = {"id": 198, "name": "Doomscale Warden", "type": "NPC", "subType": "NPC"}
+    abilities = _base_abilities()
+    abilities.update(
+        {
+            1290779: "Malice",
+            1290991: "Malice",
+            1766: "Kick",
+            116705: "Spear Hand Strike",
+            47528: "Mind Freeze",
+        }
+    )
+    meta = {"title": "Kick Side Test", "startTime": 1795450000000}
+    fights = [
+        {
+            "id": 41,
+            "name": "Ula'tek",
+            "startTime": 100000,
+            "endTime": 340000,
+            "fightPercentage": 69.2,
+            "bossPercentage": 69.2,
+            "kill": False,
+            "phaseTransitions": [{"id": 1, "startTime": 100000}, {"id": 2, "startTime": 270000}],
+        }
+    ]
+    events = [
+        # Tank identification
+        {"timestamp": 105000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 100000, "fight": 41},
+        {"timestamp": 106000, "type": "damage", "sourceID": 176, "targetID": 2, "abilityGameID": 1, "amount": 100000, "fight": 41},
+        # Side assignment via damage to Doomscale Warden (198) targetInstance 1 vs 2:
+        # Side 1 (Betøng): Betøng (1), Narande (3), Näxxs (4)
+        {"timestamp": 275000, "type": "damage", "sourceID": 1, "targetID": 198, "targetInstance": 1, "abilityGameID": 1, "amount": 500000, "fight": 41},
+        {"timestamp": 275100, "type": "damage", "sourceID": 3, "targetID": 198, "targetInstance": 1, "abilityGameID": 1, "amount": 900000, "fight": 41},
+        {"timestamp": 275200, "type": "damage", "sourceID": 4, "targetID": 198, "targetInstance": 1, "abilityGameID": 1, "amount": 800000, "fight": 41},
+        # Side 2 (Barrumir): Barrumir (2), Valysa (5, Priest healer w/o kick), Schurke (6, Rogue)
+        {"timestamp": 275000, "type": "damage", "sourceID": 2, "targetID": 198, "targetInstance": 2, "abilityGameID": 1, "amount": 500000, "fight": 41},
+        {"timestamp": 275100, "type": "damage", "sourceID": 5, "targetID": 198, "targetInstance": 2, "abilityGameID": 1, "amount": 100000, "fight": 41},
+        {"timestamp": 275200, "type": "damage", "sourceID": 6, "targetID": 198, "targetInstance": 2, "abilityGameID": 1, "amount": 900000, "fight": 41},
+        # Betøng kicks Malice on inst=1 at 279s
+        {"timestamp": 279000, "type": "interrupt", "sourceID": 1, "targetID": 198, "targetInstance": 1, "abilityGameID": 116705, "extraAbilityGameID": 1290779, "fight": 41},
+        # Schurke kicks Malice on inst=2 at 280s (15s CD -> on CD until 295s!)
+        {"timestamp": 280000, "type": "interrupt", "sourceID": 6, "targetID": 198, "targetInstance": 2, "abilityGameID": 1766, "extraAbilityGameID": 1290779, "fight": 41},
+        # At 290s: inst=2 casts Malice UN-INTERRUPTED!
+        {"timestamp": 290000, "type": "cast", "sourceID": 198, "sourceInstance": 2, "targetID": -1, "abilityGameID": 1290779, "fight": 41},
+        # At 290.5s: inst=1 ALSO casts Malice UN-INTERRUPTED (must NOT be deduped with inst=2!)
+        {"timestamp": 290500, "type": "cast", "sourceID": 198, "sourceInstance": 1, "targetID": -1, "abilityGameID": 1290779, "fight": 41},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {41: events}, "qy9FnMvjwQ2R13c7")
+    kicks = [e for e in rep["phase_events"] if e["kind"] == "malice_kick"]
+    assert len(kicks) == 2
+    assert next(k for k in kicks if k["player"] == "Betøng")["side"] == "Seite Betøng"
+    assert next(k for k in kicks if k["player"] == "Schurke")["side"] == "Seite Barrumir"
+
+    missed = [e for e in rep["phase_events"] if e["kind"] == "malice_missed"]
+    assert len(missed) == 2
+
+    miss_barrumir = next(m for m in missed if m["side"] == "Seite Barrumir")
+    rdy_names_b = [x["player"] for x in miss_barrumir["ready_kickers"]]
+    cd_names_b = [x["player"] for x in miss_barrumir["on_cd_kickers"]]
+    assert "Barrumir" in rdy_names_b
+    assert "Schurke" not in rdy_names_b
+    assert "Schurke" in cd_names_b
+    assert "Betøng" not in rdy_names_b
+    assert "Narande" not in rdy_names_b
+
+    miss_betong = next(m for m in missed if m["side"] == "Seite Betøng")
+    rdy_names_m = [x["player"] for x in miss_betong["ready_kickers"]]
+    cd_names_m = [x["player"] for x in miss_betong["on_cd_kickers"]]
+    assert "Narande" in rdy_names_m
+    assert "Näxxs" in rdy_names_m
+    assert "Betøng" in cd_names_m
+    assert "Barrumir" not in rdy_names_m

@@ -413,6 +413,56 @@ def is_trackable_personal_def(ability_name: str) -> bool:
     return low in PERSONAL_DEF_NAMES and low not in EXCLUDED_FROM_READY_CHECK
 
 
+# Interrupt spell cooldowns (seconds) across all classes
+INTERRUPT_COOLDOWNS_SEC: dict[str, int] = {
+    "wind shear": 12,
+    "kick": 15,
+    "spear hand strike": 15,
+    "mind freeze": 15,
+    "rebuke": 15,
+    "pummel": 15,
+    "skull bash": 15,
+    "disrupt": 15,
+    "muzzle": 15,
+    "quell": 20,
+    "counterspell": 24,
+    "counter shot": 24,
+    "spell lock": 24,
+    "optical blast": 24,
+    "axe toss": 30,
+    "silence": 45,
+    "solar beam": 60,
+}
+
+# Classes where every spec has an interrupt
+CLASS_DEFAULT_INTERRUPT: dict[str, tuple[str, int]] = {
+    "DeathKnight": ("Mind Freeze", 15),
+    "DemonHunter": ("Disrupt", 15),
+    "Hunter": ("Counter Shot", 24),
+    "Mage": ("Counterspell", 24),
+    "Rogue": ("Kick", 15),
+    "Shaman": ("Wind Shear", 12),
+    "Warrior": ("Pummel", 15),
+    "Evoker": ("Quell", 20),
+    "Warlock": ("Spell Lock", 24),
+}
+
+# Tank specs of hybrid classes always have an interrupt
+TANK_DEFAULT_INTERRUPT: dict[str, tuple[str, int]] = {
+    "Monk": ("Spear Hand Strike", 15),
+    "Paladin": ("Rebuke", 15),
+    "Druid": ("Skull Bash", 15),
+}
+
+
+def is_interrupt_spell(ability_name: str) -> bool:
+    return (ability_name or "").strip().lower() in INTERRUPT_COOLDOWNS_SEC
+
+
+def get_interrupt_cooldown_ms(ability_name: str) -> int:
+    return INTERRUPT_COOLDOWNS_SEC.get((ability_name or "").strip().lower(), 15) * 1000
+
+
 def is_health_potion(ability_id: int | None, ability_name: str) -> bool:
     if ability_id in HEALTH_POTION_IDS:
         return True

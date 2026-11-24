@@ -42,6 +42,7 @@ from scripts.spells_config import (
     is_defensive_buff,
     is_health_potion,
     is_healthstone,
+    is_interrupt_spell,
 )
 
 CORE_MECHANIC_IDS = (
@@ -250,6 +251,7 @@ class WCLClient:
             for gid, name in abilities.items()
             if any(s in (name or "").lower() for s in (P3_KICK_SPELL_NAMES + P3_AVOIDABLE_SPELL_NAMES))
         )
+        interrupt_ids = sorted(gid for gid, name in abilities.items() if is_interrupt_spell(name))
 
         # 1. Deaths (fast, exact killer info)
         deaths = self._fetch_events_paginated(
@@ -268,6 +270,9 @@ class WCLClient:
         if consumable_ids:
             cons_list = ", ".join(str(i) for i in consumable_ids)
             parts.append(f'(type = "cast" and ability.id in ({cons_list}))')
+        if interrupt_ids:
+            int_list = ", ".join(str(i) for i in interrupt_ids)
+            parts.append(f'(type = "cast" and ability.id in ({int_list}))')
         core_expr = " or ".join(parts)
 
         core_events = self._fetch_events_paginated(
@@ -279,6 +284,27 @@ class WCLClient:
             filter_expression=core_expr,
             include_resources=True,
         )
+
+        # 2b. Lightweight Doomscale Warden damage events (only P2 fights, no HP resources) for exact Side 1 vs Side 2 player mapping
+        p2_fight_ids = [
+            int(f["id"])
+            for f in fights
+            if any(int(pt.get("id", 0)) == 2 for pt in (f.get("phaseTransitions") or []))
+        ]
+        warden_dmg_events: list[dict[str, Any]] = []
+        if p2_fight_ids:
+            p2_fights_objs = [f for f in fights if int(f["id"]) in set(p2_fight_ids)]
+            p2_min = min(int(f["startTime"]) for f in p2_fights_objs)
+            p2_max = max(int(f["endTime"]) for f in p2_fights_objs)
+            warden_dmg_events = self._fetch_events_paginated(
+                code,
+                p2_min,
+                p2_max,
+                p2_fight_ids,
+                data_type="DamageDone",
+                filter_expression=f'type = "damage" and target.id = {NPC_DOOMSCALE_WARDEN_GAME_ID}',
+                include_resources=False,
+            )
 
         # 3. Defensive & External buffs (no HP resources needed -> super fast)
         def_events: list[dict[str, Any]] = []
@@ -304,7 +330,7 @@ class WCLClient:
                 )
 
         events_by_fight: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for ev in deaths + core_events + def_events:
+        for ev in deaths + core_events + warden_dmg_events + def_events:
             fid = ev.get("fight")
             if fid is not None:
                 events_by_fight[int(fid)].append(ev)
