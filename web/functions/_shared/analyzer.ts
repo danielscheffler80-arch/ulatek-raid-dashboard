@@ -2163,45 +2163,112 @@ function buildGroupSoakAnalysis(
     })
   }
 
-  // Report-level Shattering groups
-  const shatGroupByPid = new Map<number, 'A' | 'B'>()
-  if (tkA !== null) shatGroupByPid.set(tkA, 'A')
-  if (tkB !== null) shatGroupByPid.set(tkB, 'B')
+  // Report-level P2 Warden groups (2 groups: Gruppe Barrumir vs Gruppe Betøng)
+  const p2GroupByPid = new Map<number, 'A' | 'B'>()
+  if (tkA !== null) p2GroupByPid.set(tkA, 'A')
+  if (tkB !== null) p2GroupByPid.set(tkB, 'B')
   for (const [pid, votes] of p2SideVotes.entries()) {
-    if (shatGroupByPid.has(pid)) continue
-    shatGroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
+    if (p2GroupByPid.has(pid)) continue
+    p2GroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
   }
 
-  // Infer unmapped players (e.g. pure healers with 0 Warden dmg) by co-soaking in Shattering clusters
-  const shatCoVotes = new Map<number, { A: number; B: number }>()
-  for (let r = 0; r < fightRecords.length; r++) {
-    const scList = fightRecords[r].shat_clusters
-    for (let i = 0; i < scList.length; i++) {
-      const c = scList[i]
-      let cntA = 0
-      let cntB = 0
-      for (const p of c.pids) {
-        const g = shatGroupByPid.get(p)
-        if (g === 'A') cntA++
-        else if (g === 'B') cntB++
-      }
-      if (cntA === 0 && cntB === 0) continue
-      const cKey: 'A' | 'B' = cntA >= cntB ? 'A' : 'B'
-      for (const p of c.pids) {
-        if (!shatGroupByPid.has(p)) incVote(shatCoVotes, p, cKey)
-      }
-    }
-  }
-  for (const [pid, votes] of shatCoVotes.entries()) {
-    if (!shatGroupByPid.has(pid)) {
-      shatGroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
-    }
-  }
-
-  // Report-level Phase 1 groups
+  // Report-level Phase 1 groups (2 alternating groups)
   const p1GroupByPid = new Map<number, 'A' | 'B'>()
   for (const [pid, votes] of p1ParityVotes.entries()) {
     p1GroupByPid.set(pid, votes.A >= votes.B ? 'A' : 'B')
+  }
+
+  // Report-level Intermission: The Shattering 3-group auto-clustering via 3! = 6 permutation alignment
+  type ShatKey = 'G1' | 'G2' | 'G3'
+  const shatKeys: ShatKey[] = ['G1', 'G2', 'G3']
+  const shatLabels: Record<ShatKey, string> = {
+    G1: 'Gruppe 1',
+    G2: 'Gruppe 2',
+    G3: 'Gruppe 3',
+  }
+  const perms3: [ShatKey, ShatKey, ShatKey][] = [
+    ['G1', 'G2', 'G3'],
+    ['G1', 'G3', 'G2'],
+    ['G2', 'G1', 'G3'],
+    ['G2', 'G3', 'G1'],
+    ['G3', 'G1', 'G2'],
+    ['G3', 'G2', 'G1'],
+  ]
+
+  const allShatRounds: SoakCluster[][] = []
+  let totalShatSoaks = 0
+  for (let r = 0; r < fightRecords.length; r++) {
+    const scl = fightRecords[r].shat_clusters
+    totalShatSoaks += scl.length
+    for (let i = 0; i < scl.length; i += 3) {
+      allShatRounds.push(scl.slice(i, i + 3))
+    }
+  }
+  let completeShatRounds = 0
+  for (let i = 0; i < allShatRounds.length; i++) {
+    if (allShatRounds[i].length === 3) completeShatRounds++
+  }
+  const shatConfidence: 'none' | 'provisional' | 'high' =
+    totalShatSoaks === 0 ? 'none' : completeShatRounds >= 2 ? 'high' : 'provisional'
+
+  const shatVotes = new Map<number, Record<ShatKey, number>>()
+  const orderedRounds = allShatRounds
+    .map((_, idx) => idx)
+    .sort((a, b) => {
+      const aFull = allShatRounds[a].length === 3 ? 0 : 1
+      const bFull = allShatRounds[b].length === 3 ? 0 : 1
+      return aFull - bFull || a - b
+    })
+
+  let seeded = false
+  for (let oi = 0; oi < orderedRounds.length; oi++) {
+    const chunk = allShatRounds[orderedRounds[oi]]
+    let bestPerm = perms3[0]
+    if (!seeded) {
+      seeded = true
+    } else {
+      let bestScore = -1
+      for (let pi = 0; pi < perms3.length; pi++) {
+        const perm = perms3[pi]
+        let score = 0
+        for (let ci = 0; ci < chunk.length; ci++) {
+          const gk = perm[ci]
+          for (const p of chunk[ci].pids) {
+            const pv = shatVotes.get(p)
+            if (pv) score += pv[gk]
+          }
+        }
+        if (score > bestScore) {
+          bestScore = score
+          bestPerm = perm
+        }
+      }
+    }
+    for (let ci = 0; ci < chunk.length; ci++) {
+      const gk = bestPerm[ci]
+      for (const p of chunk[ci].pids) {
+        let pv = shatVotes.get(p)
+        if (!pv) {
+          pv = { G1: 0, G2: 0, G3: 0 }
+          shatVotes.set(p, pv)
+        }
+        pv[gk]++
+      }
+    }
+  }
+
+  const shatGroupByPid = new Map<number, ShatKey>()
+  for (const [pid, vm] of shatVotes.entries()) {
+    let bestK: ShatKey = 'G1'
+    let bestV = vm.G1
+    if (vm.G2 > bestV) {
+      bestV = vm.G2
+      bestK = 'G2'
+    }
+    if (vm.G3 > bestV) {
+      bestK = 'G3'
+    }
+    shatGroupByPid.set(pid, bestK)
   }
 
   const pref = (pid: number) => ({
@@ -2210,7 +2277,7 @@ function buildGroupSoakAnalysis(
     player_id: pid,
   })
 
-  // Pass 2: Evaluate each soak with strict A <-> B alternation
+  // Pass 2: Evaluate P1 (2-group alternation) and Shattering (3-group modulo-3 rotation)
   const groupSoaks: Record<string, unknown>[] = []
   for (let r = 0; r < fightRecords.length; r++) {
     const rec = fightRecords[r]
@@ -2224,7 +2291,6 @@ function buildGroupSoakAnalysis(
     const deathsByPlayer = rec.deaths_by_player
     const bossMeleeTs = rec.boss_melee_ts
     const stoneVenomApplyTs = rec.stone_venom_apply_ts
-    const fightP2Group = rec.fight_p2_group
 
     const countDeathsBefore = (tsNow: number) => {
       let c = 0
@@ -2283,43 +2349,13 @@ function buildGroupSoakAnalysis(
       return bestTk
     }
 
-    const phaseSpecs: {
-      phaseKey: 'p1' | 'shattering'
-      clusters: SoakCluster[]
-      labelA: string
-      classA: string
-      labelB: string
-      classB: string
-    }[] = [
-      {
-        phaseKey: 'p1',
-        clusters: rec.p1_clusters,
-        labelA: 'Soak-Gruppe 1',
-        classA: '',
-        labelB: 'Soak-Gruppe 2',
-        classB: '',
-      },
-      {
-        phaseKey: 'shattering',
-        clusters: rec.shat_clusters,
-        labelA: shatLabelA,
-        classA: shatClassA,
-        labelB: shatLabelB,
-        classB: shatClassB,
-      },
-    ]
-
-    for (let psIdx = 0; psIdx < phaseSpecs.length; psIdx++) {
-      const { phaseKey, clusters, labelA, classA, labelB, classB } = phaseSpecs[psIdx]
-      if (clusters.length === 0) continue
-
-      const grpOf = (pid: number): 'A' | 'B' | undefined =>
-        phaseKey === 'shattering' ? fightP2Group.get(pid) ?? shatGroupByPid.get(pid) : p1GroupByPid.get(pid)
-
+    // ---- Phase 1: 2-Group Alternation (with active Boss-Tank exemption) ----
+    const p1Clusters = rec.p1_clusters
+    if (p1Clusters.length > 0) {
       let c0A = 0
       let c0B = 0
-      for (const p of clusters[0].pids) {
-        const g = grpOf(p)
+      for (const p of p1Clusters[0].pids) {
+        const g = p1GroupByPid.get(p)
         if (g === 'A') c0A++
         else if (g === 'B') c0B++
       }
@@ -2328,33 +2364,30 @@ function buildGroupSoakAnalysis(
       let prevPids = new Set<number>()
       let prevTs = -999_999
 
-      for (let i = 0; i < clusters.length; i++) {
+      for (let i = 0; i < p1Clusters.length; i++) {
         const sIdx = i + 1
-        const c = clusters[i]
+        const c = p1Clusters[i]
         const cts = c.start
         const cpids = c.pids
         const expKey: 'A' | 'B' = sIdx % 2 === 1 ? startKey : startKey === 'A' ? 'B' : 'A'
         const othKey: 'A' | 'B' = expKey === 'A' ? 'B' : 'A'
-        const expLabel = expKey === 'A' ? labelA : labelB
-        const expClass = expKey === 'A' ? classA : classB
+        const expLabel = expKey === 'A' ? 'Soak-Gruppe 1' : 'Soak-Gruppe 2'
 
         const expectedPids = new Set<number>()
         for (const p of fightPlayers) {
-          if (grpOf(p) === expKey) expectedPids.add(p)
+          if (p1GroupByPid.get(p) === expKey) expectedPids.add(p)
         }
         let bossTankExemptRef: { player: string; class: string; player_id: number } | null = null
-        if (phaseKey === 'p1') {
-          const activeBt = activeBossTankAt(cts)
-          if (activeBt !== null && !cpids.has(activeBt) && expectedPids.has(activeBt)) {
-            expectedPids.delete(activeBt)
-            bossTankExemptRef = pref(activeBt)
-          }
+        const activeBt = activeBossTankAt(cts)
+        if (activeBt !== null && !cpids.has(activeBt) && expectedPids.has(activeBt)) {
+          expectedPids.delete(activeBt)
+          bossTankExemptRef = pref(activeBt)
         }
 
         const soakersPids: number[] = []
         const wrongPids: number[] = []
         for (const p of cpids) {
-          if (grpOf(p) === othKey) wrongPids.push(p)
+          if (p1GroupByPid.get(p) === othKey) wrongPids.push(p)
           else soakersPids.push(p)
         }
         soakersPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
@@ -2384,18 +2417,19 @@ function buildGroupSoakAnalysis(
 
         const relMs = cts - fStart
         groupSoaks.push({
-          id: `${reportCode}-${fid}-${phaseKey}-${sIdx}-${cts}-gsk`,
-          phase: phaseKey,
+          id: `${reportCode}-${fid}-p1-${sIdx}-${cts}-gsk`,
+          phase: 'p1',
           pull_num: pullNum,
           fight_id: fid,
           is_kill: isKill,
           soak_num: sIdx,
+          round_num: Math.floor((sIdx - 1) / 2) + 1,
           rel_time: formatRelTime(relMs),
           rel_ms: relMs,
           timestamp: cts,
           deaths_before: countDeathsBefore(cts),
           expected_group: expLabel,
-          expected_group_class: expClass,
+          expected_group_class: '',
           total_soakers: cpids.size,
           correct_count: soakersPids.length,
           alternation_ok: wrongRefs.length === 0 && missedAlivePids.length === 0,
@@ -2412,9 +2446,171 @@ function buildGroupSoakAnalysis(
         prevTs = cts
       }
     }
+
+    // ---- Intermission: The Shattering — 3-Group Rotation (Stage 1 Invariants + Stage 2 3! Alignment) ----
+    const shatClusters = rec.shat_clusters
+    if (shatClusters.length > 0) {
+      const firstRound = shatClusters.slice(0, 3)
+      let pullOrd = perms3[0]
+      let bestOrdScore = -1
+      for (let pi = 0; pi < perms3.length; pi++) {
+        const perm = perms3[pi]
+        let sc = 0
+        for (let ci = 0; ci < firstRound.length; ci++) {
+          const gk = perm[ci]
+          for (const p of firstRound[ci].pids) {
+            if (shatGroupByPid.get(p) === gk) sc++
+          }
+        }
+        if (sc > bestOrdScore) {
+          bestOrdScore = sc
+          pullOrd = perm
+        }
+      }
+
+      const roundZeroMissed = new Map<number, number[]>()
+      for (let rs = 0; rs < shatClusters.length; rs += 3) {
+        const chunk = shatClusters.slice(rs, rs + 3)
+        if (chunk.length === 3) {
+          const rNum = Math.floor(rs / 3) + 1
+          const rSoakers = new Set<number>()
+          for (let ci = 0; ci < chunk.length; ci++) {
+            for (const p of chunk[ci].pids) rSoakers.add(p)
+          }
+          const rEndTs = chunk[chunk.length - 1].start
+          const missed: number[] = []
+          for (const p of fightPlayers) {
+            if (!rSoakers.has(p) && !isDeadAt(p, rEndTs)) missed.push(p)
+          }
+          missed.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          roundZeroMissed.set(rNum, missed)
+        }
+      }
+
+      const lastSoakIdxByPid = new Map<number, number>()
+      for (let i = 0; i < shatClusters.length; i++) {
+        const sIdx = i + 1
+        const c = shatClusters[i]
+        const cts = c.start
+        const cpids = c.pids
+        const roundNum = Math.floor((sIdx - 1) / 3) + 1
+        const expKey = pullOrd[(sIdx - 1) % 3]
+        const expLabel = shatLabels[expKey]
+
+        const absentAll: number[] = []
+        for (const p of fightPlayers) {
+          if (!cpids.has(p)) absentAll.push(p)
+        }
+        absentAll.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+        const absentAlivePids: number[] = []
+        const absentDeadPids: number[] = []
+        for (let a = 0; a < absentAll.length; a++) {
+          const p = absentAll[a]
+          if (isDeadAt(p, cts)) absentDeadPids.push(p)
+          else absentAlivePids.push(p)
+        }
+
+        const doublePids = new Set<number>()
+        for (const p of cpids) {
+          const prevIdx = lastSoakIdxByPid.get(p)
+          if (prevIdx !== undefined && sIdx - prevIdx < 3) doublePids.add(p)
+        }
+
+        const soakersPids: number[] = []
+        const wrongPids: number[] = []
+        let missedAlivePids: number[] = []
+        const deadExpectedPids: number[] = []
+
+        if (shatConfidence === 'high') {
+          const expectedPids = new Set<number>()
+          for (const p of fightPlayers) {
+            if (shatGroupByPid.get(p) === expKey) expectedPids.add(p)
+          }
+          for (const p of cpids) {
+            const pg = shatGroupByPid.get(p)
+            if ((pg !== undefined && pg !== expKey) || doublePids.has(p)) wrongPids.push(p)
+            else soakersPids.push(p)
+          }
+          soakersPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          wrongPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+
+          const missingPids: number[] = []
+          for (const p of expectedPids) {
+            if (!cpids.has(p)) missingPids.push(p)
+          }
+          missingPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          for (let m = 0; m < missingPids.length; m++) {
+            const p = missingPids[m]
+            if (isDeadAt(p, cts)) deadExpectedPids.push(p)
+            else missedAlivePids.push(p)
+          }
+          if (sIdx % 3 === 0) {
+            const rzm = roundZeroMissed.get(roundNum) ?? []
+            const missedSet = new Set(missedAlivePids)
+            for (let z = 0; z < rzm.length; z++) {
+              const p = rzm[z]
+              if (!shatGroupByPid.has(p) && !missedSet.has(p)) {
+                missedAlivePids.push(p)
+                missedSet.add(p)
+              }
+            }
+            missedAlivePids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          }
+        } else {
+          for (const p of cpids) {
+            if (doublePids.has(p)) wrongPids.push(p)
+            else soakersPids.push(p)
+          }
+          soakersPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          wrongPids.sort((a, b) => cmpStr(actors[a].name, actors[b].name))
+          if (sIdx % 3 === 0) {
+            missedAlivePids = [...(roundZeroMissed.get(roundNum) ?? [])]
+          }
+        }
+
+        const wrongRefs = wrongPids.map((p) => ({
+          player: actors[p].name,
+          class: actors[p].subType ?? '',
+          player_id: p,
+          double_soak: doublePids.has(p),
+        }))
+
+        const relMs = cts - fStart
+        groupSoaks.push({
+          id: `${reportCode}-${fid}-shattering-${sIdx}-${cts}-gsk`,
+          phase: 'shattering',
+          pull_num: pullNum,
+          fight_id: fid,
+          is_kill: isKill,
+          soak_num: sIdx,
+          round_num: roundNum,
+          confidence: shatConfidence,
+          rel_time: formatRelTime(relMs),
+          rel_ms: relMs,
+          timestamp: cts,
+          deaths_before: countDeathsBefore(cts),
+          expected_group: expLabel,
+          expected_group_class: '',
+          total_soakers: cpids.size,
+          correct_count: soakersPids.length,
+          alternation_ok: wrongRefs.length === 0 && missedAlivePids.length === 0,
+          soakers: soakersPids.map(pref),
+          missed_alive: missedAlivePids.map(pref),
+          wrong_group: wrongRefs,
+          dead_expected: deadExpectedPids.map(pref),
+          absent_alive: absentAlivePids.map(pref),
+          absent_dead: absentDeadPids.map(pref),
+          boss_tank_exempt: null,
+          events_url: `https://www.warcraftlogs.com/reports/${reportCode}?fight=${fid}&type=auras&ability=${SPELL_SOUL_CONSTRICTOR}&view=events&start=${Math.max(fStart, cts - 2000)}&end=${Math.min(fEnd, cts + 4000)}`,
+          replay_url: buildReplayUrl(reportCode, fid, relMs),
+        })
+
+        for (const p of cpids) lastSoakIdxByPid.set(p, sIdx)
+      }
+    }
   }
 
-  const groupRoster = (gmap: Map<number, 'A' | 'B'>, key: 'A' | 'B') => {
+  const groupRoster = <K extends string>(gmap: Map<number, K>, key: K) => {
     const pids: number[] = []
     for (const [p, k] of gmap.entries()) {
       if (k === key && actors[p]) pids.push(p)
@@ -2424,13 +2620,22 @@ function buildGroupSoakAnalysis(
   }
 
   const soakGroupsOut = {
-    shattering: {
+    p2: {
       group_a_label: shatLabelA,
       group_a_class: shatClassA,
-      group_a_players: groupRoster(shatGroupByPid, 'A'),
+      group_a_players: groupRoster(p2GroupByPid, 'A'),
       group_b_label: shatLabelB,
       group_b_class: shatClassB,
-      group_b_players: groupRoster(shatGroupByPid, 'B'),
+      group_b_players: groupRoster(p2GroupByPid, 'B'),
+    },
+    shattering: {
+      confidence: shatConfidence,
+      rounds_observed: completeShatRounds,
+      groups: shatKeys.map((gk) => ({
+        key: gk,
+        label: shatLabels[gk],
+        players: groupRoster(shatGroupByPid, gk),
+      })),
     },
     p1: {
       group_a_label: 'Soak-Gruppe 1',

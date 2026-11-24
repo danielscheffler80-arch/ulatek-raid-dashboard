@@ -14,6 +14,8 @@ import {
   computePhaseBuckets,
   filterByMaxDeaths,
   getEventBossPhase,
+  getLatestP2Groups,
+  parseMrtSoakGroups,
 } from './stats'
 
 const mockReport: ReportData = {
@@ -809,5 +811,89 @@ describe('stats aggregation and maxDeaths filtering', () => {
     expect(emP2.avgFastestMs).toBe(600)
     const emInter = aggregateHealerEmergency([repPhased], 4, { from: 1, to: 2 }, 0.5, 1.7, 'intermission')
     expect(emInter.totalEvents).toBe(0)
+  })
+
+  it('parses MRT-Notes with WoW color codes/accents and re-evaluates 3-group Shattering soaks instantly', () => {
+    const roster = [
+      { player: 'Betøng', class: 'Monk', player_id: 1 },
+      { player: 'Barrumir', class: 'DeathKnight', player_id: 2 },
+      { player: 'Näxxs', class: 'Hunter', player_id: 3 },
+      { player: 'Leÿlu', class: 'Paladin', player_id: 4 },
+      { player: 'ßigpriest', class: 'Priest', player_id: 5 },
+      { player: 'Narande', class: 'Warlock', player_id: 6 },
+    ]
+    const mrtRaw = [
+      '{rt1} Gruppe 1: |cff00ff98Betong|r, Naxxs',
+      'G2: Leylu - Bigpriest',
+      '3) Barrumir Narande UnknownGuy',
+    ].join('\n')
+
+    const parsed = parseMrtSoakGroups(mrtRaw, roster)
+    expect(parsed.groups).toHaveLength(3)
+    expect(parsed.groups[0].players.map((p) => p.player)).toEqual(['Betøng', 'Näxxs'])
+    expect(parsed.groups[1].players.map((p) => p.player)).toEqual(['Leÿlu', 'ßigpriest'])
+    expect(parsed.groups[2].players.map((p) => p.player)).toEqual(['Barrumir', 'Narande'])
+    expect(parsed.unknownNames).toEqual(['UnknownGuy'])
+
+    // Even on a provisional 1-round report, passing customShatteringGroups re-evaluates deterministically with 3 groupTables!
+    const rep3Grp: ReportData = {
+      ...mockReport,
+      soak_groups: {
+        p2: {
+          group_a_label: 'Gruppe Barrumir',
+          group_a_class: 'DeathKnight',
+          group_a_players: [roster[1]],
+          group_b_label: 'Gruppe Betøng',
+          group_b_class: 'Monk',
+          group_b_players: [roster[0]],
+        },
+        shattering: {
+          confidence: 'provisional',
+          rounds_observed: 1,
+          groups: [
+            { key: 'G1', label: 'Gruppe 1', players: [roster[0], roster[2]] },
+            { key: 'G2', label: 'Gruppe 2', players: [roster[3], roster[4]] },
+            { key: 'G3', label: 'Gruppe 3', players: [roster[1], roster[5]] },
+          ],
+        },
+        p1: {
+          group_a_label: 'Soak-Gruppe 1',
+          group_a_class: '',
+          group_a_players: [],
+          group_b_label: 'Soak-Gruppe 2',
+          group_b_class: '',
+          group_b_players: [],
+        },
+      },
+      group_soaks: [
+        {
+          id: 'sh-1', phase: 'shattering', pull_num: 1, fight_id: 10, is_kill: false, soak_num: 1, round_num: 1, confidence: 'provisional',
+          rel_time: '04:10.000', rel_ms: 250000, timestamp: 450000, deaths_before: 0,
+          expected_group: 'Gruppe 1', expected_group_class: '', total_soakers: 2, correct_count: 2, alternation_ok: true,
+          soakers: [roster[0], roster[2]], missed_alive: [], wrong_group: [], dead_expected: [],
+          absent_alive: [roster[1], roster[3], roster[4], roster[5]], absent_dead: [],
+          events_url: 'https://wcl/sh1', replay_url: 'https://wcl/rsh1',
+        },
+        {
+          // Soak #2: Expected G2 (Leÿlu, ßigpriest), but ßigpriest MISSED ALIVE and Betøng DOUBLE-SOAKED!
+          id: 'sh-2', phase: 'shattering', pull_num: 1, fight_id: 10, is_kill: false, soak_num: 2, round_num: 1, confidence: 'provisional',
+          rel_time: '04:15.000', rel_ms: 255000, timestamp: 455000, deaths_before: 0,
+          expected_group: 'Gruppe 2', expected_group_class: '', total_soakers: 2, correct_count: 1, alternation_ok: false,
+          soakers: [roster[3]], missed_alive: [], wrong_group: [{ ...roster[0], double_soak: true }], dead_expected: [],
+          absent_alive: [roster[1], roster[2], roster[4], roster[5]], absent_dead: [],
+          events_url: 'https://wcl/sh2', replay_url: 'https://wcl/rsh2',
+        },
+      ],
+    }
+
+    expect(getLatestP2Groups([rep3Grp])?.group_a_label).toBe('Gruppe Barrumir')
+
+    const resMrt = aggregateGroupSoaks([rep3Grp], 4, { from: 1, to: 2 }, 'shattering', parsed.groups)
+    expect(resMrt.confidence).toBe('mrt')
+    expect(resMrt.groupTables).toHaveLength(3)
+    expect(resMrt.groupTables.map((t) => t.label)).toEqual(['Gruppe 1', 'Gruppe 2', 'Gruppe 3'])
+    // Under MRT override, ßigpriest is immediately flagged as missed_alive on Soak #2!
+    expect(resMrt.soaks[1].missed_alive.map((p) => p.player)).toEqual(['ßigpriest'])
+    expect(resMrt.soaks[1].wrong_group[0]).toMatchObject({ player: 'Betøng', double_soak: true })
   })
 })

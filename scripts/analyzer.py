@@ -2022,37 +2022,77 @@ def _build_group_soak_analysis(
             }
         )
 
-    # Report-level Shattering groups (from P2 Warden sides; unmapped healers inferred from Shattering co-soaking)
-    shat_group_by_pid: dict[int, str] = {}
+    # Report-level P2 Warden groups (2 groups: Gruppe Barrumir vs Gruppe Betøng)
+    p2_group_by_pid: dict[int, str] = {}
     if tk_a is not None:
-        shat_group_by_pid[tk_a] = "A"
+        p2_group_by_pid[tk_a] = "A"
     if tk_b is not None:
-        shat_group_by_pid[tk_b] = "B"
+        p2_group_by_pid[tk_b] = "B"
     for pid, votes in p2_side_votes.items():
-        if pid in shat_group_by_pid:
+        if pid in p2_group_by_pid:
             continue
-        shat_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
+        p2_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
 
-    # Infer unmapped players (e.g. pure healers with 0 Warden dmg) by co-soaking in Shattering clusters
-    shat_co_votes: dict[int, Counter[str]] = defaultdict(Counter)
-    for rec in fight_records:
-        for c in rec["shat_clusters"]:
-            cnt_a = sum(1 for p in c["pids"] if shat_group_by_pid.get(p) == "A")
-            cnt_b = sum(1 for p in c["pids"] if shat_group_by_pid.get(p) == "B")
-            if cnt_a == 0 and cnt_b == 0:
-                continue
-            cluster_key = "A" if cnt_a >= cnt_b else "B"
-            for p in c["pids"]:
-                if p not in shat_group_by_pid:
-                    shat_co_votes[p][cluster_key] += 1
-    for pid, votes in shat_co_votes.items():
-        if pid not in shat_group_by_pid:
-            shat_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
-
-    # Report-level Phase 1 groups (majority even vs odd P1 soak parity)
+    # Report-level Phase 1 groups (2 alternating groups: majority even vs odd P1 soak parity)
     p1_group_by_pid: dict[int, str] = {}
     for pid, votes in p1_parity_votes.items():
         p1_group_by_pid[pid] = "A" if votes.get("A", 0) >= votes.get("B", 0) else "B"
+
+    # Report-level Intermission: The Shattering 3-group auto-clustering via 3! = 6 permutation alignment
+    shat_keys = ("G1", "G2", "G3")
+    shat_labels = {"G1": "Gruppe 1", "G2": "Gruppe 2", "G3": "Gruppe 3"}
+    perms_3: tuple[tuple[str, str, str], ...] = (
+        ("G1", "G2", "G3"),
+        ("G1", "G3", "G2"),
+        ("G2", "G1", "G3"),
+        ("G2", "G3", "G1"),
+        ("G3", "G1", "G2"),
+        ("G3", "G2", "G1"),
+    )
+    all_shat_rounds: list[list[dict[str, Any]]] = []
+    total_shat_soaks = 0
+    for rec in fight_records:
+        scl = rec["shat_clusters"]
+        total_shat_soaks += len(scl)
+        for i in range(0, len(scl), 3):
+            all_shat_rounds.append(scl[i : i + 3])
+
+    complete_shat_rounds = sum(1 for ch in all_shat_rounds if len(ch) == 3)
+    shat_confidence = "none" if total_shat_soaks == 0 else ("high" if complete_shat_rounds >= 2 else "provisional")
+
+    shat_votes: dict[int, dict[str, int]] = {}
+    ordered_rounds = sorted(range(len(all_shat_rounds)), key=lambda i: (0 if len(all_shat_rounds[i]) == 3 else 1, i))
+    seeded = False
+    for r_i in ordered_rounds:
+        chunk = all_shat_rounds[r_i]
+        if not seeded:
+            best_perm = perms_3[0]
+            seeded = True
+        else:
+            best_perm = perms_3[0]
+            best_score = -1
+            for perm in perms_3:
+                score = 0
+                for idx_c, c in enumerate(chunk):
+                    gk = perm[idx_c]
+                    for p in c["pids"]:
+                        pv = shat_votes.get(p)
+                        if pv is not None:
+                            score += pv[gk]
+                if score > best_score:
+                    best_score = score
+                    best_perm = perm
+        for idx_c, c in enumerate(chunk):
+            gk = best_perm[idx_c]
+            for p in c["pids"]:
+                if p not in shat_votes:
+                    shat_votes[p] = {"G1": 0, "G2": 0, "G3": 0}
+                shat_votes[p][gk] += 1
+
+    shat_group_by_pid: dict[int, str] = {}
+    for pid, vm in shat_votes.items():
+        best_k = max(shat_keys, key=lambda k: vm[k])
+        shat_group_by_pid[pid] = best_k
 
     def _pref(pid: int, double_soak: bool = False) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -2064,7 +2104,7 @@ def _build_group_soak_analysis(
             out["double_soak"] = True
         return out
 
-    # Pass 2: Evaluate each soak with strict A <-> B alternation
+    # Pass 2: Evaluate P1 (2-group alternation) and Shattering (3-group modulo-3 rotation)
     group_soaks: list[dict[str, Any]] = []
     for rec in fight_records:
         fid = rec["fight_id"]
@@ -2077,7 +2117,6 @@ def _build_group_soak_analysis(
         deaths_by_player: dict[int, list[int]] = rec["deaths_by_player"]
         boss_melee_ts: dict[int, list[int]] = rec["boss_melee_ts"]
         stone_venom_apply_ts: dict[int, list[int]] = rec["stone_venom_apply_ts"]
-        fight_p2_group: dict[int, str] = rec["fight_p2_group"]
 
         def _count_deaths_before(ts_now: int) -> int:
             return sum(1 for dts, _ in player_deaths if dts < ts_now)
@@ -2111,49 +2150,37 @@ def _build_group_soak_analysis(
                         best_tk = tk
             return best_tk
 
-        for phase_key, clusters, label_a, class_a, label_b, class_b in (
-            ("p1", rec["p1_clusters"], "Soak-Gruppe 1", "", "Soak-Gruppe 2", ""),
-            ("shattering", rec["shat_clusters"], shat_label_a, shat_class_a, shat_label_b, shat_class_b),
-        ):
-            if not clusters:
-                continue
-
-            def _grp_of(pid: int, pk: str = phase_key) -> str | None:
-                if pk == "shattering":
-                    return fight_p2_group.get(pid) or shat_group_by_pid.get(pid)
-                return p1_group_by_pid.get(pid)
-
-            # Determine starting group from Soak #1 majority
-            c0_pids = clusters[0]["pids"]
-            c0_a = sum(1 for p in c0_pids if _grp_of(p) == "A")
-            c0_b = sum(1 for p in c0_pids if _grp_of(p) == "B")
+        # ---- Phase 1: 2-Group Alternation (with active Boss-Tank exemption) ----
+        p1_clusters = rec["p1_clusters"]
+        if p1_clusters:
+            c0_pids = p1_clusters[0]["pids"]
+            c0_a = sum(1 for p in c0_pids if p1_group_by_pid.get(p) == "A")
+            c0_b = sum(1 for p in c0_pids if p1_group_by_pid.get(p) == "B")
             start_key = "A" if c0_a >= c0_b else "B"
 
             prev_pids: set[int] = set()
             prev_ts = -999_999
 
-            for s_idx, c in enumerate(clusters, start=1):
+            for s_idx, c in enumerate(p1_clusters, start=1):
                 cts = int(c["start"])
                 cpids: set[int] = set(c["pids"])
                 exp_key = start_key if (s_idx % 2 == 1) else ("B" if start_key == "A" else "A")
                 oth_key = "B" if exp_key == "A" else "A"
-                exp_label = label_a if exp_key == "A" else label_b
-                exp_class = class_a if exp_key == "A" else class_b
+                exp_label = "Soak-Gruppe 1" if exp_key == "A" else "Soak-Gruppe 2"
 
-                expected_pids = {p for p in fight_players if _grp_of(p) == exp_key}
+                expected_pids = {p for p in fight_players if p1_group_by_pid.get(p) == exp_key}
                 boss_tank_exempt_ref = None
-                if phase_key == "p1":
-                    active_bt = _active_boss_tank_at(cts)
-                    if active_bt is not None and active_bt not in cpids and active_bt in expected_pids:
-                        expected_pids.discard(active_bt)
-                        boss_tank_exempt_ref = _pref(active_bt)
+                active_bt = _active_boss_tank_at(cts)
+                if active_bt is not None and active_bt not in cpids and active_bt in expected_pids:
+                    expected_pids.discard(active_bt)
+                    boss_tank_exempt_ref = _pref(active_bt)
 
                 soakers_pids = sorted(
-                    [p for p in cpids if _grp_of(p) != oth_key],
+                    [p for p in cpids if p1_group_by_pid.get(p) != oth_key],
                     key=lambda p: actors[p]["name"],
                 )
                 wrong_pids = sorted(
-                    [p for p in cpids if _grp_of(p) == oth_key],
+                    [p for p in cpids if p1_group_by_pid.get(p) == oth_key],
                     key=lambda p: actors[p]["name"],
                 )
                 missing_pids = sorted(expected_pids - cpids, key=lambda p: actors[p]["name"])
@@ -2174,18 +2201,19 @@ def _build_group_soak_analysis(
                 rel_ms = cts - f_start
                 group_soaks.append(
                     {
-                        "id": f"{report_code}-{fid}-{phase_key}-{s_idx}-{cts}-gsk",
-                        "phase": phase_key,
+                        "id": f"{report_code}-{fid}-p1-{s_idx}-{cts}-gsk",
+                        "phase": "p1",
                         "pull_num": pull_idx,
                         "fight_id": fid,
                         "is_kill": is_kill,
                         "soak_num": s_idx,
+                        "round_num": (s_idx - 1) // 2 + 1,
                         "rel_time": format_rel_time(rel_ms),
                         "rel_ms": rel_ms,
                         "timestamp": cts,
                         "deaths_before": _count_deaths_before(cts),
                         "expected_group": exp_label,
-                        "expected_group_class": exp_class,
+                        "expected_group_class": "",
                         "total_soakers": len(cpids),
                         "correct_count": len(soakers_pids),
                         "alternation_ok": len(wrong_refs) == 0 and len(missed_alive_pids) == 0,
@@ -2201,6 +2229,133 @@ def _build_group_soak_analysis(
                 prev_pids = cpids
                 prev_ts = cts
 
+        # ---- Intermission: The Shattering — 3-Group Rotation (Stage 1 Invariants + Stage 2 3! Alignment) ----
+        shat_clusters = rec["shat_clusters"]
+        if shat_clusters:
+            # Align this pull's first round against canonical (G1, G2, G3) via best-of-6 permutation
+            first_round = shat_clusters[:3]
+            pull_ord = perms_3[0]
+            best_ord_score = -1
+            for perm in perms_3:
+                sc = sum(
+                    1
+                    for idx_c, c in enumerate(first_round)
+                    for p in c["pids"]
+                    if shat_group_by_pid.get(p) == perm[idx_c]
+                )
+                if sc > best_ord_score:
+                    best_ord_score = sc
+                    pull_ord = perm
+
+            # Precompute 100%-certain 0-soak alive players for each complete 3-soak round
+            round_zero_missed: dict[int, list[int]] = {}
+            for r_start in range(0, len(shat_clusters), 3):
+                chunk = shat_clusters[r_start : r_start + 3]
+                if len(chunk) == 3:
+                    r_num = r_start // 3 + 1
+                    r_soakers: set[int] = set()
+                    for c in chunk:
+                        r_soakers.update(c["pids"])
+                    r_end_ts = int(chunk[-1]["start"])
+                    round_zero_missed[r_num] = sorted(
+                        [p for p in fight_players if p not in r_soakers and not _is_dead_at(p, r_end_ts)],
+                        key=lambda p: actors[p]["name"],
+                    )
+
+            last_soak_idx_by_pid: dict[int, int] = {}
+            for s_idx, c in enumerate(shat_clusters, start=1):
+                cts = int(c["start"])
+                cpids = set(c["pids"])
+                round_num = (s_idx - 1) // 3 + 1
+                exp_key = pull_ord[(s_idx - 1) % 3]
+                exp_label = shat_labels[exp_key]
+
+                absent_all = sorted(fight_players - cpids, key=lambda p: actors[p]["name"])
+                absent_alive_pids = [p for p in absent_all if not _is_dead_at(p, cts)]
+                absent_dead_pids = [p for p in absent_all if _is_dead_at(p, cts)]
+
+                double_pids = {
+                    p for p in cpids if p in last_soak_idx_by_pid and (s_idx - last_soak_idx_by_pid[p]) < 3
+                }
+
+                if shat_confidence == "high":
+                    expected_pids = {p for p in fight_players if shat_group_by_pid.get(p) == exp_key}
+                    wrong_pids = sorted(
+                        [
+                            p
+                            for p in cpids
+                            if (shat_group_by_pid.get(p) not in (None, exp_key)) or (p in double_pids)
+                        ],
+                        key=lambda p: actors[p]["name"],
+                    )
+                    wrong_set = set(wrong_pids)
+                    soakers_pids = sorted([p for p in cpids if p not in wrong_set], key=lambda p: actors[p]["name"])
+                    missing_pids = sorted(expected_pids - cpids, key=lambda p: actors[p]["name"])
+                    missed_alive_pids = [p for p in missing_pids if not _is_dead_at(p, cts)]
+                    dead_expected_pids = [p for p in missing_pids if _is_dead_at(p, cts)]
+                    if s_idx % 3 == 0 and round_num in round_zero_missed:
+                        extra_unassigned = [
+                            p
+                            for p in round_zero_missed[round_num]
+                            if p not in shat_group_by_pid and p not in missed_alive_pids
+                        ]
+                        if extra_unassigned:
+                            missed_alive_pids = sorted(
+                                missed_alive_pids + extra_unassigned, key=lambda p: actors[p]["name"]
+                            )
+                else:
+                    # Stage 1 Provisional (< 2 complete rounds): ONLY 100%-certain invariants!
+                    wrong_pids = sorted(double_pids, key=lambda p: actors[p]["name"])
+                    soakers_pids = sorted([p for p in cpids if p not in double_pids], key=lambda p: actors[p]["name"])
+                    missed_alive_pids = (
+                        list(round_zero_missed.get(round_num, [])) if (s_idx % 3 == 0) else []
+                    )
+                    dead_expected_pids = []
+
+                wrong_refs = [
+                    {
+                        "player": actors[p]["name"],
+                        "class": actors[p].get("subType", ""),
+                        "player_id": p,
+                        "double_soak": bool(p in double_pids),
+                    }
+                    for p in wrong_pids
+                ]
+
+                rel_ms = cts - f_start
+                group_soaks.append(
+                    {
+                        "id": f"{report_code}-{fid}-shattering-{s_idx}-{cts}-gsk",
+                        "phase": "shattering",
+                        "pull_num": pull_idx,
+                        "fight_id": fid,
+                        "is_kill": is_kill,
+                        "soak_num": s_idx,
+                        "round_num": round_num,
+                        "confidence": shat_confidence,
+                        "rel_time": format_rel_time(rel_ms),
+                        "rel_ms": rel_ms,
+                        "timestamp": cts,
+                        "deaths_before": _count_deaths_before(cts),
+                        "expected_group": exp_label,
+                        "expected_group_class": "",
+                        "total_soakers": len(cpids),
+                        "correct_count": len(soakers_pids),
+                        "alternation_ok": len(wrong_refs) == 0 and len(missed_alive_pids) == 0,
+                        "soakers": [_pref(p) for p in soakers_pids],
+                        "missed_alive": [_pref(p) for p in missed_alive_pids],
+                        "wrong_group": wrong_refs,
+                        "dead_expected": [_pref(p) for p in dead_expected_pids],
+                        "absent_alive": [_pref(p) for p in absent_alive_pids],
+                        "absent_dead": [_pref(p) for p in absent_dead_pids],
+                        "boss_tank_exempt": None,
+                        "events_url": f"https://www.warcraftlogs.com/reports/{report_code}?fight={fid}&type=auras&ability={SPELL_SOUL_CONSTRICTOR}&view=events&start={max(f_start, cts - 2000)}&end={min(f_end, cts + 4000)}",
+                        "replay_url": build_replay_url(report_code, fid, rel_ms),
+                    }
+                )
+                for p in cpids:
+                    last_soak_idx_by_pid[p] = s_idx
+
     def _group_roster(gmap: dict[int, str], key: str) -> list[dict[str, Any]]:
         return [
             {"player": actors[p]["name"], "class": actors[p].get("subType", ""), "player_id": p}
@@ -2209,13 +2364,25 @@ def _build_group_soak_analysis(
         ]
 
     soak_groups_out = {
-        "shattering": {
+        "p2": {
             "group_a_label": shat_label_a,
             "group_a_class": shat_class_a,
-            "group_a_players": _group_roster(shat_group_by_pid, "A"),
+            "group_a_players": _group_roster(p2_group_by_pid, "A"),
             "group_b_label": shat_label_b,
             "group_b_class": shat_class_b,
-            "group_b_players": _group_roster(shat_group_by_pid, "B"),
+            "group_b_players": _group_roster(p2_group_by_pid, "B"),
+        },
+        "shattering": {
+            "confidence": shat_confidence,
+            "rounds_observed": complete_shat_rounds,
+            "groups": [
+                {
+                    "key": gk,
+                    "label": shat_labels[gk],
+                    "players": _group_roster(shat_group_by_pid, gk),
+                }
+                for gk in shat_keys
+            ],
         },
         "p1": {
             "group_a_label": "Soak-Gruppe 1",

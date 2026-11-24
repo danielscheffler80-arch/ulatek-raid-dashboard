@@ -430,8 +430,23 @@ export interface SoakGroupDefinition {
   group_b_players: GroupSoakPlayerRef[]
 }
 
+export type ShatteringConfidence = 'none' | 'provisional' | 'high' | 'mrt'
+
+export interface ShatteringGroupEntry {
+  key: 'G1' | 'G2' | 'G3'
+  label: string
+  players: GroupSoakPlayerRef[]
+}
+
+export interface ShatteringSoakGroups {
+  confidence: ShatteringConfidence
+  rounds_observed: number
+  groups: ShatteringGroupEntry[]
+}
+
 export interface ReportSoakGroups {
-  shattering: SoakGroupDefinition
+  p2?: SoakGroupDefinition
+  shattering?: ShatteringSoakGroups | SoakGroupDefinition
   p1: SoakGroupDefinition
 }
 
@@ -442,6 +457,8 @@ export interface GroupSoakEvent {
   fight_id: number
   is_kill: boolean
   soak_num: number
+  round_num?: number
+  confidence?: ShatteringConfidence
   rel_time: string
   rel_ms: number
   timestamp: number
@@ -455,6 +472,8 @@ export interface GroupSoakEvent {
   missed_alive: GroupSoakPlayerRef[]
   wrong_group: GroupSoakPlayerRef[]
   dead_expected: GroupSoakPlayerRef[]
+  absent_alive?: GroupSoakPlayerRef[]
+  absent_dead?: GroupSoakPlayerRef[]
   boss_tank_exempt?: GroupSoakPlayerRef | null
   events_url: string
   replay_url: string

@@ -4,6 +4,7 @@ import type {
   EggCarrierEvent,
   EggFail,
   GroupSoakEvent,
+  GroupSoakPlayerRef,
   HealerEmergencyEvent,
   HealerEmergencyReaction,
   HealerTankSoakEvent,
@@ -13,6 +14,9 @@ import type {
   PhaseEvent,
   PullData,
   ReportData,
+  ShatteringConfidence,
+  ShatteringGroupEntry,
+  ShatteringSoakGroups,
   SoakGroupDefinition,
   TankFail,
   WardenPullSummary,
@@ -1847,15 +1851,249 @@ export interface GroupSoakTableGroup {
   totalDoubleSoak: number
 }
 
+function isShattering3Groups(
+  g: ShatteringSoakGroups | SoakGroupDefinition | undefined | null,
+): g is ShatteringSoakGroups {
+  return Boolean(g && 'groups' in g && Array.isArray((g as ShatteringSoakGroups).groups))
+}
+
 export function getLatestP2Groups(reports: ReportData[]): SoakGroupDefinition | null {
   const sortedReps = [...reports].sort((a, b) => b.start_time_epoch_ms - a.start_time_epoch_ms)
   for (const rep of sortedReps) {
-    const g = rep.soak_groups?.shattering
-    if (g && (g.group_a_players.length > 0 || g.group_b_players.length > 0)) {
-      return g
+    const p2 = rep.soak_groups?.p2
+    if (p2 && (p2.group_a_players.length > 0 || p2.group_b_players.length > 0)) {
+      return p2
+    }
+    const legacy = rep.soak_groups?.shattering
+    if (legacy && !isShattering3Groups(legacy) && (legacy.group_a_players.length > 0 || legacy.group_b_players.length > 0)) {
+      return legacy
     }
   }
   return null
+}
+
+function normalizeWoWNameKeys(raw: string): string[] {
+  const base = raw
+    .trim()
+    .toLowerCase()
+    .replace(/ø/g, 'o')
+    .replace(/æ/g, 'ae')
+    .replace(/œ/g, 'oe')
+    .replace(/ł/g, 'l')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  const keys = [base]
+  if (base.includes('ß')) {
+    keys.push(base.replace(/ß/g, 'b'))
+    keys.push(base.replace(/ß/g, 'ss'))
+  }
+  return keys
+}
+
+export function parseMrtSoakGroups(
+  rawText: string,
+  roster: GroupSoakPlayerRef[],
+): {
+  groups: ShatteringGroupEntry[]
+  unknownNames: string[]
+  matchedCount: number
+} {
+  const lookup = new Map<string, GroupSoakPlayerRef>()
+  for (const p of roster) {
+    for (const key of normalizeWoWNameKeys(p.player)) {
+      if (!lookup.has(key)) lookup.set(key, p)
+    }
+  }
+
+  const keys: ('G1' | 'G2' | 'G3')[] = ['G1', 'G2', 'G3']
+  const labels: Record<'G1' | 'G2' | 'G3', string> = {
+    G1: 'Gruppe 1',
+    G2: 'Gruppe 2',
+    G3: 'Gruppe 3',
+  }
+  const buckets: Record<'G1' | 'G2' | 'G3', GroupSoakPlayerRef[]> = { G1: [], G2: [], G3: [] }
+  const seenInGroup: Record<'G1' | 'G2' | 'G3', Set<string>> = {
+    G1: new Set(),
+    G2: new Set(),
+    G3: new Set(),
+  }
+  const unknownNames: string[] = []
+  const seenUnknown = new Set<string>()
+
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+
+  let autoIdx = 0
+  for (const origLine of lines) {
+    // Strip WoW color codes (|cAARRGGBB ... |r) and MRT icons ({rt1}, {spell:123})
+    let line = origLine
+      .replace(/\|c[0-9a-fA-F]{8}/g, '')
+      .replace(/\|r/g, '')
+      .replace(/\{[^}]*\}/g, ' ')
+      .trim()
+    if (!line) continue
+
+    let targetKey: 'G1' | 'G2' | 'G3' | null = null
+    const prefixMatch = line.match(/^(?:(?:soak[-\s]*)?(?:gruppe|grp|group|g|soak)\s*)?([123])\s*[:)\-.]\s*(.*)$/i)
+    if (prefixMatch) {
+      targetKey = keys[Number(prefixMatch[1]) - 1]
+      line = prefixMatch[2].trim()
+    } else if (autoIdx < 3) {
+      targetKey = keys[autoIdx]
+      autoIdx++
+    } else {
+      targetKey = 'G3'
+    }
+
+    const tokens = line
+      .split(/[\s,;:/|\-–—•]+/)
+      .map((t) => t.replace(/^[^\p{L}\p{N}ßøæœł]+|[^\p{L}\p{N}ßøæœł]+$/gu, '').trim())
+      .filter((t) => t.length >= 2)
+
+    for (const tok of tokens) {
+      const normKeys = normalizeWoWNameKeys(tok)
+      let matched: GroupSoakPlayerRef | undefined
+      for (const nk of normKeys) {
+        matched = lookup.get(nk)
+        if (matched) break
+      }
+      if (matched) {
+        if (!seenInGroup[targetKey].has(matched.player)) {
+          seenInGroup[targetKey].add(matched.player)
+          buckets[targetKey].push(matched)
+        }
+      } else if (!seenUnknown.has(tok.toLowerCase())) {
+        seenUnknown.add(tok.toLowerCase())
+        unknownNames.push(tok)
+      }
+    }
+  }
+
+  const groups: ShatteringGroupEntry[] = keys.map((k) => ({
+    key: k,
+    label: labels[k],
+    players: buckets[k],
+  }))
+  const matchedCount = groups.reduce((s, g) => s + g.players.length, 0)
+  return { groups, unknownNames, matchedCount }
+}
+
+function reEvaluateShatteringWithCustomGroups(
+  soaks: WithReport<GroupSoakEvent>[],
+  customGroups: ShatteringGroupEntry[],
+): WithReport<GroupSoakEvent>[] {
+  const perms3: ('G1' | 'G2' | 'G3')[][] = [
+    ['G1', 'G2', 'G3'],
+    ['G1', 'G3', 'G2'],
+    ['G2', 'G1', 'G3'],
+    ['G2', 'G3', 'G1'],
+    ['G3', 'G1', 'G2'],
+    ['G3', 'G2', 'G1'],
+  ]
+  const labelByKey = new Map<'G1' | 'G2' | 'G3', string>()
+  const grpByPlayer = new Map<string, 'G1' | 'G2' | 'G3'>()
+  for (const g of customGroups) {
+    labelByKey.set(g.key, g.label)
+    for (const p of g.players) grpByPlayer.set(p.player, g.key)
+  }
+
+  const byFight = new Map<string, WithReport<GroupSoakEvent>[]>()
+  for (const s of soaks) {
+    const k = `${s.reportCode}:${s.fight_id}`
+    const arr = byFight.get(k) ?? []
+    arr.push(s)
+    byFight.set(k, arr)
+  }
+
+  const out: WithReport<GroupSoakEvent>[] = []
+  for (const list of byFight.values()) {
+    const ordered = [...list].sort((a, b) => a.soak_num - b.soak_num || a.timestamp - b.timestamp)
+    const firstRound = ordered.slice(0, 3)
+
+    // Determine best-of-6 cyclic rotation for this fight against the user's MRT groups
+    let bestPerm = perms3[0]
+    let bestScore = -1
+    for (const perm of perms3) {
+      let sc = 0
+      for (let ci = 0; ci < firstRound.length; ci++) {
+        const gk = perm[ci]
+        const participants = [...firstRound[ci].soakers, ...firstRound[ci].wrong_group]
+        for (const p of participants) {
+          if (grpByPlayer.get(p.player) === gk) sc++
+        }
+      }
+      if (sc > bestScore) {
+        bestScore = sc
+        bestPerm = perm
+      }
+    }
+
+    const lastSoakIdx = new Map<string, number>()
+    for (let i = 0; i < ordered.length; i++) {
+      const s = ordered[i]
+      const sIdx = i + 1
+      const expKey = bestPerm[(sIdx - 1) % 3]
+      const expLabel = labelByKey.get(expKey) ?? s.expected_group
+
+      // Reconstruct exact participants + alive/dead raid pool at timestamp cts
+      const participantMap = new Map<string, GroupSoakPlayerRef>()
+      for (const p of [...s.soakers, ...s.wrong_group]) {
+        participantMap.set(p.player, { player: p.player, class: p.class, player_id: p.player_id })
+      }
+      const aliveAbsent = new Map<string, GroupSoakPlayerRef>()
+      const deadAbsent = new Map<string, GroupSoakPlayerRef>()
+      if (s.absent_alive || s.absent_dead) {
+        for (const p of s.absent_alive ?? []) aliveAbsent.set(p.player, p)
+        for (const p of s.absent_dead ?? []) deadAbsent.set(p.player, p)
+      } else {
+        for (const p of s.missed_alive) aliveAbsent.set(p.player, p)
+        for (const p of s.dead_expected) deadAbsent.set(p.player, p)
+      }
+
+      const soakers: GroupSoakPlayerRef[] = []
+      const wrongGroup: GroupSoakPlayerRef[] = []
+      for (const p of Array.from(participantMap.values()).sort((a, b) => a.player.localeCompare(b.player))) {
+        const pg = grpByPlayer.get(p.player)
+        const prevIdx = lastSoakIdx.get(p.player)
+        const isDouble = prevIdx !== undefined && sIdx - prevIdx < 3
+        if ((pg !== undefined && pg !== expKey) || isDouble) {
+          wrongGroup.push({ ...p, double_soak: isDouble })
+        } else {
+          soakers.push(p)
+        }
+      }
+
+      const missedAlive: GroupSoakPlayerRef[] = []
+      const deadExpected: GroupSoakPlayerRef[] = []
+      for (const p of Array.from(aliveAbsent.values()).sort((a, b) => a.player.localeCompare(b.player))) {
+        if (grpByPlayer.get(p.player) === expKey) missedAlive.push(p)
+      }
+      for (const p of Array.from(deadAbsent.values()).sort((a, b) => a.player.localeCompare(b.player))) {
+        if (grpByPlayer.get(p.player) === expKey) deadExpected.push(p)
+      }
+
+      for (const name of participantMap.keys()) lastSoakIdx.set(name, sIdx)
+
+      out.push({
+        ...s,
+        confidence: 'mrt',
+        expected_group: expLabel,
+        correct_count: soakers.length,
+        total_soakers: participantMap.size,
+        alternation_ok: wrongGroup.length === 0 && missedAlive.length === 0,
+        soakers,
+        missed_alive: missedAlive,
+        wrong_group: wrongGroup,
+        dead_expected: deadExpected,
+      })
+    }
+  }
+
+  return out.sort(
+    (a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp,
+  )
 }
 
 export function aggregateGroupSoaks(
@@ -1863,6 +2101,7 @@ export function aggregateGroupSoaks(
   maxDeaths: number | null,
   pullRange: PullRange | null | undefined,
   phaseFilter: GroupSoakPhaseFilter,
+  customShatteringGroups?: ShatteringGroupEntry[] | null,
 ) {
   const allFiltered: WithReport<GroupSoakEvent>[] = []
   for (const rep of reports) {
@@ -1880,36 +2119,79 @@ export function aggregateGroupSoaks(
     else if (s.phase === 'p1') p1Count++
   }
 
-  const soaks = (phaseFilter === 'all' ? allFiltered : allFiltered.filter((s) => s.phase === phaseFilter)).sort(
+  const hasCustomMrt = Boolean(
+    phaseFilter === 'shattering' &&
+      customShatteringGroups &&
+      customShatteringGroups.some((g) => g.players.length > 0),
+  )
+
+  let soaks = (phaseFilter === 'all' ? allFiltered : allFiltered.filter((s) => s.phase === phaseFilter)).sort(
     (a, b) =>
       b.reportDate.localeCompare(a.reportDate) ||
       a.pull_num - b.pull_num ||
       a.timestamp - b.timestamp,
   )
 
-  // Resolve latest report's group roster for the active phase (shattering or p1)
+  if (hasCustomMrt && customShatteringGroups) {
+    soaks = reEvaluateShatteringWithCustomGroups(soaks, customShatteringGroups)
+  }
+
+  // Resolve latest report's group roster (2-group for P1/legacy, 3-group for Shattering)
   const sortedReps = [...reports].sort((a, b) => b.start_time_epoch_ms - a.start_time_epoch_ms)
   let groups: SoakGroupDefinition | null = null
-  const groupKey: 'shattering' | 'p1' = phaseFilter === 'p1' ? 'p1' : 'shattering'
-  for (const rep of sortedReps) {
-    const g = rep.soak_groups?.[groupKey]
-    if (g && (g.group_a_players.length > 0 || g.group_b_players.length > 0)) {
-      groups = g
-      break
-    }
-  }
-  if (!groups) {
+  let shatteringGroups: ShatteringSoakGroups | null = null
+
+  if (phaseFilter === 'p1') {
     for (const rep of sortedReps) {
-      const g = rep.soak_groups?.[groupKey]
-      if (g) {
+      const g = rep.soak_groups?.p1
+      if (g && (g.group_a_players.length > 0 || g.group_b_players.length > 0)) {
         groups = g
         break
       }
     }
+    if (!groups) {
+      for (const rep of sortedReps) {
+        if (rep.soak_groups?.p1) {
+          groups = rep.soak_groups.p1
+          break
+        }
+      }
+    }
+  } else {
+    for (const rep of sortedReps) {
+      const rawSh = rep.soak_groups?.shattering
+      if (isShattering3Groups(rawSh)) {
+        shatteringGroups = rawSh
+        if (rawSh.rounds_observed > 0 || rawSh.groups.some((g) => g.players.length > 0)) break
+      } else if (rawSh) {
+        groups = rawSh
+        if (rawSh.group_a_players.length > 0 || rawSh.group_b_players.length > 0) break
+      }
+    }
   }
 
+  if (hasCustomMrt && customShatteringGroups) {
+    shatteringGroups = {
+      confidence: 'mrt',
+      rounds_observed: shatteringGroups?.rounds_observed ?? 0,
+      groups: customShatteringGroups,
+    }
+    groups = null
+  }
+
+  const confidence: ShatteringConfidence = hasCustomMrt
+    ? 'mrt'
+    : shatteringGroups?.confidence ?? (soaks.length > 0 ? 'high' : 'none')
+  const roundsObserved = shatteringGroups?.rounds_observed ?? 0
+
   const playerGroupMap = new Map<string, { label: string; cls: string }>()
-  if (groups) {
+  if (shatteringGroups) {
+    for (const g of shatteringGroups.groups) {
+      for (const p of g.players) {
+        playerGroupMap.set(p.player, { label: g.label, cls: '' })
+      }
+    }
+  } else if (groups) {
     for (const p of groups.group_a_players) {
       playerGroupMap.set(p.player, { label: groups.group_a_label, cls: groups.group_a_class })
     }
@@ -2011,7 +2293,18 @@ export function aggregateGroupSoaks(
   })
 
   const groupTables: GroupSoakTableGroup[] = []
-  if (groups) {
+  if (shatteringGroups) {
+    const knownLabels = new Set<string>()
+    for (const g of shatteringGroups.groups) {
+      knownLabels.add(g.label)
+      const list = players.filter((p) => p.groupLabel === g.label)
+      groupTables.push(makeTableGroup(g.label, '', list))
+    }
+    const others = players.filter((p) => !knownLabels.has(p.groupLabel))
+    if (others.length > 0) {
+      groupTables.push(makeTableGroup('Nicht zugeordnet', '', others))
+    }
+  } else if (groups) {
     const grpA = players.filter((p) => p.groupLabel === groups!.group_a_label)
     const grpB = players.filter((p) => p.groupLabel === groups!.group_b_label)
     const others = players.filter(
@@ -2028,6 +2321,9 @@ export function aggregateGroupSoaks(
 
   return {
     groups,
+    shatteringGroups,
+    confidence,
+    roundsObserved,
     groupTables,
     totalSoaks: soaks.length,
     cleanSoaks,

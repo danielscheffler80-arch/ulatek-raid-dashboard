@@ -4,18 +4,21 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   Flame,
+  RotateCcw,
   ShieldAlert,
   Swords,
   Users,
   Zap,
 } from 'lucide-react'
-import type { PhaseViewKey, ReportData, SoakGroupDefinition } from '../types'
+import type { GroupSoakPlayerRef, PhaseViewKey, ReportData, SoakGroupDefinition } from '../types'
 import {
   aggregateGroupSoaks,
   aggregatePhaseAnalysis,
   formatDamage,
   getLatestP2Groups,
+  parseMrtSoakGroups,
   WOW_CLASS_COLORS,
 } from '../lib/stats'
 import type { PullRange } from '../lib/stats'
@@ -28,6 +31,25 @@ import {
   WclActionLinks,
 } from './ui'
 
+const MRT_STORAGE_KEY = 'ulatek_shattering_mrt_groups_v1'
+
+function loadSavedMrtNote(): string {
+  try {
+    return window.localStorage.getItem(MRT_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function saveMrtNote(val: string) {
+  try {
+    if (val.trim()) window.localStorage.setItem(MRT_STORAGE_KEY, val)
+    else window.localStorage.removeItem(MRT_STORAGE_KEY)
+  } catch {
+    // Ignore storage quota / private mode errors
+  }
+}
+
 const VIEW_META: Record<PhaseViewKey, { title: string; subtitle: string }> = {
   p1_soaks: {
     title: 'Phase 1 — Alternierende Gruppen-Soaks',
@@ -35,9 +57,9 @@ const VIEW_META: Record<PhaseViewKey, { title: string; subtitle: string }> = {
       'Soul Constrictor / Spectral Coils in Phase 1 im 2er-Gruppen-Wechsel. Der aktive Boss-Tank wird automatisch ausgenommen.',
   },
   intermission_soaks: {
-    title: 'Intermission: The Shattering — Gruppen-Soaks',
+    title: 'Intermission: The Shattering — 3-Gruppen-Soaks',
     subtitle:
-      'Die 6 alternierenden Spectral-Coils-Soaks (#1/#3/#5 vs. #2/#4/#6) mit exakt den beiden P2-Warden-Gruppen. Tote Spieler zählen nie als Fail.',
+      '3 rotierende Gruppen (Runde 1: #1–#3 · Runde 2: #4–#6). Ab Try #1 greifen 100 %-sichere Doppel- & 0-Soak-Regeln, ab ≥ 2 Runden volle 3-Gruppen-Erkennung — oder optional per MRT-Note sofort fixieren.',
   },
   p2_overlaps: {
     title: 'Phase 2 — Blight Vein Overlaps',
@@ -90,6 +112,9 @@ export function PhasesTab({
 }) {
   const [onlyErrorSoaks, setOnlyErrorSoaks] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [mrtDrawerOpen, setMrtDrawerOpen] = useState(false)
+  const [savedMrtNote, setSavedMrtNote] = useState<string>(() => loadSavedMrtNote())
+  const [draftMrtNote, setDraftMrtNote] = useState<string>(() => loadSavedMrtNote())
 
   const stats = useMemo(
     () => aggregatePhaseAnalysis(reports, maxDeaths, pullRange),
@@ -98,11 +123,62 @@ export function PhasesTab({
 
   const p2Groups = useMemo(() => getLatestP2Groups(reports), [reports])
 
+  const reportRoster = useMemo<GroupSoakPlayerRef[]>(() => {
+    const byName = new Map<string, GroupSoakPlayerRef>()
+    for (const rep of reports) {
+      for (const p of rep.players) {
+        if (!byName.has(p.name)) {
+          byName.set(p.name, { player: p.name, class: p.class, player_id: p.id })
+        }
+      }
+    }
+    return Array.from(byName.values()).sort((a, b) => a.player.localeCompare(b.player))
+  }, [reports])
+
+  const activeMrtParsed = useMemo(
+    () => (savedMrtNote.trim() ? parseMrtSoakGroups(savedMrtNote, reportRoster) : null),
+    [savedMrtNote, reportRoster],
+  )
+  const draftMrtParsed = useMemo(
+    () => (draftMrtNote.trim() ? parseMrtSoakGroups(draftMrtNote, reportRoster) : null),
+    [draftMrtNote, reportRoster],
+  )
+
   const activeSoakPhase = view === 'intermission_soaks' ? 'shattering' : 'p1'
   const soakStats = useMemo(
-    () => aggregateGroupSoaks(reports, maxDeaths, pullRange, activeSoakPhase),
-    [reports, maxDeaths, pullRange, activeSoakPhase],
+    () =>
+      aggregateGroupSoaks(
+        reports,
+        maxDeaths,
+        pullRange,
+        activeSoakPhase,
+        activeSoakPhase === 'shattering' && activeMrtParsed && activeMrtParsed.matchedCount > 0
+          ? activeMrtParsed.groups
+          : null,
+      ),
+    [reports, maxDeaths, pullRange, activeSoakPhase, activeMrtParsed],
   )
+
+  const handleApplyMrt = () => {
+    saveMrtNote(draftMrtNote)
+    setSavedMrtNote(draftMrtNote)
+  }
+
+  const handleResetMrt = () => {
+    saveMrtNote('')
+    setSavedMrtNote('')
+    setDraftMrtNote('')
+  }
+
+  const handleLoadDetectedIntoDraft = () => {
+    const auto = aggregateGroupSoaks(reports, maxDeaths, pullRange, 'shattering', null)
+    const sg = auto.shatteringGroups
+    if (!sg) return
+    const text = sg.groups
+      .map((g) => `${g.label}: ${g.players.map((p) => p.player).join(' ')}`)
+      .join('\n')
+    setDraftMrtNote(text)
+  }
 
   const q = searchQuery.trim().toLowerCase()
   const matchName = (name: string) => !q || name.toLowerCase().includes(q)
@@ -270,57 +346,156 @@ export function PhasesTab({
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[rgba(255,255,255,0.08)] px-4 py-3">
           <div>
-            <h2 className="text-[14px] font-semibold text-white">{meta.title}</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[14px] font-semibold text-white">{meta.title}</h2>
+              {view === 'intermission_soaks' && (
+                soakStats.confidence === 'mrt' ? (
+                  <Pill variant="success">MRT-Note aktiv (3 fixe Gruppen)</Pill>
+                ) : soakStats.confidence === 'high' ? (
+                  <Pill variant="success">
+                    Auto-Erkennung (Hoch · {soakStats.roundsObserved} Runden)
+                  </Pill>
+                ) : soakStats.confidence === 'provisional' ? (
+                  <Pill variant="warning">
+                    Vorläufig ({soakStats.roundsObserved} Runde — nur 100 %-Fails)
+                  </Pill>
+                ) : (
+                  <Pill variant="info">Auto-Erkennung bereit (3 Gruppen)</Pill>
+                )
+              )}
+            </div>
             <p className="text-[12px] text-[#8b96a9]">{meta.subtitle}</p>
           </div>
-          {isSoakView && soakStats.totalSoaks > 0 && (
-            <button
-              type="button"
-              onClick={() => setOnlyErrorSoaks((v) => !v)}
-              className={`rounded-[8px] border px-2.5 py-1.5 text-[11.5px] font-medium transition-[background-color,border-color,color,transform] active:scale-[0.96] ${
-                onlyErrorSoaks
-                  ? 'border-[rgba(239,68,68,0.45)] bg-[rgba(239,68,68,0.14)] text-[#f87171]'
-                  : 'border-[rgba(255,255,255,0.1)] bg-[rgba(10,14,22,0.7)] text-[#c5cdd9] hover:border-[rgba(255,255,255,0.2)] hover:text-white'
-              }`}
-            >
-              Nur Soaks mit Fehlern ({soakStats.totalSoaks - soakStats.cleanSoaks})
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {view === 'intermission_soaks' && (
+              <button
+                type="button"
+                onClick={() => setMrtDrawerOpen((v) => !v)}
+                className={`inline-flex items-center gap-1.5 rounded-[8px] border px-2.5 py-1.5 text-[11.5px] font-medium transition-[background-color,border-color,color,transform] active:scale-[0.96] ${
+                  mrtDrawerOpen || soakStats.confidence === 'mrt'
+                    ? 'border-[rgba(52,245,197,0.42)] bg-[rgba(52,245,197,0.12)] text-[#34f5c5]'
+                    : 'border-[rgba(255,255,255,0.1)] bg-[rgba(10,14,22,0.7)] text-[#c5cdd9] hover:border-[rgba(255,255,255,0.2)] hover:text-white'
+                }`}
+              >
+                <ClipboardList className="h-3.5 w-3.5" strokeWidth={1.75} />
+                <span>MRT-Note / 3 Gruppen (optional)</span>
+              </button>
+            )}
+            {isSoakView && soakStats.totalSoaks > 0 && (
+              <button
+                type="button"
+                onClick={() => setOnlyErrorSoaks((v) => !v)}
+                className={`rounded-[8px] border px-2.5 py-1.5 text-[11.5px] font-medium transition-[background-color,border-color,color,transform] active:scale-[0.96] ${
+                  onlyErrorSoaks
+                    ? 'border-[rgba(239,68,68,0.45)] bg-[rgba(239,68,68,0.14)] text-[#f87171]'
+                    : 'border-[rgba(255,255,255,0.1)] bg-[rgba(10,14,22,0.7)] text-[#c5cdd9] hover:border-[rgba(255,255,255,0.2)] hover:text-white'
+                }`}
+              >
+                Nur Soaks mit Fehlern ({soakStats.totalSoaks - soakStats.cleanSoaks})
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Optional Collapsible MRT-Note Override Panel (Intermission: The Shattering) */}
+        {view === 'intermission_soaks' && mrtDrawerOpen && (
+          <div className="border-b border-[rgba(52,245,197,0.2)] bg-[rgba(10,16,24,0.92)] px-4 py-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-[12.5px] font-semibold text-white">
+                  Optionaler MRT-Note-Import (3 Shattering-Gruppen)
+                </div>
+                <p className="text-[11.5px] text-[#8b96a9]">
+                  Füge eure 3 Gruppen ein (z. B. direkt aus der MRT-Note — WoW-Farbcodes, <code className="text-[#c5cdd9]">{'{rt1}'}</code> &amp; Umlaute wie <code className="text-[#c5cdd9]">Betong</code>/<code className="text-[#c5cdd9]">Naxxs</code> werden automatisch erkannt). Bleibt das Feld leer, läuft die 2-Stufen-Automatik.
+                </p>
+              </div>
+              {soakStats.roundsObserved > 0 && (
+                <button
+                  type="button"
+                  onClick={handleLoadDetectedIntoDraft}
+                  className="obsidian-btn px-2.5 py-1 text-[11px] font-medium active:scale-[0.96]"
+                >
+                  Erkannte Gruppen als Vorlage laden
+                </button>
+              )}
+            </div>
+
+            <textarea
+              value={draftMrtNote}
+              onChange={(e) => setDraftMrtNote(e.target.value)}
+              rows={3}
+              placeholder={'Gruppe 1: Betøng Alveria Valysa ...\nGruppe 2: Barrumir Narande Kaida ...\nGruppe 3: Sengjin Kritcap Viridra ...'}
+              className="w-full rounded-[8px] border border-[rgba(255,255,255,0.12)] bg-[rgba(5,9,17,0.92)] px-3 py-2 font-mono text-[12px] text-white placeholder:text-[#64748b] focus:border-[#34f5c5] focus:outline-none"
+            />
+
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
+                {draftMrtParsed && draftMrtParsed.matchedCount > 0 ? (
+                  <>
+                    {draftMrtParsed.groups.map((g) => (
+                      <Pill key={g.key} variant={g.players.length > 0 ? 'info' : 'neutral'}>
+                        {g.label}: {g.players.length} Spieler
+                      </Pill>
+                    ))}
+                    {draftMrtParsed.unknownNames.length > 0 && (
+                      <Pill variant="warning">
+                        Nicht im Roster: {draftMrtParsed.unknownNames.join(', ')}
+                      </Pill>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[#8b96a9]">
+                    Keine Namen erkannt — 3 Zeilen mit Spielernamen einfügen.
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {savedMrtNote.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleResetMrt}
+                    className="obsidian-btn inline-flex items-center gap-1 px-2.5 py-1.5 text-[11.5px] font-medium active:scale-[0.96]"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>Zurücksetzen (Auto)</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleApplyMrt}
+                  disabled={!draftMrtParsed || draftMrtParsed.matchedCount === 0}
+                  className="rounded-[8px] border border-[rgba(52,245,197,0.45)] bg-[rgba(52,245,197,0.18)] px-3 py-1.5 text-[11.5px] font-semibold text-[#34f5c5] transition-[background-color,opacity,transform] hover:bg-[rgba(52,245,197,0.26)] active:scale-[0.96] disabled:opacity-45"
+                >
+                  3 Gruppen übernehmen
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 0. GRUPPEN-SOAKS (P1 SOAKS ODER INTERMISSION: THE SHATTERING) */}
         {isSoakView && (
           <div className="p-4 space-y-5">
-            {/* 2-Column Group Roster Banner (shown when 0 soaks exist so P2 groups are immediately visible) */}
+            {/* 3-Column MRT Preview Banner when 0 Shattering soaks exist yet */}
             {soakStats.totalSoaks === 0 &&
-              soakStats.groups &&
-              (soakStats.groups.group_a_players.length > 0 || soakStats.groups.group_b_players.length > 0) && (
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                {[
-                  {
-                    label: soakStats.groups.group_a_label,
-                    cls: soakStats.groups.group_a_class,
-                    members: soakStats.groups.group_a_players,
-                  },
-                  {
-                    label: soakStats.groups.group_b_label,
-                    cls: soakStats.groups.group_b_class,
-                    members: soakStats.groups.group_b_players,
-                  },
-                ].map((grp) => (
+              view === 'intermission_soaks' &&
+              soakStats.shatteringGroups &&
+              soakStats.shatteringGroups.groups.some((g) => g.players.length > 0) && (
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+                {soakStats.shatteringGroups.groups.map((grp) => (
                   <div
-                    key={grp.label}
+                    key={grp.key}
                     className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-[rgba(10,14,22,0.55)] p-3"
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold">
+                      <div className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-white">
                         <Users className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} />
-                        <GroupNameLabel label={grp.label} tankClass={grp.cls} />
+                        <span>{grp.label}</span>
                       </div>
-                      <Pill variant="neutral">{grp.members.length} Spieler</Pill>
+                      <Pill variant="neutral">{grp.players.length} Spieler</Pill>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {grp.members.map((m) => (
+                      {grp.players.map((m) => (
                         <span
                           key={m.player}
                           className="inline-flex items-center gap-1.5 rounded-[6px] border border-[rgba(255,255,255,0.08)] bg-[rgba(16,20,27,0.85)] px-2 py-0.5 text-[11.5px] font-medium"
@@ -345,18 +520,29 @@ export function PhasesTab({
                 </div>
                 <p className="text-[12px] text-[#8b96a9]">
                   {activeSoakPhase === 'shattering'
-                    ? 'Kein Try im ausgewählten Zeitraum hat Phase 3 (Intermission: The Shattering) erreicht. Die beiden P2-Warden-Gruppen oben sind bereits hinterlegt und werden automatisch ausgewertet, sobald ein Live- oder Archiv-Log The Shattering erreicht.'
+                    ? 'Kein Try im ausgewählten Zeitraum hat Phase 3 (Intermission: The Shattering) erreicht. Sobald ihr The Shattering im Live-Log erreicht, erkennt die 2-Stufen-Automatik ab Try #1 sofort Doppel-Soaks & 0-Soak-Verpasst und ab ≥ 2 Runden alle 3 Gruppen automatisch. Optional kannst du eure 3 Gruppen schon jetzt über „MRT-Note / 3 Gruppen“ oben einfügen.'
                     : 'Erhöhe ggf. den Filter „Max. Tode“ oder wähle einen größeren Try-Bereich.'}
                 </p>
               </div>
             ) : (
               <>
-                {/* Per-Group Split Player Summary Tables (each group gets its own table) */}
+                {view === 'intermission_soaks' && soakStats.confidence === 'provisional' && (
+                  <div className="rounded-[10px] border border-[rgba(245,158,11,0.34)] bg-[rgba(245,158,11,0.08)] px-3.5 py-2.5 text-[12px] text-[#fde68a]">
+                    <strong className="text-[#fbbf24]">Vorläufige Erkennung (erst {soakStats.roundsObserved} volle 3er-Runde):</strong>{' '}
+                    Es werden aktuell nur <strong>100 %-sichere Fails</strong> gewertet (Doppel-Soaks &lt; 3 Soaks Abstand &amp; lebende Spieler mit 0 Soaks in der Runde). Ab 2 Runden (oder sofort über „MRT-Note / 3 Gruppen“ oben) schaltet die volle 3-Gruppen-Prüfung scharf.
+                  </div>
+                )}
+
+                {/* Per-Group Split Player Summary Tables (3 columns for Shattering, 2 columns for P1) */}
                 <div>
                   <h4 className="mb-2.5 text-[12px] font-semibold uppercase tracking-wider text-[#34f5c5]">
                     Spieler-Auswertung nach Gruppe ({soakStats.players.filter((p) => matchName(p.player)).length})
                   </h4>
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div
+                    className={`grid grid-cols-1 gap-4 ${
+                      soakStats.groupTables.length >= 3 ? 'xl:grid-cols-3' : 'lg:grid-cols-2'
+                    }`}
+                  >
                     {soakStats.groupTables.map((grp) => {
                       const visibleRows = grp.players.filter((r) => matchName(r.player))
                       return (
@@ -559,6 +745,9 @@ export function PhasesTab({
                             <div className="flex flex-wrap items-center gap-2">
                               {isMultiReport && <Pill>{s.reportDate}</Pill>}
                               <span className="font-mono-num font-semibold text-white">Try {s.pull_num}</span>
+                              {s.round_num !== undefined && (
+                                <Pill variant="neutral">Runde {s.round_num}</Pill>
+                              )}
                               <Pill variant="neutral">Soak #{s.soak_num}</Pill>
                               <span className="font-mono-num text-[#34f5c5]">{s.rel_time}</span>
                               <Pill variant="info">

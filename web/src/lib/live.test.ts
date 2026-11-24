@@ -239,7 +239,7 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
     expect(soaks[0].any_healed).toBe(true)
   })
 
-  it('tracks alternating Shattering (P2 groups) and P1 Soul Constrictor group soaks in TS analyzer', () => {
+  it('tracks 3-group Shattering soaks (high & provisional) and keeps P2 Warden groups in soak_groups.p2 in TS analyzer', () => {
     const actors = {
       1: { id: 1, name: 'Betøng', type: 'Player', subType: 'Monk' },
       2: { id: 2, name: 'Barrumir', type: 'Player', subType: 'DeathKnight' },
@@ -248,6 +248,8 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
       5: { id: 5, name: 'Narande', type: 'Player', subType: 'Warlock' },
       6: { id: 6, name: 'Kaida', type: 'Player', subType: 'Mage' },
       7: { id: 7, name: 'DeadGuy', type: 'Player', subType: 'Hunter' },
+      8: { id: 8, name: 'Sengjin', type: 'Player', subType: 'Mage' },
+      9: { id: 9, name: 'Kritcap', type: 'Player', subType: 'Warrior' },
       152: { id: 152, name: "Ula'tek", type: 'NPC', subType: 'Boss' },
       200: { id: 200, name: 'Doomscale Warden', type: 'NPC', subType: 'NPC' },
     }
@@ -257,10 +259,10 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
         id: 90,
         name: "Ula'tek",
         startTime: 100_000,
-        endTime: 400_000,
+        endTime: 460_000,
         bossPercentage: 35,
         kill: false,
-        friendlyPlayers: [1, 2, 3, 4, 5, 6, 7],
+        friendlyPlayers: [1, 2, 3, 4, 5, 6, 7, 8, 9],
         phaseTransitions: [
           { id: 1, startTime: 100_000 },
           { id: 2, startTime: 270_000 },
@@ -275,17 +277,26 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
       { timestamp: 280_100, type: 'damage', sourceID: 3, targetID: 200, targetInstance: 1, abilityGameID: 1, amount: 900_000 },
       { timestamp: 280_000, type: 'damage', sourceID: 2, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 500_000 },
       { timestamp: 280_100, type: 'damage', sourceID: 5, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
-      { timestamp: 280_200, type: 'damage', sourceID: 6, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
-      { timestamp: 280_300, type: 'damage', sourceID: 7, targetID: 200, targetInstance: 2, abilityGameID: 1, amount: 900_000 },
-      { timestamp: 320_000, type: 'death', targetID: 7, killerID: 152, killingAbilityGameID: 1308275 },
-      // Shattering Soak #1: Gruppe Betøng
+      // Round 1: G1(1,3,4), G2(2,5,6), G3(7,8,9)
       { timestamp: 340_000, type: 'applydebuff', targetID: 1, abilityGameID: 1300685 },
       { timestamp: 340_050, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
       { timestamp: 340_100, type: 'applydebuff', targetID: 4, abilityGameID: 1300685 },
-      // Shattering Soak #2: Expected Gruppe Barrumir (Kaida missed alive, DeadGuy dead, Alveria wrong+double)
       { timestamp: 345_000, type: 'applydebuff', targetID: 2, abilityGameID: 1300685 },
       { timestamp: 345_050, type: 'applydebuff', targetID: 5, abilityGameID: 1300685 },
-      { timestamp: 345_100, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 345_100, type: 'applydebuff', targetID: 6, abilityGameID: 1300685 },
+      { timestamp: 350_000, type: 'applydebuff', targetID: 7, abilityGameID: 1300685 },
+      { timestamp: 350_050, type: 'applydebuff', targetID: 8, abilityGameID: 1300685 },
+      { timestamp: 350_100, type: 'applydebuff', targetID: 9, abilityGameID: 1300685 },
+      { timestamp: 355_000, type: 'death', targetID: 7, killerID: 152, killingAbilityGameID: 1308275 },
+      // Round 2: G1 clean, G2 (Kaida missed alive, Alveria wrong+double), G3 (DeadGuy dead -> clean)
+      { timestamp: 360_000, type: 'applydebuff', targetID: 1, abilityGameID: 1300685 },
+      { timestamp: 360_050, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 360_100, type: 'applydebuff', targetID: 4, abilityGameID: 1300685 },
+      { timestamp: 365_000, type: 'applydebuff', targetID: 2, abilityGameID: 1300685 },
+      { timestamp: 365_050, type: 'applydebuff', targetID: 5, abilityGameID: 1300685 },
+      { timestamp: 365_100, type: 'applydebuff', targetID: 3, abilityGameID: 1300685 },
+      { timestamp: 370_000, type: 'applydebuff', targetID: 8, abilityGameID: 1300685 },
+      { timestamp: 370_050, type: 'applydebuff', targetID: 9, abilityGameID: 1300685 },
     ]
     const res = analyzeReportEventsTS(
       { title: 'Group Soak TS', startTime: 1795450000000 },
@@ -295,17 +306,21 @@ describe('liveClient helpers & live status detection (45 min + today check)', ()
       { 90: events },
       'TESTSOAKTS123456',
     )
+    const sg = res.soak_groups as Record<string, Record<string, unknown>>
+    expect(sg.p2.group_a_label).toBe('Gruppe Barrumir')
+    expect(sg.shattering.confidence).toBe('high')
+    expect(sg.shattering.rounds_observed).toBe(2)
+
     const shat = (res.group_soaks as Array<Record<string, unknown>>).filter((s) => s.phase === 'shattering')
-    expect(shat).toHaveLength(2)
-    expect(shat[0].expected_group).toBe('Gruppe Betøng')
-    expect(shat[0].alternation_ok).toBe(true)
-    expect(shat[1].expected_group).toBe('Gruppe Barrumir')
-    expect((shat[1].missed_alive as Array<{ player: string }>).map((p) => p.player)).toEqual(['Kaida'])
-    expect((shat[1].dead_expected as Array<{ player: string }>).map((p) => p.player)).toEqual(['DeadGuy'])
-    expect((shat[1].wrong_group as Array<{ player: string; double_soak?: boolean }>)[0]).toMatchObject({
+    expect(shat).toHaveLength(6)
+    expect(shat[4].expected_group).toBe('Gruppe 2')
+    expect((shat[4].missed_alive as Array<{ player: string }>).map((p) => p.player)).toEqual(['Kaida'])
+    expect((shat[4].wrong_group as Array<{ player: string; double_soak?: boolean }>)[0]).toMatchObject({
       player: 'Alveria',
       double_soak: true,
     })
+    expect((shat[5].dead_expected as Array<{ player: string }>).map((p) => p.player)).toEqual(['DeadGuy'])
+    expect(shat[5].alternation_ok).toBe(true)
     expect((res.pulls as Array<Record<string, unknown>>)[0].phase_transitions).toEqual([
       { id: 1, start_time: 100_000 },
       { id: 2, start_time: 270_000 },

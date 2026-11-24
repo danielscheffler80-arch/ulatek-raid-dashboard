@@ -1101,16 +1101,19 @@ def test_healer_tank_soak_reactions_separate():
     assert by_h["RestoYav"]["heal_count"] == 0
 
 
-def test_group_soaks_shattering_p2_groups_and_p1_alternation():
-    meta = {"title": "Group Soak Test", "startTime": 1795450000000}
+def test_group_soaks_shattering_3groups_and_p1_alternation():
+    """Shattering uses 3 rotating groups (G1/G2/G3) with 3! alignment across rounds; P2 Warden groups stay in soak_groups.p2."""
+    meta = {"title": "Group Soak 3-Grp Test", "startTime": 1795450000000}
     actors = {
         1: {"id": 1, "name": "Betøng", "type": "Player", "subType": "Monk"},
         2: {"id": 2, "name": "Barrumir", "type": "Player", "subType": "DeathKnight"},
         3: {"id": 3, "name": "Alveria", "type": "Player", "subType": "Rogue"},
-        4: {"id": 4, "name": "Valysa", "type": "Player", "subType": "Priest"},  # pure healer (0 Warden dmg!)
+        4: {"id": 4, "name": "Valysa", "type": "Player", "subType": "Priest"},
         5: {"id": 5, "name": "Narande", "type": "Player", "subType": "Warlock"},
         6: {"id": 6, "name": "Kaida", "type": "Player", "subType": "Mage"},
         7: {"id": 7, "name": "DeadGuy", "type": "Player", "subType": "Hunter"},
+        8: {"id": 8, "name": "Sengjin", "type": "Player", "subType": "Mage"},
+        9: {"id": 9, "name": "Kritcap", "type": "Player", "subType": "Warrior"},
         152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
         200: {"id": 200, "name": "Doomscale Warden", "type": "NPC", "subType": "NPC"},
     }
@@ -1125,10 +1128,10 @@ def test_group_soaks_shattering_p2_groups_and_p1_alternation():
             "id": 90,
             "name": "Ula'tek",
             "startTime": 100_000,
-            "endTime": 400_000,
+            "endTime": 460_000,
             "bossPercentage": 35.0,
             "kill": False,
-            "friendlyPlayers": [1, 2, 3, 4, 5, 6, 7],
+            "friendlyPlayers": [1, 2, 3, 4, 5, 6, 7, 8, 9],
             "phaseTransitions": [
                 {"id": 1, "startTime": 100_000},
                 {"id": 2, "startTime": 270_000},
@@ -1137,71 +1140,93 @@ def test_group_soaks_shattering_p2_groups_and_p1_alternation():
         }
     ]
     events = [
-        # Identify tanks (Betøng=1, Barrumir=2) via boss melee & Stone Venom
+        # Identify tanks (Betøng=1, Barrumir=2)
         {"timestamp": 110_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 90},
         {"timestamp": 112_000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 90},
         # ---- Phase 1 Soaks (140s & 143s) ----
-        # Betøng actively tanking Ula'tek at 138s -> must NOT be blamed for missing P1 Soak #1!
         {"timestamp": 138_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 90},
-        # P1 Soak #1 (140s): Barrumir, Alveria, Valysa
         {"timestamp": 140_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 90},
         {"timestamp": 140_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
-        {"timestamp": 140_100, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 90},
-        # P1 Soak #2 (143s): Narande, Kaida, DeadGuy
         {"timestamp": 143_000, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 90},
         {"timestamp": 143_050, "type": "applydebuff", "targetID": 6, "abilityGameID": 1300685, "fight": 90},
-        {"timestamp": 143_100, "type": "applydebuff", "targetID": 7, "abilityGameID": 1300685, "fight": 90},
-        # ---- Stage Two (270s..330s): Warden sides assign P2 groups! ----
-        # Warden #1 (Betøng Seite): Betøng (1), Alveria (3)  [Valysa (4) is pure healer -> 0 Warden dmg!]
+        # ---- Stage Two (270s..330s): 2 P2 Warden groups ----
         {"timestamp": 280_000, "type": "damage", "sourceID": 1, "targetID": 200, "targetInstance": 1, "abilityGameID": 1, "amount": 500_000, "fight": 90},
         {"timestamp": 280_100, "type": "damage", "sourceID": 3, "targetID": 200, "targetInstance": 1, "abilityGameID": 1, "amount": 900_000, "fight": 90},
-        # Warden #2 (Barrumir Seite): Barrumir (2), Narande (5), Kaida (6), DeadGuy (7)
         {"timestamp": 280_000, "type": "damage", "sourceID": 2, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 500_000, "fight": 90},
         {"timestamp": 280_100, "type": "damage", "sourceID": 5, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
-        {"timestamp": 280_200, "type": "damage", "sourceID": 6, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
-        {"timestamp": 280_300, "type": "damage", "sourceID": 7, "targetID": 200, "targetInstance": 2, "abilityGameID": 1, "amount": 900_000, "fight": 90},
-        # DeadGuy dies at 320s BEFORE Shattering soaks -> must be in dead_expected, NEVER missed_alive!
-        {"timestamp": 320_000, "type": "death", "targetID": 7, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 90},
-        # ---- Intermission: The Shattering (starts at 330s) ----
-        # Shattering Soak #1 (340s): Gruppe Betøng -> Betøng (1), Alveria (3), Valysa (4) all soak cleanly!
+        # ---- Intermission: The Shattering (6 soaks = 2 complete 3-soak rounds -> confidence 'high'!) ----
+        # G1 = [Betøng(1), Alveria(3), Valysa(4)]
+        # G2 = [Barrumir(2), Narande(5), Kaida(6)]
+        # G3 = [DeadGuy(7), Sengjin(8), Kritcap(9)]
+        # Round 1 (clean):
+        # Soak #1 (340s): G1
         {"timestamp": 340_000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1300685, "fight": 90},
         {"timestamp": 340_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
         {"timestamp": 340_100, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 90},
-        # Shattering Soak #2 (345s): Expected Gruppe Barrumir -> Barrumir (2) & Narande (5) soak;
-        # Kaida (6) MISSED while ALIVE; DeadGuy (7) DEAD (no fail); Alveria (3) WRONG GROUP + DOUBLE SOAK!
+        # Soak #2 (345s): G2
         {"timestamp": 345_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 90},
         {"timestamp": 345_050, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 90},
-        {"timestamp": 345_100, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 345_100, "type": "applydebuff", "targetID": 6, "abilityGameID": 1300685, "fight": 90},
+        # Soak #3 (350s): G3
+        {"timestamp": 350_000, "type": "applydebuff", "targetID": 7, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 350_050, "type": "applydebuff", "targetID": 8, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 350_100, "type": "applydebuff", "targetID": 9, "abilityGameID": 1300685, "fight": 90},
+        # DeadGuy dies at 355s BEFORE Round 2!
+        {"timestamp": 355_000, "type": "death", "targetID": 7, "killerID": 152, "killingAbilityGameID": 1308275, "fight": 90},
+        # Round 2:
+        # Soak #4 (360s): G1 clean
+        {"timestamp": 360_000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 360_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 360_100, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 90},
+        # Soak #5 (365s): Expected G2 -> Barrumir(2) & Narande(5) soak; Kaida(6) MISSED ALIVE; Alveria(3) WRONG GROUP + DOUBLE SOAK!
+        {"timestamp": 365_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 365_050, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 365_100, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 90},
+        # Soak #6 (370s): Expected G3 -> Sengjin(8) & Kritcap(9) soak; DeadGuy(7) DEAD (NOT a fail!)
+        {"timestamp": 370_000, "type": "applydebuff", "targetID": 8, "abilityGameID": 1300685, "fight": 90},
+        {"timestamp": 370_050, "type": "applydebuff", "targetID": 9, "abilityGameID": 1300685, "fight": 90},
     ]
 
     rep = analyze_report_events(meta, fights, actors, abilities, {90: events}, "TESTSOAKS1234567")
+    # P2 Warden groups preserved in soak_groups.p2!
+    assert rep["soak_groups"]["p2"]["group_a_label"] == "Gruppe Barrumir"
+    assert rep["soak_groups"]["p2"]["group_b_label"] == "Gruppe Betøng"
+
+    # Shattering 3-group auto-clustering: 2 complete rounds -> confidence 'high'
+    sg_shat = rep["soak_groups"]["shattering"]
+    assert sg_shat["confidence"] == "high"
+    assert sg_shat["rounds_observed"] == 2
+    assert len(sg_shat["groups"]) == 3
+    assert sorted(p["player"] for p in sg_shat["groups"][0]["players"]) == ["Alveria", "Betøng", "Valysa"]
+    assert sorted(p["player"] for p in sg_shat["groups"][1]["players"]) == ["Barrumir", "Kaida", "Narande"]
+    assert sorted(p["player"] for p in sg_shat["groups"][2]["players"]) == ["DeadGuy", "Kritcap", "Sengjin"]
+
     soaks = rep["group_soaks"]
     shat = [s for s in soaks if s["phase"] == "shattering"]
     p1 = [s for s in soaks if s["phase"] == "p1"]
-
     assert len(p1) == 2
-    assert len(shat) == 2
+    assert len(shat) == 6
 
-    # Shattering Soak #1: Gruppe Betøng (incl. pure healer Valysa!) — 100% clean
-    s1 = shat[0]
-    assert s1["soak_num"] == 1
-    assert s1["expected_group"] == "Gruppe Betøng"
-    assert sorted(p["player"] for p in s1["soakers"]) == ["Alveria", "Betøng", "Valysa"]
-    assert s1["missed_alive"] == []
-    assert s1["wrong_group"] == []
-    assert s1["alternation_ok"] is True
+    # Soak #5 (G2): Kaida missed alive, Alveria wrong_group + double_soak (soaked #4!)
+    s5 = shat[4]
+    assert s5["soak_num"] == 5
+    assert s5["round_num"] == 2
+    assert s5["expected_group"] == "Gruppe 2"
+    assert [p["player"] for p in s5["missed_alive"]] == ["Kaida"]
+    assert len(s5["wrong_group"]) == 1
+    assert s5["wrong_group"][0]["player"] == "Alveria"
+    assert s5["wrong_group"][0]["double_soak"] is True
+    assert s5["alternation_ok"] is False
+    # Absent alive/dead stored for instant client MRT-Note re-evaluation
+    assert any(p["player"] == "Kaida" for p in s5["absent_alive"])
+    assert any(p["player"] == "DeadGuy" for p in s5["absent_dead"])
 
-    # Shattering Soak #2: strictly alternates to Gruppe Barrumir!
-    s2 = shat[1]
-    assert s2["soak_num"] == 2
-    assert s2["expected_group"] == "Gruppe Barrumir"
-    assert sorted(p["player"] for p in s2["soakers"]) == ["Barrumir", "Narande"]
-    assert [p["player"] for p in s2["missed_alive"]] == ["Kaida"]
-    assert [p["player"] for p in s2["dead_expected"]] == ["DeadGuy"]
-    assert len(s2["wrong_group"]) == 1
-    assert s2["wrong_group"][0]["player"] == "Alveria"
-    assert s2["wrong_group"][0]["double_soak"] is True
-    assert s2["alternation_ok"] is False
+    # Soak #6 (G3): DeadGuy dead_expected (NOT missed_alive!) -> clean soak!
+    s6 = shat[5]
+    assert s6["expected_group"] == "Gruppe 3"
+    assert s6["missed_alive"] == []
+    assert [p["player"] for p in s6["dead_expected"]] == ["DeadGuy"]
+    assert s6["alternation_ok"] is True
 
     # P1 active boss tank Betøng must NOT be flagged as missed_alive in P1 Soak #1
     assert all(p["player"] != "Betøng" for p in p1[0]["missed_alive"])
@@ -1211,6 +1236,68 @@ def test_group_soaks_shattering_p2_groups_and_p1_alternation():
         {"id": 2, "start_time": 270_000},
         {"id": 3, "start_time": 330_000},
     ]
+
+
+def test_shattering_3group_provisional_1_round_catches_invariants_only():
+    """On Try #1 with only 1 complete 3-soak round (provisional), only 100%-certain double-soaks & 0-soak misses are flagged."""
+    meta = {"title": "Shattering Provisional Test", "startTime": 1795450000000}
+    actors = {
+        1: {"id": 1, "name": "Betøng", "type": "Player", "subType": "Monk"},
+        2: {"id": 2, "name": "Barrumir", "type": "Player", "subType": "DeathKnight"},
+        3: {"id": 3, "name": "Alveria", "type": "Player", "subType": "Rogue"},
+        4: {"id": 4, "name": "Narande", "type": "Player", "subType": "Warlock"},
+        5: {"id": 5, "name": "Kaida", "type": "Player", "subType": "Mage"},
+        6: {"id": 6, "name": "Sengjin", "type": "Player", "subType": "Mage"},
+        7: {"id": 7, "name": "Slacker", "type": "Player", "subType": "Hunter"},
+        152: {"id": 152, "name": "Ula'tek", "type": "NPC", "subType": "Boss"},
+    }
+    abilities = {1: "Melee", 1300685: "Soul Constrictor"}
+    fights = [
+        {
+            "id": 95,
+            "name": "Ula'tek",
+            "startTime": 100_000,
+            "endTime": 400_000,
+            "bossPercentage": 45.0,
+            "kill": False,
+            "friendlyPlayers": [1, 2, 3, 4, 5, 6, 7],
+            "phaseTransitions": [
+                {"id": 1, "startTime": 100_000},
+                {"id": 3, "startTime": 330_000},
+            ],
+        }
+    ]
+    events = [
+        {"timestamp": 110_000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 200_000, "fight": 95},
+        # Only 1 round (#1, #2, #3):
+        # Soak #1: Betøng(1), Alveria(3)
+        {"timestamp": 340_000, "type": "applydebuff", "targetID": 1, "abilityGameID": 1300685, "fight": 95},
+        {"timestamp": 340_050, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 95},
+        # Soak #2: Barrumir(2), Narande(4), AND Alveria(3) DOUBLE-SOAKS!
+        {"timestamp": 345_000, "type": "applydebuff", "targetID": 2, "abilityGameID": 1300685, "fight": 95},
+        {"timestamp": 345_050, "type": "applydebuff", "targetID": 4, "abilityGameID": 1300685, "fight": 95},
+        {"timestamp": 345_100, "type": "applydebuff", "targetID": 3, "abilityGameID": 1300685, "fight": 95},
+        # Soak #3: Kaida(5), Sengjin(6) — Slacker(7) was ALIVE the whole round and soaked 0 times!
+        {"timestamp": 350_000, "type": "applydebuff", "targetID": 5, "abilityGameID": 1300685, "fight": 95},
+        {"timestamp": 350_050, "type": "applydebuff", "targetID": 6, "abilityGameID": 1300685, "fight": 95},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {95: events}, "TESTPROV12345678")
+    sg_shat = rep["soak_groups"]["shattering"]
+    assert sg_shat["confidence"] == "provisional"
+    assert sg_shat["rounds_observed"] == 1
+
+    shat = [s for s in rep["group_soaks"] if s["phase"] == "shattering"]
+    assert len(shat) == 3
+    # Soak #2 flags 100%-certain double-soak Alveria
+    assert len(shat[1]["wrong_group"]) == 1
+    assert shat[1]["wrong_group"][0]["player"] == "Alveria"
+    assert shat[1]["wrong_group"][0]["double_soak"] is True
+    # Soak #3 (round end) flags 100%-certain 0-soak alive player Slacker!
+    assert [p["player"] for p in shat[2]["missed_alive"]] == ["Slacker"]
+    # Nobody else falsely blamed!
+    assert shat[0]["missed_alive"] == []
+    assert shat[1]["missed_alive"] == []
 
 
 def test_p1_group_soak_exempts_active_boss_tank_even_with_offtank_stone_venom_dot_and_dodges():
