@@ -69,6 +69,8 @@ export interface EggPlayerRow {
   player: string
   className: string
   count: number
+  waveCount: number
+  collisionCount: number
   lethalCount: number
   avgDamage: number
   items: WithReport<EggFail>[]
@@ -78,6 +80,7 @@ export function aggregateEggFails(
   reports: ReportData[],
   maxDeaths: number | null,
   pullRange?: PullRange | null,
+  subFilter: 'all' | 'caustic_waves' | 'egg_collision' = 'all',
 ) {
   const rawFails: WithReport<EggFail>[] = []
   const rawSplashes: WithReport<EggFail>[] = []
@@ -91,7 +94,7 @@ export function aggregateEggFails(
         reportLabel: label,
         reportDate: rep.date_iso,
       }
-      if (item.kind === 'caustic_waves') {
+      if (item.kind === 'caustic_waves' || item.kind === 'egg_collision') {
         rawFails.push(enriched)
       } else if (item.kind === 'noxious_splash') {
         rawSplashes.push(enriched)
@@ -99,7 +102,9 @@ export function aggregateEggFails(
     }
   }
 
-  const filtered = filterByPullRange(filterByMaxDeaths(rawFails, maxDeaths), pullRange)
+  const allFilteredFails = filterByPullRange(filterByMaxDeaths(rawFails, maxDeaths), pullRange)
+  const filtered =
+    subFilter === 'all' ? allFilteredFails : allFilteredFails.filter((x) => x.kind === subFilter)
   const filteredSplashes = filterByPullRange(filterByMaxDeaths(rawSplashes, maxDeaths), pullRange)
   const byPlayer = new Map<string, EggPlayerRow & { totalDamage: number }>()
 
@@ -110,6 +115,8 @@ export function aggregateEggFails(
         player: item.player,
         className: item.class,
         count: 0,
+        waveCount: 0,
+        collisionCount: 0,
         lethalCount: 0,
         avgDamage: 0,
         totalDamage: 0,
@@ -118,6 +125,8 @@ export function aggregateEggFails(
       byPlayer.set(item.player, row)
     }
     row.count++
+    if (item.kind === 'caustic_waves') row.waveCount++
+    if (item.kind === 'egg_collision') row.collisionCount++
     if (item.lethal) row.lethalCount++
     row.totalDamage += item.damage
     row.items.push(item)
@@ -134,8 +143,14 @@ export function aggregateEggFails(
     p.items.sort((a, b) => b.reportDate.localeCompare(a.reportDate) || a.pull_num - b.pull_num || a.timestamp - b.timestamp)
   }
 
+  const waveTotal = allFilteredFails.filter((x) => x.kind === 'caustic_waves').length
+  const collisionTotal = allFilteredFails.filter((x) => x.kind === 'egg_collision').length
+
   return {
     total: filtered.length,
+    allTotal: allFilteredFails.length,
+    waveTotal,
+    collisionTotal,
     cleanSplashCount: filteredSplashes.length,
     lethalTotal: filtered.filter((x) => x.lethal).length,
     affectedPlayers: players.length,

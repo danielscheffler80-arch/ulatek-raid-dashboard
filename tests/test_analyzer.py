@@ -623,3 +623,40 @@ def test_p2_malice_side_attribution_and_ready_kickers():
     assert "Näxxs" in rdy_names_m
     assert "Betøng" in cd_names_m
     assert "Barrumir" not in rdy_names_m
+
+
+def test_egg_collision_two_carriers_vs_single_bump():
+    actors = _base_actors()
+    abilities = _base_abilities()
+    meta = {"title": "Collision Test", "startTime": 1795450000000}
+    fights = [
+        {"id": 15, "name": "Ula'tek", "startTime": 100000, "endTime": 260000, "fightPercentage": 50.0, "bossPercentage": 50.0, "kill": False}
+    ]
+    events = [
+        # Pair collision: Narande (3) & Näxxs (4) lose Noxious Shell 20ms apart + both take Noxious Splash
+        {"timestamp": 120000, "type": "applydebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 120000, "type": "applydebuff", "targetID": 4, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 130000, "type": "removedebuff", "targetID": 3, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 130001, "type": "damage", "sourceID": 152, "targetID": 3, "abilityGameID": 1307635, "amount": 350000, "fight": 15},
+        {"timestamp": 130020, "type": "removedebuff", "targetID": 4, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 130021, "type": "damage", "sourceID": 152, "targetID": 4, "abilityGameID": 1307635, "amount": 360000, "fight": 15},
+        # Single clean bump: Valysa (5) alone 20s later -> MUST stay 'noxious_splash'
+        {"timestamp": 140000, "type": "applydebuff", "targetID": 5, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 150000, "type": "removedebuff", "targetID": 5, "abilityGameID": 1307612, "fight": 15},
+        {"timestamp": 150002, "type": "damage", "sourceID": 152, "targetID": 5, "abilityGameID": 1307635, "amount": 310000, "fight": 15},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {15: events}, "qy9FnMvjwQ2R13c7")
+    collisions = [e for e in rep["egg_fails"] if e["kind"] == "egg_collision"]
+    singles = [e for e in rep["egg_fails"] if e["kind"] == "noxious_splash"]
+
+    assert len(collisions) == 2
+    nar = next(e for e in collisions if e["player"] == "Narande")
+    nax = next(e for e in collisions if e["player"] == "Näxxs")
+    assert nar["collision_partners"] == ["Näxxs"]
+    assert nax["collision_partners"] == ["Narande"]
+    assert nar["collision_gap_ms"] == 20
+    assert len(singles) == 1
+    assert singles[0]["player"] == "Valysa"
+    assert rep["removal_summary"]["egg_collision"] == 2
+    assert rep["removal_summary"]["noxious_splash"] == 1

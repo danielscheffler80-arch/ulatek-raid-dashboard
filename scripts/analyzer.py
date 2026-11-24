@@ -1151,6 +1151,7 @@ def analyze_report_events(
             )
 
         # ---- 2. Classify all Noxious Shell (1307612) removals ----
+        splash_entries: list[dict[str, Any]] = []
         for rem in shell_removes:
             tid = rem.get("targetID")
             if tid not in actors or actors[tid].get("type") != "Player":
@@ -1194,18 +1195,19 @@ def analyze_report_events(
                         "gap_ms": cts - rts,
                         "has_putrid": bool(putrid_near),
                         "has_rancid": bool(rancid_near),
+                        "collision_partners": [],
+                        "collision_gap_ms": None,
                         "events_url": build_events_url(report_code, fid, tid, cts, f_start, f_end),
                         "replay_url": build_replay_url(report_code, fid, rel_ms),
                     }
                 )
             elif splash_near:
-                removal_summary["noxious_splash"] += 1
                 first_sp = min(splash_near, key=lambda e: int(e["timestamp"]))
                 sts = int(first_sp["timestamp"])
                 rel_ms = sts - f_start
                 ovk = int(first_sp.get("overkill", 0) or 0)
                 lethal = ovk > 0 or any(abs(dt - sts) <= 50 for dt in deaths_by_player[tid])
-                egg_fails.append(
+                splash_entries.append(
                     {
                         "id": f"{report_code}-{fid}-{tid}-{sts}-ns",
                         "kind": "noxious_splash",
@@ -1225,6 +1227,8 @@ def analyze_report_events(
                         "gap_ms": sts - rts,
                         "has_putrid": bool(putrid_near),
                         "has_rancid": bool(rancid_near),
+                        "collision_partners": [],
+                        "collision_gap_ms": None,
                         "events_url": build_events_url(report_code, fid, tid, sts, f_start, f_end),
                         "replay_url": build_replay_url(report_code, fid, rel_ms),
                     }
@@ -1233,6 +1237,37 @@ def analyze_report_events(
                 removal_summary["player_death"] += 1
             else:
                 removal_summary["other"] += 1
+
+        # Cluster Noxious Splash events within <= 250ms across >= 2 distinct players -> 2-carrier Egg Collision!
+        splash_entries.sort(key=lambda x: x["timestamp"])
+        used_sp: set[int] = set()
+        for i, item_a in enumerate(splash_entries):
+            if i in used_sp:
+                continue
+            cluster = [item_a]
+            used_sp.add(i)
+            for j in range(i + 1, len(splash_entries)):
+                if j in used_sp:
+                    continue
+                if abs(splash_entries[j]["timestamp"] - cluster[-1]["timestamp"]) <= 250:
+                    cluster.append(splash_entries[j])
+                    used_sp.add(j)
+                else:
+                    break
+            distinct_players = {c["target_id"] for c in cluster}
+            if len(distinct_players) >= 2:
+                for entry in cluster:
+                    others = [c for c in cluster if c["target_id"] != entry["target_id"]]
+                    entry["kind"] = "egg_collision"
+                    entry["id"] = entry["id"].replace("-ns", "-ec")
+                    entry["collision_partners"] = sorted({o["player"] for o in others})
+                    entry["collision_gap_ms"] = min(abs(entry["timestamp"] - o["timestamp"]) for o in others)
+                    removal_summary["egg_collision"] += 1
+                    egg_fails.append(entry)
+            else:
+                for entry in cluster:
+                    removal_summary["noxious_splash"] += 1
+                    egg_fails.append(entry)
 
         # ---- 3. Record ALL direct (non-tick) Caustic Waves hits ----
         for tid, hits in cw_hits_by_p.items():
@@ -1315,12 +1350,19 @@ def analyze_report_events(
     kills_count = sum(1 for p in pulls_out if p["is_kill"])
     wipes_count = len(pulls_out) - kills_count
 
+    last_pull_end_epoch = (
+        start_epoch + max(int(p["end_time"]) for p in pulls_out)
+        if start_epoch > 0 and pulls_out
+        else start_epoch
+    )
+
     return {
         "code": report_code,
         "title": meta.get("title", report_code),
         "label": label.strip() if isinstance(label, str) and label.strip() else None,
         "date_iso": date_iso,
         "start_time_epoch_ms": start_epoch,
+        "last_pull_end_epoch_ms": last_pull_end_epoch,
         "encounter_id": encounter_id,
         "boss_name": sorted_fights[0]["name"] if sorted_fights else "Ula'tek",
         "difficulty": difficulty,
@@ -1336,6 +1378,7 @@ def analyze_report_events(
         "removal_summary": {
             "spectral_coils": removal_summary["spectral_coils"],
             "caustic_waves": removal_summary["caustic_waves"],
+            "egg_collision": removal_summary["egg_collision"],
             "noxious_splash": removal_summary["noxious_splash"],
             "player_death": removal_summary["player_death"],
             "other": removal_summary["other"],

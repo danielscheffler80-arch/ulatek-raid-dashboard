@@ -2,24 +2,25 @@ import React from 'react'
 import {
   Activity,
   Calendar,
-  ExternalLink,
   Layers,
-  Plus,
+  Radio,
   Search,
   X,
 } from 'lucide-react'
 import type { ReportData } from '../types'
 import { getReportDisplayName } from '../lib/stats'
 import type { PullRange } from '../lib/stats'
+import type { LiveStatus } from '../lib/liveClient'
+import { formatMinutesAgo } from '../lib/liveClient'
 import { MaxDeathsStepper, TryRangeFilter } from './ui'
-
-export const GITHUB_ACTION_URL =
-  'https://github.com/danielscheffler80-arch/ulatek-raid-dashboard/actions/workflows/add-log.yml'
 
 interface SidebarProps {
   reports: ReportData[]
+  liveReport: ReportData | null
+  liveStatus: LiveStatus | null
   selectedCode: string
   onSelectReport: (code: string) => void
+  onDisconnectLive: () => void
   searchQuery: string
   onSearchChange: (q: string) => void
   searchInputRef: React.RefObject<HTMLInputElement | null>
@@ -36,8 +37,11 @@ interface SidebarProps {
 
 export function Sidebar({
   reports,
+  liveReport,
+  liveStatus,
   selectedCode,
   onSelectReport,
+  onDisconnectLive,
   searchQuery,
   onSearchChange,
   searchInputRef,
@@ -52,6 +56,7 @@ export function Sidebar({
   onCloseMobile,
 }: SidebarProps) {
   const totalPulls = reports.reduce((s, r) => s + r.pulls_total, 0)
+  const isLiveTracking = Boolean(liveStatus?.is_live)
 
   const content = (
     <aside className="obsidian-sidebar flex h-full w-[256px] flex-col shrink-0">
@@ -67,7 +72,7 @@ export function Sidebar({
                 Ula&apos;tek Forensik
               </div>
               <div className="truncate text-[11px] text-[#8b96a9]">
-                Obsidian Mint · Mythic
+                Mythic Raid Analyzer
               </div>
             </div>
           </div>
@@ -131,11 +136,81 @@ export function Sidebar({
           </div>
         </div>
 
+        {/* Live-Log Sektion */}
         <div>
           <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.6px] text-[#8b96a9]">
-            Übersicht
+            Live-Log &amp; Übersicht
           </div>
           <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                onOpenImport()
+                onCloseMobile()
+              }}
+              className="obsidian-btn-primary flex w-full items-center justify-center gap-1.5 px-3 py-2 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
+            >
+              <Radio className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+              <span>{liveReport ? 'Anderen Live-Log laden' : 'Live-Log verbinden'}</span>
+            </button>
+
+            {liveReport && (
+              <div
+                className={`rounded-[8px] border transition-[background-color,border-color,box-shadow] ${
+                  selectedCode === liveReport.code
+                    ? 'bg-[rgba(52,245,197,0.13)] border-[rgba(52,245,197,0.45)] shadow-[0_0_16px_-6px_rgba(52,245,197,0.35)]'
+                    : 'bg-[rgba(16,20,27,0.68)] border-[rgba(255,255,255,0.1)] hover:bg-white/[0.06]'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-1 px-2.5 py-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectReport(liveReport.code)
+                      onCloseMobile()
+                    }}
+                    className="flex-1 min-w-0 text-left focus-visible:outline-none"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full ${
+                          isLiveTracking
+                            ? 'bg-[#34f5c5] shadow-[0_0_8px_#34f5c5] animate-pulse'
+                            : 'bg-[#fbbf24]'
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.4px] text-[#34f5c5]">
+                        {isLiveTracking ? 'LIVE · 30s' : 'Live-Log'}
+                      </span>
+                      <span className="ml-auto font-mono-num text-[11px] text-[#c5cdd9] shrink-0">
+                        {liveReport.pulls_total} Trys
+                      </span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[12px] font-medium text-white">
+                      {getReportDisplayName(liveReport)}
+                    </div>
+                    {liveStatus && (
+                      <div className="mt-0.5 truncate text-[10px] text-[#8b96a9]">
+                        {isLiveTracking
+                          ? `Letzter Try ${formatMinutesAgo(liveStatus.minutes_since_last_pull)}`
+                          : `Beendet (${formatMinutesAgo(liveStatus.minutes_since_last_pull)})`}
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onDisconnectLive}
+                    title="Live-Log schließen"
+                    aria-label="Live-Log schließen"
+                    className="rounded-[5px] p-1 text-[#8b96a9] hover:bg-white/10 hover:text-white active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -160,28 +235,17 @@ export function Sidebar({
                 {totalPulls}
               </span>
             </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onOpenImport()
-                onCloseMobile()
-              }}
-              className="obsidian-btn-primary flex w-full items-center justify-center gap-1.5 px-3 py-2 text-[12px] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]"
-            >
-              <Plus className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-              <span>Neuen Log hinzufügen</span>
-            </button>
           </div>
         </div>
 
+        {/* Archivierte Raidabende */}
         <div>
           <div className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.6px] text-[#8b96a9]">
-            Raidabende ({reports.length})
+            Archiv ({reports.length})
           </div>
           <div className="space-y-1">
             {reports.map((rep) => {
-              const active = selectedCode === rep.code
+              const active = selectedCode === rep.code && liveReport?.code !== rep.code
               const name = getReportDisplayName(rep)
               return (
                 <button
@@ -223,21 +287,19 @@ export function Sidebar({
         </div>
       </nav>
 
-      {/* Sidebar Footer */}
-      <div className="border-t border-[rgba(255,255,255,0.08)] p-3 space-y-2">
-        <a
-          href={GITHUB_ACTION_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="obsidian-btn flex w-full items-center justify-between px-2.5 py-2 text-[12px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34f5c5]/60"
-        >
-          <span>GitHub Action Import</span>
-          <ExternalLink className="h-3.5 w-3.5 text-[#34f5c5]" strokeWidth={1.75} aria-hidden="true" />
-        </a>
+      {/* Sidebar Footer (100% anonym — keine persönlichen Account-Links) */}
+      <div className="border-t border-[rgba(255,255,255,0.08)] p-3">
         <div className="flex items-center justify-between px-1 text-[11px] text-[#8b96a9]">
           <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-[#34f5c5] shadow-[0_0_8px_#34f5c5]" aria-hidden="true" />
-            WCL v2 API Sync
+            <span
+              className={`h-2 w-2 rounded-full ${
+                isLiveTracking
+                  ? 'bg-[#34f5c5] shadow-[0_0_8px_#34f5c5] animate-pulse'
+                  : 'bg-[#34f5c5] shadow-[0_0_8px_#34f5c5]'
+              }`}
+              aria-hidden="true"
+            />
+            {isLiveTracking ? 'Live-Sync aktiv (30 s)' : 'WCL v2 Edge API'}
           </span>
           <span className="font-mono-num">
             {updatedAt ? updatedAt.slice(0, 10) : '—'}

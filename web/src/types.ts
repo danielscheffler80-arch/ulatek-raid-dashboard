@@ -32,7 +32,7 @@ export interface PullData {
 
 export interface EggFail {
   id: string
-  kind: 'caustic_waves' | 'noxious_splash'
+  kind: 'caustic_waves' | 'egg_collision' | 'noxious_splash'
   player: string
   class: string
   target_id: number
@@ -49,6 +49,8 @@ export interface EggFail {
   gap_ms: number
   has_putrid: boolean
   has_rancid: boolean
+  collision_partners?: string[]
+  collision_gap_ms?: number | null
   events_url: string
   replay_url: string
 }
@@ -258,6 +260,7 @@ export interface ReportData {
   label: string | null
   date_iso: string
   start_time_epoch_ms: number
+  last_pull_end_epoch_ms?: number
   encounter_id: number
   boss_name: string
   difficulty: number
@@ -270,6 +273,7 @@ export interface ReportData {
   removal_summary: {
     spectral_coils: number
     caustic_waves: number
+    egg_collision?: number
     noxious_splash: number
     player_death: number
     other: number

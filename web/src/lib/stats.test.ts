@@ -54,6 +54,12 @@ const mockReport: ReportData = {
       rel_time: '00:40.000', rel_ms: 40000, timestamp: 240000, deaths_before: 0, damage: 300000, overkill: 0, lethal: false, gap_ms: 1, has_putrid: true, has_rancid: true,
       events_url: 'https://wcl/e3', replay_url: 'https://wcl/r3',
     },
+    {
+      id: 'e4', kind: 'egg_collision', player: 'Narande', class: 'Warlock', target_id: 3, pull_num: 2, fight_id: 11, is_kill: false,
+      rel_time: '01:05.000', rel_ms: 65000, timestamp: 265000, deaths_before: 1, damage: 310000, overkill: 0, lethal: false, gap_ms: 2, has_putrid: true, has_rancid: true,
+      collision_partners: ['Betøng'], collision_gap_ms: 14,
+      events_url: 'https://wcl/e4', replay_url: 'https://wcl/r4',
+    },
   ],
   wave_fails: [
     {
@@ -101,20 +107,28 @@ const mockReport: ReportData = {
 
 describe('stats aggregation and maxDeaths filtering', () => {
   it('filters by maxDeaths (null keeps all, integer keeps deaths_before <= maxDeaths)', () => {
-    expect(filterByMaxDeaths(mockReport.egg_fails, null)).toHaveLength(3)
+    expect(filterByMaxDeaths(mockReport.egg_fails, null)).toHaveLength(4)
     expect(filterByMaxDeaths(mockReport.egg_fails, 0)).toHaveLength(1)
-    expect(filterByMaxDeaths(mockReport.egg_fails, 2)).toHaveLength(2)
+    expect(filterByMaxDeaths(mockReport.egg_fails, 2)).toHaveLength(3)
   })
 
-  it('aggregates egg fails counting only Caustic Waves on Noxious Shell (Bumps/Splash are valid plays, not fails)', () => {
+  it('aggregates egg fails counting Caustic Waves and 2-carrier Egg Collisions (single Bumps remain clean)', () => {
     const allRes = aggregateEggFails([mockReport], null)
-    expect(allRes.total).toBe(2)
+    expect(allRes.total).toBe(3)
+    expect(allRes.waveTotal).toBe(2)
+    expect(allRes.collisionTotal).toBe(1)
     expect(allRes.cleanSplashCount).toBe(1)
-    expect(allRes.players[0].count).toBe(2)
+    expect(allRes.players[0].count).toBe(3)
+    expect(allRes.players[0].waveCount).toBe(2)
+    expect(allRes.players[0].collisionCount).toBe(1)
     expect(allRes.players[0].lethalCount).toBe(1)
 
+    const onlyCol = aggregateEggFails([mockReport], null, null, 'egg_collision')
+    expect(onlyCol.total).toBe(1)
+    expect(onlyCol.items[0].collision_partners).toEqual(['Betøng'])
+
     const max2Res = aggregateEggFails([mockReport], 2)
-    expect(max2Res.total).toBe(1)
+    expect(max2Res.total).toBe(2)
     expect(max2Res.players[0].lethalCount).toBe(0)
   })
 
@@ -134,7 +148,8 @@ describe('stats aggregation and maxDeaths filtering', () => {
 
     // Pull range filter (ab Try 2 bis Try 2)
     expect(aggregateWaveFails([mockReport], null, { from: 2, to: 2 }).total).toBe(1)
-    expect(aggregateEggFails([mockReport], null, { from: 2, to: 2 }).total).toBe(0)
+    expect(aggregateEggFails([mockReport], null, { from: 2, to: 2 }).total).toBe(1)
+    expect(aggregateEggFails([mockReport], null, { from: 2, to: 2 }, 'caustic_waves').total).toBe(0)
     expect(aggregateTankFails([mockReport], null, 'all', { from: 2, to: 2 }).total).toBe(1)
     expect(aggregateDefensives([mockReport], null, { from: 2, to: 2 }).players[0].pullsPresent).toBe(1)
   })
@@ -161,7 +176,7 @@ describe('stats aggregation and maxDeaths filtering', () => {
       { label: 'Runde 3+ (≥ 02:20)', count: 0, pct: 0 },
     ])
     const b = computePhaseBuckets(mockReport.egg_fails)
-    expect(b[0].count).toBe(1)
+    expect(b[0].count).toBe(2)
     expect(b[1].count).toBe(2)
     expect(b[2].count).toBe(0)
   })
