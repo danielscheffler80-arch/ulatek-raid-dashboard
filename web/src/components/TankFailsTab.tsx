@@ -76,14 +76,14 @@ export function TankFailsTab({
         <KpiCard
           label="Stone Venom < 30% ohne Def"
           value={allStats.stoneVenomCount}
-          subtext="Kein eigener Def-CD & kein External aktiv"
+          subtext="Beim Boss-Cast (Mother's Wrath) bis max. +5s ohne Def"
           icon={<HeartPulse className="h-4 w-4" strokeWidth={1.75} />}
           tone={allStats.stoneVenomCount > 0 ? 'warning' : 'success'}
         />
         <KpiCard
           label="Tank dadurch gestorben"
           value={allStats.stoneVenomLethalCount}
-          subtext={`Von ${allStats.stoneVenomCount} Stone-Venom-Drops < 30%`}
+          subtext={`Direkt beim Cast oder max. 5s danach gestorben`}
           icon={<Skull className="h-4 w-4" strokeWidth={1.75} />}
           tone={allStats.stoneVenomLethalCount > 0 ? 'destructive' : 'success'}
         />

@@ -490,3 +490,52 @@ def test_defensive_school_matching_and_removed_non_defs():
 
     rogue_death = next(e for e in rep["defensive_events"] if e["player"] == "Schurke" and e["kind"] == "death")
     assert "Cloak of Shadows" not in rogue_death["ready_defs"]
+
+
+def test_stone_venom_only_checks_boss_cast_plus_5s_window():
+    actors = _base_actors()
+    abilities = _base_abilities()
+    abilities[1298369] = "Mother's Wrath"
+    abilities[1287032] = "Poisonous Bite"
+    meta = {"title": "SV Window Test", "startTime": 1795450000000}
+    fights = [
+        {"id": 33, "name": "Ula'tek", "startTime": 100000, "endTime": 320000, "fightPercentage": 50.0, "bossPercentage": 50.0, "kill": False}
+    ]
+    events = [
+        # Tank setup
+        {"timestamp": 105000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1, "amount": 100000, "fight": 33},
+        {"timestamp": 106000, "type": "damage", "sourceID": 176, "targetID": 2, "abilityGameID": 1, "amount": 100000, "fight": 33},
+        # Case A (Monk): Cast 110s-113s WITH Fortifying Brew active -> protected!
+        # Later at 125s (debuff still ticking, >5s after cast) Fortifying Brew is gone and Monk drops to 15% -> MUST NOT be a fail!
+        {"timestamp": 109500, "type": "applybuff", "sourceID": 1, "targetID": 1, "abilityGameID": 115203, "fight": 33},
+        {"timestamp": 110000, "type": "applydebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 33},
+        {"timestamp": 112000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1298369, "amount": 200000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 33},
+        {"timestamp": 113000, "type": "applydebuffstack", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "stack": 9, "fight": 33},
+        {"timestamp": 120000, "type": "removebuff", "sourceID": 1, "targetID": 1, "abilityGameID": 115203, "fight": 33},
+        {"timestamp": 125000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1298418, "amount": 100000, "hitPoints": 150000, "maxHitPoints": 1000000, "fight": 33},
+        {"timestamp": 135000, "type": "removedebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 33},
+        # Case B (DK): Cast 150s-153s WITHOUT Def-CD -> drops to 20% at 152s, survives window (ends 158s), dies MUCH later at 190s (while debuff still on!) -> Fail, but lethal MUST be False!
+        {"timestamp": 150000, "type": "applydebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 33},
+        {"timestamp": 152000, "type": "damage", "sourceID": 152, "targetID": 2, "abilityGameID": 1298369, "amount": 200000, "hitPoints": 200000, "maxHitPoints": 1000000, "fight": 33},
+        {"timestamp": 153000, "type": "applydebuffstack", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "stack": 9, "fight": 33},
+        {"timestamp": 190000, "type": "death", "targetID": 2, "killerID": 152, "killingAbilityGameID": 1287032, "fight": 33},
+        {"timestamp": 190000, "type": "removedebuff", "sourceID": 152, "targetID": 2, "abilityGameID": 1298417, "fight": 33},
+        # Case C (Monk): Cast 200s-203s WITHOUT Def-CD -> drops to 18% at 202s and dies at 206.5s (+3.5s after cast end, <= 5s!) -> Fail AND lethal MUST be True!
+        {"timestamp": 200000, "type": "applydebuff", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "fight": 33},
+        {"timestamp": 202000, "type": "damage", "sourceID": 152, "targetID": 1, "abilityGameID": 1298369, "amount": 220000, "hitPoints": 180000, "maxHitPoints": 1000000, "fight": 33},
+        {"timestamp": 203000, "type": "applydebuffstack", "sourceID": 152, "targetID": 1, "abilityGameID": 1298417, "stack": 9, "fight": 33},
+        {"timestamp": 206500, "type": "death", "targetID": 1, "killerID": 152, "killingAbilityGameID": 1298418, "fight": 33},
+    ]
+
+    rep = analyze_report_events(meta, fights, actors, abilities, {33: events}, "qy9FnMvjwQ2R13c7")
+    sv_fails = [t for t in rep["tank_fails"] if t["kind"] == "stone_venom_no_def"]
+    # Case A must NOT produce a fail -> only Case B (Barrumir) & Case C (Betøng)
+    assert len(sv_fails) == 2
+
+    dk_fail = next(t for t in sv_fails if t["tank"] == "Barrumir")
+    assert dk_fail["lethal"] is False
+    assert dk_fail["death_rel_time"] is None
+
+    monk_fail = next(t for t in sv_fails if t["tank"] == "Betøng")
+    assert monk_fail["lethal"] is True
+    assert monk_fail["death_rel_time"] == "01:46.500"

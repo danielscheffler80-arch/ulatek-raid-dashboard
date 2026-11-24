@@ -23,6 +23,7 @@ from scripts.spells_config import (
     SPELL_MALICE_CAST,
     SPELL_MALICE_DMG,
     SPELL_MELEE,
+    SPELL_MOTHERS_WRATH_DMG,
     SPELL_NOXIOUS_SHELL_DEBUFF,
     SPELL_NOXIOUS_SPLASH,
     SPELL_PUTRID_MEMBRANE_DEBUFF,
@@ -305,8 +306,9 @@ def analyze_report_events(
                 hs_rdy = is_demonic_hs and ((ts_now - hs_used_at) >= DEMONIC_HEALTHSTONE_CD_SEC * 1000)
             return ready, pot_rdy, hs_rdy, (bool(ready) or pot_rdy or hs_rdy)
 
-        # Track Stone Venom state per tank
-        sv_active: dict[int, bool] = defaultdict(bool)
+        # Track Stone Venom Boss-Cast burst windows per tank (Mother's Wrath cast + max 5s!)
+        sv_burst_start: dict[int, int] = {}
+        sv_burst_end: dict[int, int] = {}
         sv_stacks: dict[int, int] = defaultdict(int)
         sv_window_fail: dict[int, dict[str, Any] | None] = defaultdict(lambda: None)
 
@@ -319,15 +321,17 @@ def analyze_report_events(
         # Track which CW event timestamps broke a Noxious Shell (filled after shell pass)
         cw_broke_shell_keys: set[tuple[int, int]] = set()
 
-        def _finalize_sv_fail(tk_id: int, end_ts: int) -> None:
+        def _finalize_sv_fail(tk_id: int) -> None:
             pending = sv_window_fail[tk_id]
+            b_start = sv_burst_start.pop(tk_id, None)
+            b_end = sv_burst_end.pop(tk_id, None)
             if pending is None:
                 return
-            last_low = int(pending.pop("_last_low_ts", pending["timestamp"]))
-            window_end = max(end_ts, last_low) + 5000
+            window_start = b_start if b_start is not None else pending["timestamp"]
+            window_end = (b_end if b_end is not None else pending["timestamp"]) + 5000
             matched_death = None
             for dts, dtid, dev in player_deaths:
-                if dtid == tk_id and pending["timestamp"] <= dts <= window_end:
+                if dtid == tk_id and window_start <= dts <= window_end:
                     matched_death = (dts, dev)
                     break
             if matched_death is not None:
@@ -567,74 +571,87 @@ def analyze_report_events(
                 ):
                     last_boss_tank_ts[tid] = ts
 
-            # Stone Venom < 30% HP without def-CD / external
-            if tid in tank_id_set and aid == SPELL_STONE_VENOM_DEBUFF:
-                if t == "applydebuff":
-                    sv_active[tid] = True
-                    sv_stacks[tid] = int(ev.get("stack", 1))
+            # Stone Venom Boss-Cast burst window (Mother's Wrath stack application + max 5s!)
+            is_sv_stack_event = (
+                tid in tank_id_set
+                and (
+                    (aid == SPELL_STONE_VENOM_DEBUFF and t in ("applydebuff", "applydebuffstack"))
+                    or (aid == SPELL_MOTHERS_WRATH_DMG and t == "damage")
+                )
+            )
+            if is_sv_stack_event:
+                if tid in sv_burst_end and (ts - sv_burst_end[tid]) > 3000:
+                    _finalize_sv_fail(tid)
+                if tid not in sv_burst_start:
+                    sv_burst_start[tid] = ts
+                    sv_burst_end[tid] = ts
                     sv_window_fail[tid] = None
-                elif t in ("applydebuffstack", "refreshdebuff"):
-                    sv_active[tid] = True
-                    if "stack" in ev:
-                        sv_stacks[tid] = int(ev["stack"])
-                    else:
-                        sv_stacks[tid] = max(1, sv_stacks[tid] + (1 if t == "applydebuffstack" else 0))
-                elif t == "removedebuff":
-                    _finalize_sv_fail(tid, ts)
-                    sv_active[tid] = False
-                    sv_stacks[tid] = 0
+                    if aid == SPELL_STONE_VENOM_DEBUFF:
+                        sv_stacks[tid] = int(ev.get("stack", 1))
+                else:
+                    sv_burst_end[tid] = ts
+                    if aid == SPELL_STONE_VENOM_DEBUFF:
+                        if "stack" in ev:
+                            sv_stacks[tid] = int(ev["stack"])
+                        elif t == "applydebuffstack":
+                            sv_stacks[tid] = max(1, sv_stacks[tid] + 1)
+                if sv_window_fail[tid] is not None and sv_stacks[tid] > sv_window_fail[tid]["stacks"]:
+                    sv_window_fail[tid]["stacks"] = sv_stacks[tid]
+            elif tid in tank_id_set and aid == SPELL_STONE_VENOM_DEBUFF and t == "removedebuff":
+                sv_stacks[tid] = 0
 
-            if tid in tank_id_set and sv_active[tid] and t == "damage":
-                hp = ev.get("hitPoints")
-                mhp = ev.get("maxHitPoints")
-                if hp is not None and mhp and mhp > 0:
-                    hp_pct = round((hp / mhp) * 100.0, 1)
-                    dmg_school = infer_damage_school(aid, ability_schools)
-                    mitigating_tank_defs = [
-                        d for d in active_tank_defs[tid] if defensive_mitigates(d, dmg_school)
-                    ]
-                    if hp_pct < 30.0 and not mitigating_tank_defs:
-                        rel_ms = ts - f_start
-                        cur_fail = sv_window_fail[tid]
-                        if cur_fail is None:
-                            other_tanks = [actors[ot]["name"] for ot in tank_ids if ot != tid]
-                            r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
-                            sv_window_fail[tid] = {
-                                "id": f"{report_code}-{fid}-{tid}-{ts}-sv",
-                                "kind": "stone_venom_no_def",
-                                "tank": actors[tid]["name"],
-                                "tank_class": actors[tid].get("subType", ""),
-                                "tank_id": tid,
-                                "victim": None,
-                                "victim_class": None,
-                                "other_tank": other_tanks[0] if other_tanks else None,
-                                "tank_was_dead": False,
-                                "min_hp_pct": hp_pct,
-                                "stacks": max(1, sv_stacks[tid]),
-                                "lethal": False,
-                                "death_rel_time": None,
-                                "death_ability": None,
-                                "ready_defs": r_defs,
-                                "pot_ready": r_pot,
-                                "hs_ready": r_hs,
-                                "any_ready": r_any,
-                                "_last_low_ts": ts,
-                                "pull_num": pull_idx,
-                                "fight_id": fid,
-                                "is_kill": is_kill,
-                                "rel_time": format_rel_time(rel_ms),
-                                "rel_ms": rel_ms,
-                                "timestamp": ts,
-                                "deaths_before": count_deaths_before(ts),
-                                "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
-                                "replay_url": build_replay_url(report_code, fid, rel_ms),
-                            }
-                        else:
-                            cur_fail["_last_low_ts"] = ts
-                            if hp_pct < cur_fail["min_hp_pct"]:
-                                cur_fail["min_hp_pct"] = hp_pct
-                            if sv_stacks[tid] > cur_fail["stacks"]:
-                                cur_fail["stacks"] = sv_stacks[tid]
+            if tid in tank_id_set and tid in sv_burst_end and t == "damage":
+                if ts > sv_burst_end[tid] + 5000:
+                    _finalize_sv_fail(tid)
+                else:
+                    hp = ev.get("hitPoints")
+                    mhp = ev.get("maxHitPoints")
+                    if hp is not None and mhp and mhp > 0:
+                        hp_pct = round((hp / mhp) * 100.0, 1)
+                        dmg_school = infer_damage_school(aid, ability_schools)
+                        mitigating_tank_defs = [
+                            d for d in active_tank_defs[tid] if defensive_mitigates(d, dmg_school)
+                        ]
+                        if hp_pct < 30.0 and not mitigating_tank_defs:
+                            rel_ms = ts - f_start
+                            cur_fail = sv_window_fail[tid]
+                            if cur_fail is None:
+                                other_tanks = [actors[ot]["name"] for ot in tank_ids if ot != tid]
+                                r_defs, r_pot, r_hs, r_any = compute_readiness(tid, ts, dmg_school)
+                                sv_window_fail[tid] = {
+                                    "id": f"{report_code}-{fid}-{tid}-{ts}-sv",
+                                    "kind": "stone_venom_no_def",
+                                    "tank": actors[tid]["name"],
+                                    "tank_class": actors[tid].get("subType", ""),
+                                    "tank_id": tid,
+                                    "victim": None,
+                                    "victim_class": None,
+                                    "other_tank": other_tanks[0] if other_tanks else None,
+                                    "tank_was_dead": False,
+                                    "min_hp_pct": hp_pct,
+                                    "stacks": max(1, sv_stacks[tid]),
+                                    "lethal": False,
+                                    "death_rel_time": None,
+                                    "death_ability": None,
+                                    "ready_defs": r_defs,
+                                    "pot_ready": r_pot,
+                                    "hs_ready": r_hs,
+                                    "any_ready": r_any,
+                                    "pull_num": pull_idx,
+                                    "fight_id": fid,
+                                    "is_kill": is_kill,
+                                    "rel_time": format_rel_time(rel_ms),
+                                    "rel_ms": rel_ms,
+                                    "timestamp": ts,
+                                    "deaths_before": count_deaths_before(ts),
+                                    "events_url": build_events_url(report_code, fid, tid, ts, f_start, f_end),
+                                    "replay_url": build_replay_url(report_code, fid, rel_ms),
+                                }
+                            else:
+                                if hp_pct < cur_fail["min_hp_pct"]:
+                                    cur_fail["min_hp_pct"] = hp_pct
+                                if sv_stacks[tid] > cur_fail["stacks"]:
+                                    cur_fail["stacks"] = sv_stacks[tid]
 
             # Tentacle aggro fail: non-tank killed by Gore Rattle Melee (1) ONLY!
             if t == "death" and tid in actors and actors[tid].get("type") == "Player":
@@ -780,7 +797,7 @@ def analyze_report_events(
 
         # Flush any still-open Stone Venom window at fight end
         for tk in list(sv_window_fail.keys()):
-            _finalize_sv_fail(tk, f_end)
+            _finalize_sv_fail(tk)
 
         # ---- 1b. Finalize P2 / P3 & Heart Phase summaries for this fight ----
         # Blight Vein overlaps (Grasping Fangs broken within <= 2500ms of previous break)
